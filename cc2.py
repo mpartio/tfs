@@ -546,11 +546,11 @@ class CloudCastV2(nn.Module):
             drop_path_ratio_list=dpr_list[: depths[3]],
         )
 
-        self.downsample = DownsampleWithConv(dim)
-        # self.downsample = Downsample(dim)
+        #self.downsample = DownsampleWithConv(dim)
+        self.downsample = Downsample(dim)
         #self.upsample = UpsampleWithInterpolation(dim * 2)
-        self.upsample = UpsampleWithConv(dim * 2)
-        # self.upsample = Upsample(dim * 2)
+        #self.upsample = UpsampleWithConv(dim * 2)
+        self.upsample = Upsample(dim * 2)
 
         # self.patch_recover = PatchRecoveryRaw(
         #    dim,  # * 2
