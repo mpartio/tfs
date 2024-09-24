@@ -581,68 +581,74 @@ class CloudCastV2(nn.Module):
             drop_path_ratio_list=dpr_list[: depths[3]],
         )
 
-        #self.downsample = DownsampleWithConv(dim)
+        # self.downsample = DownsampleWithConv(dim)
         self.downsample = Downsample(dim)
-        #self.upsample = UpsampleWithInterpolation(dim * 2)
-        #self.upsample = UpsampleWithConv(dim * 2)
-        self.upsample = Upsample(dim * 2)
+        # self.upsample = UpsampleWithInterpolation(dim * 2)
+        self.upsample = UpsampleWithConv(dim * 2)
+        # self.upsample = Upsample(dim * 2)
 
-        # self.patch_recover = PatchRecoveryRaw(
-        #    dim,  # * 2
-        #    recover_size=(128, 128),
-        #    patch_size=patch_size,
-        # )
-
-        self.patch_recover = PatchRecovery(
+        self.patch_recover = PatchRecoveryRaw(
             dim,  # * 2
             recover_size=(128, 128),
             patch_size=patch_size,
-            num_output=1,  # 2 for mean and variance
         )
+
+        # self.patch_recover = PatchRecovery(
+        #    dim,  # * 2
+        #    recover_size=(128, 128),
+        #    patch_size=patch_size,
+        #    num_output=1,  # 2 for mean and variance
+        # )
 
         self.loss_type = None
         self.patch_size = patch_size
 
-        self.gated_skip = GatedSkipConnection(dim)
+        self.gated_skip = GatedSkipConnection(dim, (32 // 2, 32 // 2))
 
-        # self.mean_head = nn.Conv2d(dim, 1, kernel_size=1)
-        # self.var_head = nn.Conv2d(dim, 1, kernel_size=1)
+        self.mean_head = nn.Conv2d(dim, 1, kernel_size=1)
+        self.var_head = nn.Conv2d(dim, 1, kernel_size=1)
 
-        # self._initialize_variance_head()
+        self._initialize_variance_head()
 
-        # self.global_attn = GlobalAttentionLayer(dim, 6)
+        self.global_attn = GlobalAttentionLayer(dim, 6)
 
-    
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+
     def forward(self, x):
         # Reproject input data to latent space
         # From (B, 1, 1, 128, 128) to (B, 1, 32, 32, 192)
         x = self.patch_embed(x)
 
         # assert x.shape[1:] == (1, 32, 32, 192)
+        # Store the tensor for skip connection
+
         skip = x
 
         # Encode 1, keep dimensions the same
         x = self.encoder1(x)
 
-        # Store the tensor for skip connection
-        # skip = x
-
         # Downsample from (B, 32, 32, 192) to (B, 16, 16, 384)
         x = self.downsample(x)
 
-        #x = self.encoder2(x)
+        # x = self.encoder2(x)
 
         # Encoder finished, now decode
-        #x = self.decoder1(x)
+        # x = self.decoder1(x)
 
         # Upsample from (B, 16, 16, 384) to (B, 32, 32, 192)
         x = self.upsample(x)
 
         x = self.decoder2(x)
 
-        # x = self.global_attn(x)
+        x = self.norm1(x)
+        attn_out = self.global_attn(x)
+
         # Add skip connection: (B, 32, 32, 384)
-        x = self.gated_skip(skip, x)
+        # x = self.gated_skip(skip, x + attn_out)
+        x = self.gated_skip(skip.squeeze(1), (x + attn_out).squeeze(1))
+        x = x.unsqueeze(1)
+        x = self.norm2(x)
 
         x = self.patch_recover(x)
 
