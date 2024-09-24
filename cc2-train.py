@@ -75,7 +75,7 @@ model = CloudCastV2(dim=192, patch_size=(8, 8))
 
 print(model)
 num_params = count_trainable_parameters(model)
-print(f"Number of trainable parameters: {num_params}")
+print(f"Number of trainable parameters: {num_params:,}")
 
 found_existing_model = False
 try:
@@ -103,7 +103,7 @@ elif args.loss_function == "hete":
 
 assert criterion is not None
 
-lr = 5e-6 if not found_existing_model else 1e-6
+lr = 3e-6 if not found_existing_model else 1e-6
 
 # Kun LR=0.000005 niin hiukan syvempi malli alkoi oppia
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -193,19 +193,26 @@ for epoch in range(1, args.epochs + 1):
 
     if args.loss_function == "mae" or args.loss_function == "mse":
         print(
-            f"Epoch [{epoch}/{args.epochs}], current best: {min_loss_epoch}. Train Loss: {train_loss:.6f} Val Loss: {val_loss:.6f}, LRx100k: {100000*optimizer.param_groups[0]['lr']:.3f}"
-        )
-    else:
-        print(
-            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} Mean: {:.4f} Stde: {:.4f} LRx10k: {:.3f}".format(
+            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f}, LRx1M: {:.3f}".format(
                 epoch,
                 args.epochs,
                 min_loss_epoch,
                 train_loss,
                 val_loss,
-                mean,
-                stde,
-                10000 * optimizer.param_groups[0]["lr"],
+                1e6 * optimizer.param_groups[0]["lr"],
+            )
+        )
+    else:
+        print(
+            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} Mean%: {:.2f} Stde%: {:.3f} LRx1M: {:.3f}".format(
+                epoch,
+                args.epochs,
+                min_loss_epoch,
+                train_loss,
+                val_loss,
+                100 * mean,
+                100 * stde,
+                1e6 * optimizer.param_groups[0]["lr"],
             )
         )
 
@@ -217,8 +224,8 @@ for epoch in range(1, args.epochs + 1):
             torch.save(model.state_dict(), "models/cc2-model.pth")
             last_write_epoch = epoch
 
-    if epoch >= 8 and epoch - min_loss_epoch > 8:
-        print("No improvement in 8 epochs; early stopping")
+    if epoch >= 8 and epoch - min_loss_epoch > 10:
+        print("No improvement in 10 epochs; early stopping")
         break
 
     if epoch == 8:
