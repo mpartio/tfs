@@ -122,7 +122,40 @@ class PatchEmbedding(nn.Module):
         x = self.conv(x)  # (B, dim, H // patch_size[1], W // patch_size[2])
 
         x = x.reshape(B, 1, H // self.patch_size[1], W // self.patch_size[2], -1)
-        assert x.shape[1:] == (1, 16, 16, self.dim)
+        return x
+
+
+class PatchEmbeddingWithPositionalEncoding(nn.Module):
+    def __init__(self, patch_size, dim):
+        super(PatchEmbeddingWithPositionalEncoding, self).__init__()
+
+        # Note: conv2d only works when T=1
+        self.conv = nn.Conv2d(
+            in_channels=1,
+            out_channels=dim,
+            kernel_size=patch_size[1:],
+            stride=patch_size[1:],
+        )
+
+        self.absolute_pos_embed = nn.Parameter(
+            torch.zeros(1, dim, 128 // patch_size[-1], 128 // patch_size[-1])
+        )
+        self.patch_size = patch_size
+        self.dim = dim
+
+    def forward(self, x):
+        B, _, _, H, W = x.shape
+        assert x.shape[1:] == (1, 1, 128, 128)
+        # Remove the unnecessary time and channel dimension (T and C)
+        # Note: this might need to be changed later
+        x = x.squeeze(1)  # [:, 0, 1, :, :]  # Shape: (B, H, W)
+        # Apply the convolution to embed patches
+        x = self.conv(x)  # (B, dim, H // patch_size[1], W // patch_size[2])
+        absolute_pos_embed = self.absolute_pos_embed.expand(B, -1, -1, -1)
+
+        x = x + absolute_pos_embed
+
+        x = x.reshape(B, 1, H // self.patch_size[1], W // self.patch_size[2], -1)
         return x
 
 
