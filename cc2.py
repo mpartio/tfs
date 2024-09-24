@@ -322,6 +322,7 @@ class Upsample(nn.Module):
 
         return x
 
+
 class UpsampleWithConv(nn.Module):
     def __init__(self, dim):
         super(UpsampleWithConv, self).__init__()
@@ -333,6 +334,7 @@ class UpsampleWithConv(nn.Module):
         x = self.conv(x)
         x = x.unsqueeze(1).permute(0, 1, 3, 4, 2)
         return x
+
 
 class UpsampleWithInterpolation(nn.Module):
     def __init__(self, dim):
