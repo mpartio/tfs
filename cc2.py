@@ -411,14 +411,19 @@ class PatchRecoveryRaw(nn.Module):
 
 
 class GatedSkipConnection(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, input_resolution):
         super(GatedSkipConnection, self).__init__()
-        # Learnable gating coefficient
-        self.gate = nn.Parameter(torch.zeros(1))  # Initialize the gate to 0
+        # Learnable gating coefficient for each pixel
+        H, W = input_resolution
+
+        self.gate = nn.Parameter(torch.zeros(1, H, W, 1))  # Initialize the gate to 0
+        self.sigmoid = nn.Sigmoid()
+        self.input_resolution = input_resolution
 
     def forward(self, skip, x):
-        # Apply the gating mechanism (sigmoid to ensure values are between 0 and 1)
-        gate_value = torch.sigmoid(self.gate)
+        assert skip.shape == x.shape, "Skip and input tensor must have the same shape"
+        B, H, W, C = x.shape
+        gate_value = self.sigmoid(self.gate).expand(B, H, W, C)
 
         # Multiply the skip connection by the gate
         gated_skip = gate_value * skip
@@ -472,6 +477,10 @@ class TransformerBlock(nn.Module):
             nn.Identity() if drop_path_ratio is None else DropPath(drop_path_ratio)
         )
 
+        self.gated_skip = GatedSkipConnection(
+            dim, (input_resolution[0] // 2, input_resolution[1] // 2)
+        )
+
     def forward(self, x):
         B, T, H, W, C = x.shape
         assert torch.isnan(x).sum() == 0, "NaN values in input tensor"
@@ -502,10 +511,11 @@ class TransformerBlock(nn.Module):
         if self.shift_size > 0:
             x = torch.roll(x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
 
-        x = x.reshape(B, H * W, C)
+        # x = x.reshape(B, H * W, C)
 
         # FFN and residual connection
-        x = self.drop_path(skip + x)
+        x = self.gated_skip(skip.reshape(B, H, W, C), x)
+        x = self.drop_path(x)
         x = x + self.mlp(self.norm2(x))
         x = x.view(B, T, H, W, C)
 
@@ -545,10 +555,10 @@ class ProcessingLayer(nn.Module):
 
 
 class CloudCastV2(nn.Module):
-    def __init__(self, patch_size=(4, 4), dim=192):
+    def __init__(self, patch_size, dim):
         super(CloudCastV2, self).__init__()
-        self.patch_embed = PatchEmbedding((1,) + patch_size, dim)
-        dpr_list = np.linspace(0, 0.2, 8)  # from Pangu
+        self.patch_embed = PatchEmbeddingWithPositionalEncoding((1,) + patch_size, dim)
+        # dpr_list = np.linspace(0, 0.2, 8)  # from Pangu
         dpr_list = [0.001, 0.005]
         depths = [2, 1, 1, 2]
 
