@@ -98,30 +98,32 @@ def create_relative_position_index(window_size):
 
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, patch_size, dim):
+    def __init__(self, patch_size, dim, stride):
         super(PatchEmbedding, self).__init__()
 
         # Note: conv2d only works when T=1
         self.conv = nn.Conv2d(
             in_channels=1,
             out_channels=dim,
-            kernel_size=patch_size[1:],
-            stride=patch_size[1:],
+            kernel_size=patch_size,
+            stride=stride,
         )
-
         self.patch_size = patch_size
+        self.stride = stride
         self.dim = dim
 
     def forward(self, x):
         B, T, C, H, W = x.shape
+
         assert x.shape[1:] == (1, 1, 128, 128)
         # Remove the unnecessary time and channel dimension (T and C)
         # Note: this might need to be changed later
         x = x.squeeze(1)  # [:, 0, 1, :, :]  # Shape: (B, H, W)
         # Apply the convolution to embed patches
         x = self.conv(x)  # (B, dim, H // patch_size[1], W // patch_size[2])
+        _, _, out_H, out_W = x.shape
+        x = x.reshape(B, 1, out_H, out_W, -1)
 
-        x = x.reshape(B, 1, H // self.patch_size[1], W // self.patch_size[2], -1)
         return x
 
 
@@ -280,6 +282,11 @@ class Downsample(nn.Module):
 
     def forward(self, x):
         B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C)
+        x = pad(x, 2)
+        _, H, W, _ = x.shape
+        x = x.view(B, T, H, W, C)
+        B, T, H, W, C = x.shape
 
         assert H % 2 == 0 and W % 2 == 0, "Height and width must be divisible by 2"
 
@@ -333,6 +340,12 @@ class UpsampleWithConv(nn.Module):
         x = x.permute(0, 1, 4, 2, 3).squeeze(1)
         x = self.conv(x)
         x = x.unsqueeze(1).permute(0, 1, 3, 4, 2)
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C)
+        # How to know how much padding was added?
+        x = depad(x, H, W)
+        _, H_new, W_new, _ = x.shape
+        x = x.view(B, T, H_new, W_new, C)
         return x
 
 
@@ -381,6 +394,70 @@ class PatchRecovery(nn.Module):
         rec_H, rec_W = self.recover_size
         x = x.view(B, P, self.num_output, rec_H, rec_W).permute(0, 1, 3, 4, 2)
 
+        return x
+
+
+class PatchRecoveryRawWithStride(nn.Module):
+    def __init__(self, dim, recover_size, patch_size, num_output):
+        super(PatchRecoveryRawWithStride, self).__init__()
+
+        self.stride = (patch_size[0] // 2, patch_size[1] // 2)
+
+        self.conv = nn.ConvTranspose2d(
+            in_channels=dim,
+            out_channels=num_output,
+            kernel_size=patch_size,
+            stride=self.stride,
+        )
+        self.recover_size = recover_size
+        self.dim = dim
+        self.num_output = num_output
+        self.patch_size = patch_size
+
+    def forward(self, x):
+        # P = number of parameters
+        # We don't predict multiple time steps, although multiple time steps
+        # are used in the input
+        B, P, H, W, C = x.shape
+        x = x.reshape(B * P, C, H, W)
+        x = self.conv(x)
+
+        output_H = (H - 1) * self.stride[0] + self.patch_size[0]
+        output_W = (W - 1) * self.stride[1] + self.patch_size[1]
+
+        # Use unfold to extract all patches at once
+        patches = F.unfold(
+            x.view(B * P, self.num_output, output_H, output_W),
+            kernel_size=self.patch_size,
+            stride=self.stride,
+            padding=0,
+        )  # Shape: (B*P, C*patch_h*patch_w, num_patches)
+
+        patch_h, patch_w = self.patch_size
+
+        # Reshape the patches for accumulation
+        patches = patches.view(B * P, self.num_output * patch_h * patch_w, -1)
+
+        # Now reconstruct the full image using fold or tensor reshaping operations
+        rec_H, rec_W = self.recover_size
+
+        output_buffer = torch.zeros(B, self.num_output, rec_H, rec_W).to(x.device)
+        #        count_buffer = torch.zeros(B, 1, rec_H, rec_W).to(x.device)
+        count_buffer = F.fold(
+            torch.ones_like(patches),
+            output_size=(rec_H, rec_W),
+            kernel_size=self.patch_size,
+            stride=self.stride,
+        )
+
+        # Calculate the output buffer without explicit loops (using efficient torch operations)
+        output_buffer = F.fold(
+            patches, (rec_H, rec_W), kernel_size=self.patch_size, stride=self.stride
+        )
+
+        # Divide by the count buffer (make sure it's computed correctly using similar tensor ops)
+        x = output_buffer / count_buffer
+        x = x.view(B, P, self.num_output, rec_H, rec_W).permute(0, 1, 3, 4, 2)
         return x
 
 
@@ -478,16 +555,16 @@ class TransformerBlock(nn.Module):
         )
 
         self.gated_skip = GatedSkipConnection(
-            dim, (input_resolution[0] // 2, input_resolution[1] // 2)
+            dim, (input_resolution[0], input_resolution[1])
         )
 
     def forward(self, x):
         B, T, H, W, C = x.shape
         assert torch.isnan(x).sum() == 0, "NaN values in input tensor"
 
-        skip = x.view(B, H * W, C)
+        skip = x.reshape(B, H * W, C)
         x = self.norm1(x)
-        x = x.view(B, H, W, C)
+        x = x.reshape(B, H, W, C)
 
         # Cyclically shift
         if self.shift_size > 0:
@@ -523,13 +600,13 @@ class TransformerBlock(nn.Module):
 
 
 class ProcessingLayer(nn.Module):
-    def __init__(self, depth, num_heads, dim, window_size, drop_path_ratio_list):
+    def __init__(
+        self, depth, num_heads, dim, window_size, drop_path_ratio_list, input_resolution
+    ):
         super(ProcessingLayer, self).__init__()
 
-        self.input_resolution = (32, 32)
         self.depth = depth
         self.blocks = nn.ModuleList()
-
         assert (
             len(drop_path_ratio_list) == depth
         ), "Drop path ratios must match depth: {} vs {}".format(
@@ -539,7 +616,7 @@ class ProcessingLayer(nn.Module):
             self.blocks.append(
                 TransformerBlock(
                     dim=dim,
-                    input_resolution=self.input_resolution,
+                    input_resolution=input_resolution,
                     num_heads=num_heads,
                     window_size=window_size,
                     shift_size=window_size // 2 if i % 2 == 0 else 0,
@@ -555,12 +632,17 @@ class ProcessingLayer(nn.Module):
 
 
 class CloudCastV2(nn.Module):
-    def __init__(self, patch_size, dim):
+    def __init__(self, patch_size, dim, stride=None):
         super(CloudCastV2, self).__init__()
-        self.patch_embed = PatchEmbeddingWithPositionalEncoding((1,) + patch_size, dim)
+        if stride is None:
+            stride = patch_size
+
+        self.patch_embed = PatchEmbedding(patch_size, dim, stride)
         # dpr_list = np.linspace(0, 0.2, 8)  # from Pangu
         dpr_list = [0.001, 0.005]
         depths = [2, 1, 1, 2]
+        input_resolution = int((128 - patch_size[0]) / stride[0] + 1)
+        input_resolution = (input_resolution, input_resolution)
 
         self.encoder1 = ProcessingLayer(
             depth=depths[0],
@@ -568,6 +650,7 @@ class CloudCastV2(nn.Module):
             num_heads=6,
             window_size=7,
             drop_path_ratio_list=dpr_list[: depths[0]],
+            input_resolution=input_resolution,
         )
         self.encoder2 = ProcessingLayer(
             depth=depths[1],
@@ -575,6 +658,7 @@ class CloudCastV2(nn.Module):
             num_heads=12,
             window_size=7,
             drop_path_ratio_list=[0.1],
+            input_resolution=input_resolution,
         )
         self.decoder1 = ProcessingLayer(
             depth=depths[2],
@@ -582,6 +666,7 @@ class CloudCastV2(nn.Module):
             num_heads=12,
             window_size=7,
             drop_path_ratio_list=[0.1],
+            input_resolution=input_resolution,
         )
         self.decoder2 = ProcessingLayer(
             depth=depths[3],
@@ -589,6 +674,7 @@ class CloudCastV2(nn.Module):
             num_heads=6,
             window_size=7,
             drop_path_ratio_list=dpr_list[: depths[3]],
+            input_resolution=input_resolution,
         )
 
         # self.downsample = DownsampleWithConv(dim)
@@ -597,23 +683,20 @@ class CloudCastV2(nn.Module):
         self.upsample = UpsampleWithConv(dim * 2)
         # self.upsample = Upsample(dim * 2)
 
+        # self.patch_recover = PatchRecoveryRawWithStride(
+        #    dim, recover_size=(128, 128), patch_size=patch_size, num_output=2
+        # )
+
         self.patch_recover = PatchRecoveryRaw(
             dim,  # * 2
             recover_size=(128, 128),
             patch_size=patch_size,
         )
 
-        # self.patch_recover = PatchRecovery(
-        #    dim,  # * 2
-        #    recover_size=(128, 128),
-        #    patch_size=patch_size,
-        #    num_output=1,  # 2 for mean and variance
-        # )
-
         self.loss_type = None
         self.patch_size = patch_size
 
-        self.gated_skip = GatedSkipConnection(dim, (32 // 2, 32 // 2))
+        self.gated_skip = GatedSkipConnection(dim, input_resolution)
 
         self.mean_head = nn.Conv2d(dim, 1, kernel_size=1)
         self.var_head = nn.Conv2d(dim, 1, kernel_size=1)
@@ -625,12 +708,19 @@ class CloudCastV2(nn.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
 
+        self._initialize_variance_head()
+
     def forward(self, x):
         # Reproject input data to latent space
         # From (B, 1, 1, 128, 128) to (B, 1, 32, 32, 192)
         x = self.patch_embed(x)
 
-        # assert x.shape[1:] == (1, 32, 32, 192)
+        #assert x.shape[1:] == (
+        #    1,
+        #    16,
+        #    16,
+        #    192,
+        #), f"Invalid shape after patch embedding: {x.shape}"
         # Store the tensor for skip connection
 
         skip = x
