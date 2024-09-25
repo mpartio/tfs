@@ -13,11 +13,8 @@ class GaussianNLLLoss(nn.Module):
         var = y_pred_std**2  # Standard deviation to variance
 
         # Gaussian NLL Loss
-        variance_loss_weight = 0.5
+        loss = 0.5 * torch.log(var) + 0.5 * ((y_true - y_pred_mean) ** 2) / var
 
-        loss = (
-            0.5 * torch.log(var)
-            + variance_loss_weight * 0.5 * ((y_true - y_pred_mean) ** 2) / var
-        )
+        var_reg = 1e-2 * torch.mean(var)
 
-        return loss.mean()
+        return loss.mean() + var_reg
