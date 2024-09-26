@@ -639,42 +639,44 @@ class CloudCastV2(nn.Module):
 
         self.patch_embed = PatchEmbedding(patch_size, dim, stride)
         # dpr_list = np.linspace(0, 0.2, 8)  # from Pangu
-        dpr_list = [0.001, 0.005]
-        depths = [2, 1, 1, 2]
+        dpr_list_shallow = [0.01, 0.05]
+        dpr_list_deep = [0.1, 0.15]
+        depths = [2, 2, 2, 2]
         input_resolution = int((128 - patch_size[0]) / stride[0] + 1)
-        input_resolution = (input_resolution, input_resolution)
+        input_resolution_a = (input_resolution, input_resolution)
+        input_resolution_b = (input_resolution // 2, input_resolution // 2)
 
         self.encoder1 = ProcessingLayer(
             depth=depths[0],
             dim=dim,
             num_heads=6,
             window_size=7,
-            drop_path_ratio_list=dpr_list[: depths[0]],
-            input_resolution=input_resolution,
+            drop_path_ratio_list=dpr_list_shallow,
+            input_resolution=input_resolution_a,
         )
         self.encoder2 = ProcessingLayer(
             depth=depths[1],
             dim=dim * 2,
             num_heads=12,
             window_size=7,
-            drop_path_ratio_list=[0.1],
-            input_resolution=input_resolution,
+            drop_path_ratio_list=dpr_list_deep,
+            input_resolution=input_resolution_b,
         )
         self.decoder1 = ProcessingLayer(
             depth=depths[2],
             dim=dim * 2,
             num_heads=12,
             window_size=7,
-            drop_path_ratio_list=[0.1],
-            input_resolution=input_resolution,
+            drop_path_ratio_list=dpr_list_deep,
+            input_resolution=input_resolution_b,
         )
         self.decoder2 = ProcessingLayer(
             depth=depths[3],
             dim=dim,
             num_heads=6,
             window_size=7,
-            drop_path_ratio_list=dpr_list[: depths[3]],
-            input_resolution=input_resolution,
+            drop_path_ratio_list=dpr_list_shallow,
+            input_resolution=input_resolution_a,
         )
 
         # self.downsample = DownsampleWithConv(dim)
@@ -696,10 +698,11 @@ class CloudCastV2(nn.Module):
         self.loss_type = None
         self.patch_size = patch_size
 
-        self.gated_skip = GatedSkipConnection(dim, input_resolution)
+        self.gated_skip = GatedSkipConnection(dim, input_resolution_a)
 
         self.mean_head = nn.Conv2d(dim, 1, kernel_size=1)
         self.var_head = nn.Conv2d(dim, 1, kernel_size=1)
+        self.var_dropout = nn.Dropout(p=0.1)
 
         self._initialize_variance_head()
 
@@ -757,6 +760,7 @@ class CloudCastV2(nn.Module):
             x = x.reshape(B * P, H, W, C).permute(0, 3, 1, 2)
             mean = self.mean_head(x)
             variance_logits = self.var_head(x)
+            variance_logits = self.var_dropout(variance_logits)  # Apply dropout here
             var = F.softplus(variance_logits) + 1e-6
             stde = torch.sqrt(var)
 
