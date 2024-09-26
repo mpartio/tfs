@@ -91,7 +91,7 @@ model = model.to(device)
 train_loader, val_loader = read_data()
 
 if args.loss_function == "gaussian_nll":
-    criterion = GaussianNLLLoss()
+    criterion = GaussianNLLLoss(var_reg_weight=1e-2)
 elif args.loss_function == "beta_nll":
     criterion = BetaNLLLoss()
 elif args.loss_function == "mae":
