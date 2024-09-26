@@ -14,7 +14,7 @@ print("Using device", device)
 model = CloudCastV2(dim=192, patch_size=(8,8))
 
 try:
-    model.load_state_dict(torch.load("models/cc2-model.pth", weights_only=True))
+    model.load_state_dict(torch.load(args.load_model_from, weights_only=True))
 except FileNotFoundError:
     print("No model found, exiting")
     sys.exit(1)

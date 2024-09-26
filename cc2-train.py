@@ -79,7 +79,7 @@ print(f"Number of trainable parameters: {num_params:,}")
 
 found_existing_model = False
 try:
-    model.load_state_dict(torch.load("models/cc2-model.pth", weights_only=True))
+    model.load_state_dict(torch.load(args.load_model_from, weights_only=True))
     print("Model loaded")
     found_existing_model = True
 except FileNotFoundError:

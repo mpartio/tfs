@@ -4,7 +4,9 @@ import sys
 from cc2 import CloudCastV2
 from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
+from config import get_args
 
+args = get_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
@@ -31,7 +33,7 @@ def load_data():
 model = CloudCastV2(dim=192, patch_size=(8, 8))
 
 try:
-    model.load_state_dict(torch.load("models/cc2-model.pth", weights_only=True))
+    model.load_state_dict(torch.load(args.load_model_from, weights_only=True))
 except FileNotFoundError:
     print("No model found, exiting")
     sys.exit(1)
@@ -51,4 +53,8 @@ with torch.no_grad():
         outputs = model(inputs).detach().cpu()
         losses.append(criterion(outputs, targets))
 
-print("Mean absolute error over {} forecasts: {:.4f}".format(5*len(loader), torch.mean(torch.tensor(losses))))
+print(
+    "Mean absolute error over {} forecasts: {:.4f}".format(
+        5 * len(loader), torch.mean(torch.tensor(losses))
+    )
+)
