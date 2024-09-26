@@ -45,8 +45,6 @@ with torch.no_grad():  # We don't need to calculate gradients for prediction
         predicted_mean, predicted_std = model(input_data)
 
 predicted_mean = predicted_mean.cpu()
-predicted_mean = torch.clamp(predicted_mean, 0.0, 1.0)
-
 predicted_image = predicted_mean.squeeze().numpy()
 
 print(
@@ -54,17 +52,26 @@ print(
         np.min(target_image), np.mean(target_image), np.max(target_image)
     )
 )
+
+print(
+    "predicted raw --> min: {:.5f} mean: {:.5f} max: {:.5f}".format(
+        np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
+    )
+)
+
+predicted_image = np.clip(predicted_image, 0.0, 1.0)
+
 print(
     "predicted --> min: {:.5f} mean: {:.5f} max: {:.5f}".format(
         np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
     )
 )
 
-fig, axs = plt.subplots(1, 4, figsize=(12, 5))
+fig, axs = plt.subplots(1, 3, figsize=(12, 5))
 
-for i in range(3):
-    axs[i].imshow(pred[i, ...].squeeze(), cmap="gray")
-    axs[i].set_title(f"Input Channel {i}" if i < 2 else "Target Image")
+for i in range(0,2):
+    axs[i].imshow(pred[i+1, ...].squeeze(), cmap="gray")
+    axs[i].set_title(f"Input Channel {i}" if i < 1 else "Target Image")
     axs[i].axis("off")  # Hide axes
 
 # Plot the target (ground truth) image
