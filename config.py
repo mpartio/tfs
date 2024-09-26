@@ -12,7 +12,7 @@ def get_args():
                         help='loss function to use (default: mae)')
     parser.add_argument('--dataset-size', type=str, default="10k", metavar='N',
                         help='size of dataset to use (default: 10k)')
-    parser.add_argument('--load-model-from', type=str, default=None, metavar='file',
+    parser.add_argument('--load-model-from', type=str, default='models/cc2-model.pth', metavar='file',
                         help='load model from file (default: models/cc2-model.pth)')
     parser.add_argument('--save-model-to', type=str, default='models/cc2-model.pth', metavar='file',
                         help='save model to file (default: models/cc2-model.pth)')
