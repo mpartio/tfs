@@ -8,9 +8,6 @@ class GaussianNLLLoss(nn.Module):
         self.var_reg_weight = var_reg_weight
 
     def forward(self, y_pred_mean, y_pred_std, y_true, debug=False):
-        # Ensure the predicted standard deviation is positive
-        y_pred_std = nn.functional.softplus(y_pred_std) + 1e-6
-
         var = y_pred_std**2  # Standard deviation to variance
 
         # Gaussian NLL Loss
