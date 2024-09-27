@@ -276,7 +276,6 @@ class Downsample(nn.Module):
         # Downsampling is *not* done with convolutional layers but
         # simply with a linear layer
 
-        assert dim == 192, "Number of channels must be 192"
         self.linear = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = nn.LayerNorm(4 * dim)
 
@@ -313,7 +312,6 @@ class Upsample(nn.Module):
     def __init__(self, dim):
         super(Upsample, self).__init__()
 
-        assert dim == 384, "Number of channels must be 384"
         self.linear1 = nn.Linear(dim, dim * 2, bias=False)
         self.linear2 = nn.Linear(dim // 2, dim // 2, bias=False)
         self.norm = nn.LayerNorm(dim // 2)
@@ -500,6 +498,11 @@ class GatedSkipConnection(nn.Module):
     def forward(self, skip, x):
         assert skip.shape == x.shape, "Skip and input tensor must have the same shape"
         B, H, W, C = x.shape
+        assert (
+            skip.shape[1:3] == self.gate.shape[1:3]
+        ), "Skip and gate must have same shape: {} vs {}".format(
+            skip.shape[1:3], self.gate.shape[1:3]
+        )
         gate_value = self.sigmoid(self.gate).expand(B, H, W, C)
 
         # Multiply the skip connection by the gate
@@ -582,8 +585,11 @@ class TransformerBlock(nn.Module):
         attn_windows = self.attn(x_windows, mask=self.patch_mask)
 
         # Reverse windows to original image
-        x = window_reverse(attn_windows, self.window_size, H_pad, W_pad, H, W)
+        attn_reversed = window_reverse(
+            attn_windows, self.window_size, H_pad, W_pad, H, W
+        )
 
+        x = x + attn_reversed
         # Reverse cyclic shift
         if self.shift_size > 0:
             x = torch.roll(x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
@@ -704,8 +710,6 @@ class CloudCastV2(nn.Module):
         self.var_head = nn.Conv2d(dim, 1, kernel_size=1)
         self.var_dropout = nn.Dropout(p=0.1)
 
-        self._initialize_variance_head()
-
         self.global_attn = GlobalAttentionLayer(dim, 6)
 
         self.norm1 = nn.LayerNorm(dim)
@@ -718,15 +722,15 @@ class CloudCastV2(nn.Module):
         # From (B, 1, 1, 128, 128) to (B, 1, 32, 32, 192)
         x = self.patch_embed(x)
 
-        #assert x.shape[1:] == (
+        # Store the tensor for skip connection
+        skip = x
+
+        # assert x.shape[1:] == (
         #    1,
         #    16,
         #    16,
         #    192,
-        #), f"Invalid shape after patch embedding: {x.shape}"
-        # Store the tensor for skip connection
-
-        skip = x
+        # ), f"Invalid shape after patch embedding: {x.shape}"
 
         # Encode 1, keep dimensions the same
         x = self.encoder1(x)
@@ -760,7 +764,7 @@ class CloudCastV2(nn.Module):
             x = x.reshape(B * P, H, W, C).permute(0, 3, 1, 2)
             mean = self.mean_head(x)
             variance_logits = self.var_head(x)
-            variance_logits = self.var_dropout(variance_logits)  # Apply dropout here
+            variance_logits = self.var_dropout(variance_logits)
             var = F.softplus(variance_logits) + 1e-6
             stde = torch.sqrt(var)
 
