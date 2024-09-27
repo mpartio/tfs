@@ -50,19 +50,23 @@ def count_trainable_parameters(model):
 def roll_forecast(model, x, y, steps):
     assert y.shape[1] == steps
 
-    total_loss = 0.0
+    total_loss = None
 
     for i in range(steps):
+        y_true = y[:, i, ...].unsqueeze(1)
         if args.loss_function == "mae" or args.loss_function == "mse":
             y_hat = model(x)
-            loss = criterion(y_hat, y[:, i, ...])
+            loss = criterion(y_hat, y_true)
             x = y_hat
         else:
             mean, stde = model(x)
-            loss = criterion(mean, stde, y[:, i, ...])
+            loss = criterion(mean, stde, y_true)
             x = mean
 
-        total_loss += loss.item()
+        if total_loss is None:
+            total_loss = loss
+        else:
+            total_loss += loss
 
     return total_loss / steps
 
@@ -118,7 +122,6 @@ if not found_existing_model:
 
 min_loss = 10000
 min_loss_epoch = None
-last_write_epoch = None
 
 use_amp = False
 
@@ -139,12 +142,7 @@ for epoch in range(1, args.epochs + 1):
         optimizer.zero_grad()
 
         with autocast_context():  # torch.autocast(device_type="cuda", dtype=torch.float16):
-            roll_forecast(model, inputs, targets, 1)
-            if args.loss_function == "mae" or args.loss_function == "mse":
-                loss = criterion(model(inputs), targets)
-            else:
-                loss = criterion(*model(inputs), targets)
-            # loss = criterion(*model(inputs), targets)
+            loss = roll_forecast(model, inputs, targets, 1)
             train_loss += loss.item()
 
         if use_amp:
@@ -219,19 +217,14 @@ for epoch in range(1, args.epochs + 1):
     if val_loss < min_loss:
         min_loss = val_loss
         min_loss_epoch = epoch
-        if last_write_epoch is not None and epoch - last_write_epoch > 10:
-            print("Saving model")
-            torch.save(model.state_dict(), "models/cc2-model.pth")
-            last_write_epoch = epoch
+        torch.save(model.state_dict(), args.save_model_to)
 
     if epoch >= 8 and epoch - min_loss_epoch > 10:
         print("No improvement in 10 epochs; early stopping")
         break
 
-    if epoch == 8:
+    if epoch == 8 and not found_existing_model:
         print("Saving model after warmup")
-        torch.save(model.state_dict(), "models/cc2-model.pth")
-        last_write_epoch = epoch
+        torch.save(model.state_dict(), args.save_model_to)
 
-print("Saving model")
-torch.save(model.state_dict(), "models/cc2-model.pth")
+print("Training done")
