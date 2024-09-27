@@ -48,13 +48,13 @@ predicted_mean = predicted_mean.cpu()
 predicted_image = predicted_mean.squeeze().numpy()
 
 print(
-    "target    --> min: {:.5f} mean: {:.5f} max: {:.5f}".format(
+    "target        --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
         np.min(target_image), np.mean(target_image), np.max(target_image)
     )
 )
 
 print(
-    "predicted raw --> min: {:.5f} mean: {:.5f} max: {:.5f}".format(
+    "predicted raw --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
         np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
     )
 )
@@ -62,7 +62,7 @@ print(
 predicted_image = np.clip(predicted_image, 0.0, 1.0)
 
 print(
-    "predicted --> min: {:.5f} mean: {:.5f} max: {:.5f}".format(
+    "predicted     --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
         np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
     )
 )
