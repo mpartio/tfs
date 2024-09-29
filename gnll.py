@@ -14,7 +14,5 @@ class GaussianNLLLoss(nn.Module):
         loss = 0.5 * torch.log(var) + 0.5 * ((y_true - y_pred_mean) ** 2) / var
 
         var_reg = self.var_reg_weight * torch.mean(var)
-        if debug:
-            total_loss = loss.mean() + var_reg
-            print(f"Total loss: {total_loss.item()}, Var regularization: {var_reg.item()}")
+
         return loss.mean() + var_reg
