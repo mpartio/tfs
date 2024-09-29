@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from gnll import GaussianNLLLoss
 from betanll import BetaNLLLoss
 from hete import HeteroscedasticLoss
-from cc2 import *
+from cc2 import CloudCastV2
 from tqdm import tqdm
 from config import get_args
 
@@ -75,7 +75,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-model = CloudCastV2(dim=192, patch_size=(8, 8))
+model = CloudCastV2(dim=args.dim, patch_size=args.patch_size)
 
 print(model)
 num_params = count_trainable_parameters(model)
@@ -94,8 +94,9 @@ model = model.to(device)
 
 train_loader, val_loader = read_data()
 
+var_reg_weight = 1e-2
 if args.loss_function == "gaussian_nll":
-    criterion = GaussianNLLLoss(var_reg_weight=1e-2)
+    criterion = GaussianNLLLoss(var_reg_weight=var_reg_weight)
 elif args.loss_function == "beta_nll":
     criterion = BetaNLLLoss()
 elif args.loss_function == "mae":
@@ -111,6 +112,20 @@ lr = 3e-6 if not found_existing_model else 1e-6
 
 # Kun LR=0.000005 niin hiukan syvempi malli alkoi oppia
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+#optimizer = torch.optim.Adam(
+#    [
+#        {
+#            "params": model.mean_head.parameters(),
+#            "lr": 1e-6,
+#        },
+#        {
+#            "params": model.var_head.parameters(),
+#            "lr": 3e-5,
+#        },
+#    ],
+#   weight_decay=1e-4,
+#)
+
 lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, patience=3, factor=0.5
 )
@@ -226,5 +241,9 @@ for epoch in range(1, args.epochs + 1):
     if epoch == 8 and not found_existing_model:
         print("Saving model after warmup")
         torch.save(model.state_dict(), args.save_model_to)
+
+    if args.loss_function == "gaussian_nll" and epoch and epoch % 25 == 0:
+        criterion.var_reg_weight *= 2
+        print("Doubled var_reg_weight to", criterion.var_reg_weight)
 
 print("Training done")
