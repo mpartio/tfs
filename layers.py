@@ -97,6 +97,74 @@ def create_relative_position_index(window_size):
     return relative_position_index
 
 
+class ProbabilisticPredictionHeadWithConv(nn.Module):
+    def __init__(self, dim):
+        super(ProbabilisticPredictionHeadWithConv, self).__init__()
+        # self.mean_head = nn.Conv2d(
+        #    in_channels=dim, out_channels=1, kernel_size=5, padding=2
+        # )
+        self.mean_head = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(inplace=True),
+        )
+        #        self.var_head = nn.Conv2d(
+        #            in_channels=dim, out_channels=1, kernel_size=5, padding=2
+        #        )
+        self.var_head = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        mean = self.mean_head(x)
+        log_var = self.var_head(x)
+        var = F.softplus(log_var) + 1e-6
+
+        mean = mean.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        var = var.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+
+        return mean, torch.sqrt(var)
+
+
+class MeanPredictionHead(nn.Module):
+    def __init__(self):
+        super(MeanPredictionHead, self).__init__()
+        # self.conv = nn.Conv2d(1, 1, kernel_size=3, padding=1)
+        self.linear = nn.Linear(1, 1)
+        self.activation = nn.Sigmoid()
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        # x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        x = self.linear(x)
+        x = self.activation(x)
+        return x
+
+
+class ProbabilisticPredictionHead(nn.Module):
+    def __init__(self, dim):
+        super(ProbabilisticPredictionHead, self).__init__()
+        self.mean_head = nn.Linear(dim, 1)
+        self.var_head = nn.Linear(dim, 1)
+
+    def forward(self, x):
+        mean = self.mean_head(x)
+        log_var = self.var_head(x)
+        var = F.softplus(log_var) + 1e-6
+
+        return mean, torch.sqrt(var)
+
+
 class PatchEmbeddingWithTemporal(nn.Module):
     def __init__(self, patch_size, dim, stride):
         super(PatchEmbeddingWithTemporal, self).__init__()
@@ -512,6 +580,33 @@ class PatchRecoveryRaw(nn.Module):
         x = x.view(B, P, self.dim, rec_H, rec_W).permute(0, 1, 3, 4, 2)
 
         return x
+
+
+class ConvolvedSkipConnection(nn.Module):
+    def __init__(self, dim):
+        super(ConvolvedSkipConnection, self).__init__()
+
+        # self.skip_conv = nn.Conv2d(dim, dim, kernel_size=3, padding=1)
+        self.x_conv = nn.Conv2d(dim * 2, dim, kernel_size=3, padding=1)
+        self.norm = nn.BatchNorm2d(dim)
+        self.relu = nn.ReLU()
+
+    def forward(self, skip, x):
+        assert skip.shape == x.shape, "Skip and input tensor must have the same shape"
+        B, T, H, W, C = x.shape
+
+        skip = skip.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+
+        # skip = self.skip_conv(skip)
+
+        x = torch.cat((x, skip), dim=1)  # Concatenate along channel dimension
+        x = self.x_conv(x)
+
+        x = self.norm(x)
+        x = self.relu(x)
+
+        return x.view(B, T, C, H, W).permute(0, 1, 3, 4, 2)
 
 
 class GatedSkipConnection(nn.Module):
