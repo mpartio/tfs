@@ -11,7 +11,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-model = CloudCastV2(dim=192, patch_size=(8,8))
+model = CloudCastV2(dim=args.dim, patch_size=args.patch_size)
 
 try:
     model.load_state_dict(torch.load(args.load_model_from, weights_only=True))
