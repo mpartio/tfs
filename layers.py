@@ -165,6 +165,108 @@ class ProbabilisticPredictionHead(nn.Module):
         return mean, torch.sqrt(var)
 
 
+class MixtureBetaPredictionHeadWithConv(nn.Module):
+    def __init__(self, dim):
+        super(MixtureBetaPredictionHeadWithConv, self).__init__()
+        self.alpha1_head = nn.Conv2d(
+            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        )
+        self.beta1_head = nn.Conv2d(
+            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        )
+        self.alpha2_head = nn.Conv2d(
+            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        )
+        self.beta2_head = nn.Conv2d(
+            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        )
+
+        self.weight_head = nn.Conv2d(
+            in_channels=dim, out_channels=2, kernel_size=3, padding=1
+        )
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)  # Reshape for Conv2d
+
+        alpha1 = F.softplus(self.alpha1_head(x)) + 1e-6
+        beta1 = F.softplus(self.beta1_head(x)) + 1e-6
+        alpha2 = F.softplus(self.alpha2_head(x)) + 1e-6
+        beta2 = F.softplus(self.beta2_head(x)) + 1e-6
+
+        weights = F.softmax(
+            self.weight_head(x), dim=1
+        )  # Conv2d outputs spatial weights
+
+        alpha1 = alpha1.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        beta1 = beta1.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        alpha2 = alpha2.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        beta2 = beta2.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        weights = weights.permute(0, 2, 3, 1).view(B, T, H, W, 2)
+
+        return alpha1, beta1, alpha2, beta2, weights
+
+
+class MixtureBetaPredictionHeadLinear(nn.Module):
+    def __init__(self, dim):
+        super(MixtureBetaPredictionHeadLinear, self).__init__()
+        # Predict parameters for two Beta distributions
+        self.alpha1_head = nn.Linear(dim, 1)
+        self.beta1_head = nn.Linear(dim, 1)
+        self.alpha2_head = nn.Linear(dim, 1)
+        self.beta2_head = nn.Linear(dim, 1)
+
+        # Predict weights for the mixture of the two Beta distributions
+        self.weight_head = nn.Linear(dim, 2)  # Two weights w1, w2 for the mixture
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H * W, C)
+        # alpha1 = F.softplus(x[:, :, :, :, 0]).unsqueeze(-1) + 1e-6
+        # beta1 = F.softplus(x[:, :, :, :, 1]).unsqueeze(-1) + 1e-6
+        # alpha2 = F.softplus(x[:, :, :, :, 2]).unsqueeze(-1) + 1e-6
+        # beta2 = F.softplus(x[:, :, :, :, 3]).unsqueeze(-1) + 1e-6
+
+        # weights = F.softmax(x[:, :, :, :, -2:], dim=-1)  # Predict w1, w2
+
+        assert (
+            torch.max(x) <= 100
+        ), "Input to MixtureBetaPredictionHeadLinear is too large {}".format(
+            torch.amax(x, dim=(0, 1))
+        )
+        alpha1 = F.softplus(self.alpha1_head(x)) + 1e-6
+        beta1 = F.softplus(self.beta1_head(x)) + 1e-6
+        alpha2 = F.softplus(self.alpha2_head(x)) + 1e-6
+        beta2 = F.softplus(self.beta2_head(x)) + 1e-6
+
+        # Predict weights and apply softmax to ensure they sum to 1
+        weights = F.softmax(self.weight_head(x), dim=-1)  # Predict w1, w2
+
+        alpha1 = alpha1.view(B, T, H, W, 1)
+        beta1 = beta1.view(B, T, H, W, 1)
+        alpha2 = alpha2.view(B, T, H, W, 1)
+        beta2 = beta2.view(B, T, H, W, 1)
+        weights = weights.view(B, T, H, W, 2)
+
+        return alpha1, beta1, alpha2, beta2, weights
+
+
+class MixtureBetaPredictionHead(nn.Module):
+    def __init__(self):
+        super(MixtureBetaPredictionHead, self).__init__()
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        alpha1 = F.softplus(x[:, :, :, :, 0]).unsqueeze(-1) + 1e-6
+        beta1 = F.softplus(x[:, :, :, :, 1]).unsqueeze(-1) + 1e-6
+        alpha2 = F.softplus(x[:, :, :, :, 2]).unsqueeze(-1) + 1e-6
+        beta2 = F.softplus(x[:, :, :, :, 3]).unsqueeze(-1) + 1e-6
+
+        weights = F.softmax(x[:, :, :, :, -2:], dim=-1)  # Predict w1, w2
+
+        return alpha1, beta1, alpha2, beta2, weights
+
+
 class PatchEmbeddingWithTemporal(nn.Module):
     def __init__(self, patch_size, dim, stride):
         super(PatchEmbeddingWithTemporal, self).__init__()
