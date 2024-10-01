@@ -9,42 +9,9 @@ from hete import HeteroscedasticLoss
 from cc2 import CloudCastV2
 from tqdm import tqdm
 from config import get_args
+from util import *
 
 args = get_args()
-
-
-def read_data():
-    train_loader, val_loader = None, None
-
-    for ds in ("train", "val"):
-        data = np.load(f"{ds}-{args.dataset_size}.npz")["arr_0"]
-        #        data = data.reshape(int(data.shape[0] / 3), 3, 128, 128, 1)
-        #        x_data = data[:, :2, ...]
-        #        y_data = data[:, 2:3, ...]
-
-        data = data.reshape(data.shape[0] // 2, 2, data.shape[1], data.shape[2], 1)
-        x_data = data[:, 0:1, ...]
-        y_data = data[:, 1:2, ...]
-        x_data = torch.tensor(x_data, dtype=torch.float32)
-        y_data = torch.tensor(y_data, dtype=torch.float32)
-
-        x_data = x_data.permute(0, 1, 4, 2, 3)
-        y_data = y_data.permute(0, 1, 4, 2, 3)
-
-        print("{} number of samples: {}".format(ds, x_data.shape[0]))
-        dataset = TensorDataset(x_data, y_data)
-        dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-
-        if ds == "train":
-            train_loader = dataloader
-        else:
-            val_loader = dataloader
-
-    return train_loader, val_loader
-
-
-def count_trainable_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def roll_forecast(model, x, y, steps):
@@ -92,7 +59,7 @@ except FileNotFoundError:
 model.loss_type = args.loss_function
 model = model.to(device)
 
-train_loader, val_loader = read_data()
+train_loader, val_loader = read_data(dataset=args.datase)
 
 var_reg_weight = 1e-2
 if args.loss_function == "gaussian_nll":
@@ -108,11 +75,11 @@ elif args.loss_function == "hete":
 
 assert criterion is not None
 
-lr = 3e-6 if not found_existing_model else 1e-6
+lr = 2e-5 if not found_existing_model else 5e-6
 
 # Kun LR=0.000005 niin hiukan syvempi malli alkoi oppia
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
-#optimizer = torch.optim.Adam(
+optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+# optimizer = torch.optim.Adam(
 #    [
 #        {
 #            "params": model.mean_head.parameters(),
@@ -124,10 +91,10 @@ optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 #        },
 #    ],
 #   weight_decay=1e-4,
-#)
+# )
 
 lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, patience=3, factor=0.5
+    optimizer, patience=4, factor=0.5
 )
 
 if not found_existing_model:
@@ -135,7 +102,7 @@ if not found_existing_model:
         optimizer, lr_lambda=lambda epoch: min(1, epoch / 8)
     )
 
-min_loss = 10000
+min_loss = None
 min_loss_epoch = None
 
 use_amp = False
@@ -216,34 +183,52 @@ for epoch in range(1, args.epochs + 1):
             )
         )
     else:
+        a = "Mean%"
+        b = "Stde%"
+        if args.loss_function == "beta_nll":
+            # a = "alpha"
+            # b = "beta"
+            print("alpha: {:.3f} beta: {:.3f}".format(mean, stde))
+            xmean = 100 * (mean / (mean + stde))
+            stde = 100 * np.sqrt(
+                (mean * stde) / ((mean + stde) ** 2 * (mean + stde + 1))
+            )
+            mean = xmean
+        else:
+            mean *= 100
+            stde *= 100
+
         print(
-            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} Mean%: {:.2f} Stde%: {:.3f} LRx1M: {:.3f}".format(
+            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} {}: {:.2f} {}: {:.3f} LRx1M: {:.3f}".format(
                 epoch,
                 args.epochs,
                 min_loss_epoch,
                 train_loss,
                 val_loss,
-                100 * mean,
-                100 * stde,
+                a,
+                mean,
+                b,
+                stde,
                 1e6 * optimizer.param_groups[0]["lr"],
             )
         )
 
-    if val_loss < min_loss:
+    if min_loss is None or val_loss < min_loss:
         min_loss = val_loss
         min_loss_epoch = epoch
         torch.save(model.state_dict(), args.save_model_to)
 
-    if epoch >= 8 and epoch - min_loss_epoch > 10:
-        print("No improvement in 10 epochs; early stopping")
+    if epoch >= 8 and epoch - min_loss_epoch > 12:
+        print("No improvement in 12 epochs; early stopping")
         break
 
     if epoch == 8 and not found_existing_model:
         print("Saving model after warmup")
         torch.save(model.state_dict(), args.save_model_to)
 
-    if args.loss_function == "gaussian_nll" and epoch and epoch % 25 == 0:
+    if args.loss_function == "gaussian_nll" and epoch and epoch % 20 == 0:
         criterion.var_reg_weight *= 2
+        min_loss = None
         print("Doubled var_reg_weight to", criterion.var_reg_weight)
 
 print("Training done")
