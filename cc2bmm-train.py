@@ -52,14 +52,13 @@ try:
 except FileNotFoundError:
     print("No model found, starting from scratch")
 
-model.loss_type = args.loss_function
 model = model.to(device)
 
-train_loader, val_loader = read_data(dataset_size=args.dataset_size)
+train_loader, val_loader = read_data(dataset_size=args.dataset_size, batch_size=args.batch_size)
 
 criterion = MixtureBetaNLLLoss()
 
-lr = 2e-5 if not found_existing_model else 5e-6
+lr = 2e-5 if not found_existing_model else 2e-6
 
 optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
