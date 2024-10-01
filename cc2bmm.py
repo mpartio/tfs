@@ -39,7 +39,7 @@ from reference_layers import (
 
 
 class CloudCastV2(nn.Module):
-    def __init__(self, patch_size, dim, stride=None):
+    def __init__(self, patch_size, dim, stride=None, num_mix=2):
         super(CloudCastV2, self).__init__()
         if stride is None:
             stride = patch_size
@@ -66,19 +66,33 @@ class CloudCastV2(nn.Module):
 
         self.upsample2 = Upsample(dim * 4)
 
+        self.transformer_block3 = nn.ModuleList()
+
+        for _ in range(2):
+            self.transformer_block3.append(
+                ViTBlock(dim=dim * 2, num_heads=4, mlp_dim=1024)
+            )
+
         self.conv_skip2 = ConvolvedSkipConnection(dim * 2)
 
         self.upsample1 = Upsample(dim * 2)
+
+        self.transformer_block4 = nn.ModuleList()
+
+        for _ in range(2):
+            self.transformer_block4.append(ViTBlock(dim=dim, num_heads=4, mlp_dim=1024))
 
         self.conv_skip1 = ConvolvedSkipConnection(dim)
 
         self.patch_recover = PatchRecovery(
             dim=dim,
-            output_dim=dim,# 6, #2,
+            output_dim=dim,  # 6, #2,
             patch_size=patch_size,
         )
 
-        self.prediction_head = MixtureBetaPredictionHeadWithConv(dim)
+        self.prediction_head = MixtureBetaPredictionHeadWithConv(dim, num_mix)
+
+        self.num_mix = num_mix
 
     def forward(self, x):
         # Reproject input data to latent space
@@ -106,17 +120,21 @@ class CloudCastV2(nn.Module):
         # Upsample from (B, 8, 8, C*4) to (B, 16, 16, C*2)
         x = self.upsample2(x)
 
+        for block in self.transformer_block3:
+            x = block(x)
+
         x = self.conv_skip2(skip2, x)
 
         # Upsample from (B, 16, 16, 384) to (B, 32, 32, 192)
         x = self.upsample1(x)
 
+        for block in self.transformer_block4:
+            x = block(x)
+
         x = self.conv_skip1(skip1, x)
 
         x = self.patch_recover(x)
 
-        assert torch.isnan(x).sum() == 0, "NaN detected in patch recovery output"
+        alpha, beta, weights = self.prediction_head(x)
 
-        alpha1, beta1, alpha2, beta2, weights = self.prediction_head(x)
-
-        return alpha1, beta1, alpha2, beta2, weights
+        return alpha, beta, weights

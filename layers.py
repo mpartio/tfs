@@ -166,105 +166,92 @@ class ProbabilisticPredictionHead(nn.Module):
 
 
 class MixtureBetaPredictionHeadWithConv(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, num_mix):
         super(MixtureBetaPredictionHeadWithConv, self).__init__()
-        self.alpha1_head = nn.Conv2d(
-            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+
+        self.alpha_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
         )
-        self.beta1_head = nn.Conv2d(
-            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        self.beta_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
         )
-        self.alpha2_head = nn.Conv2d(
-            in_channels=dim, out_channels=1, kernel_size=3, padding=1
-        )
-        self.beta2_head = nn.Conv2d(
-            in_channels=dim, out_channels=1, kernel_size=3, padding=1
+        self.weight_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
         )
 
-        self.weight_head = nn.Conv2d(
-            in_channels=dim, out_channels=2, kernel_size=3, padding=1
-        )
+        self.dropout = nn.Dropout(0.1)
+        self.num_mix = num_mix
 
     def forward(self, x):
         B, T, H, W, C = x.shape
+        x = self.dropout(x)
+
         x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)  # Reshape for Conv2d
 
-        alpha1 = F.softplus(self.alpha1_head(x)) + 1e-6
-        beta1 = F.softplus(self.beta1_head(x)) + 1e-6
-        alpha2 = F.softplus(self.alpha2_head(x)) + 1e-6
-        beta2 = F.softplus(self.beta2_head(x)) + 1e-6
+        alpha = F.softplus(self.alpha_head(x)) + 1e-6
+        beta = F.softplus(self.beta_head(x)) + 1e-6
+        weights = F.softmax(self.weight_head(x), dim=1)
 
-        weights = F.softmax(
-            self.weight_head(x), dim=1
-        )  # Conv2d outputs spatial weights
+        alpha = alpha.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        beta = beta.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        weights = weights.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
 
-        alpha1 = alpha1.permute(0, 2, 3, 1).view(B, T, H, W, 1)
-        beta1 = beta1.permute(0, 2, 3, 1).view(B, T, H, W, 1)
-        alpha2 = alpha2.permute(0, 2, 3, 1).view(B, T, H, W, 1)
-        beta2 = beta2.permute(0, 2, 3, 1).view(B, T, H, W, 1)
-        weights = weights.permute(0, 2, 3, 1).view(B, T, H, W, 2)
-
-        return alpha1, beta1, alpha2, beta2, weights
+        return alpha, beta, weights
 
 
 class MixtureBetaPredictionHeadLinear(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, num_mix):
         super(MixtureBetaPredictionHeadLinear, self).__init__()
-        # Predict parameters for two Beta distributions
-        self.alpha1_head = nn.Linear(dim, 1)
-        self.beta1_head = nn.Linear(dim, 1)
-        self.alpha2_head = nn.Linear(dim, 1)
-        self.beta2_head = nn.Linear(dim, 1)
 
-        # Predict weights for the mixture of the two Beta distributions
-        self.weight_head = nn.Linear(dim, 2)  # Two weights w1, w2 for the mixture
+        self.alpha_head = nn.Linear(dim, num_mix)
+        self.beta_head = nn.Linear(dim, num_mix)
+        self.weight_head = nn.Linear(dim, num_mix)
+        self.num_mix = num_mix
 
     def forward(self, x):
         B, T, H, W, C = x.shape
         x = x.view(B * T, H * W, C)
-        # alpha1 = F.softplus(x[:, :, :, :, 0]).unsqueeze(-1) + 1e-6
-        # beta1 = F.softplus(x[:, :, :, :, 1]).unsqueeze(-1) + 1e-6
-        # alpha2 = F.softplus(x[:, :, :, :, 2]).unsqueeze(-1) + 1e-6
-        # beta2 = F.softplus(x[:, :, :, :, 3]).unsqueeze(-1) + 1e-6
-
-        # weights = F.softmax(x[:, :, :, :, -2:], dim=-1)  # Predict w1, w2
 
         assert (
             torch.max(x) <= 100
         ), "Input to MixtureBetaPredictionHeadLinear is too large {}".format(
             torch.amax(x, dim=(0, 1))
         )
-        alpha1 = F.softplus(self.alpha1_head(x)) + 1e-6
-        beta1 = F.softplus(self.beta1_head(x)) + 1e-6
-        alpha2 = F.softplus(self.alpha2_head(x)) + 1e-6
-        beta2 = F.softplus(self.beta2_head(x)) + 1e-6
+        alpha = F.softplus(self.alpha_head(x)) + 1e-6
+        beta = F.softplus(self.beta_head(x)) + 1e-6
 
         # Predict weights and apply softmax to ensure they sum to 1
         weights = F.softmax(self.weight_head(x), dim=-1)  # Predict w1, w2
 
-        alpha1 = alpha1.view(B, T, H, W, 1)
-        beta1 = beta1.view(B, T, H, W, 1)
-        alpha2 = alpha2.view(B, T, H, W, 1)
-        beta2 = beta2.view(B, T, H, W, 1)
-        weights = weights.view(B, T, H, W, 2)
+        alpha = alpha.view(B, T, H, W, self.num_mix)
+        beta = beta.view(B, T, H, W, self.num_mix)
+        weights = weights.view(B, T, H, W, self.num_mix)
 
-        return alpha1, beta1, alpha2, beta2, weights
+        return alpha, beta, weights
 
 
 class MixtureBetaPredictionHead(nn.Module):
-    def __init__(self):
+    def __init__(self, num_mix):
         super(MixtureBetaPredictionHead, self).__init__()
+        self.num_mix = num_mix
 
     def forward(self, x):
         B, T, H, W, C = x.shape
-        alpha1 = F.softplus(x[:, :, :, :, 0]).unsqueeze(-1) + 1e-6
-        beta1 = F.softplus(x[:, :, :, :, 1]).unsqueeze(-1) + 1e-6
-        alpha2 = F.softplus(x[:, :, :, :, 2]).unsqueeze(-1) + 1e-6
-        beta2 = F.softplus(x[:, :, :, :, 3]).unsqueeze(-1) + 1e-6
 
-        weights = F.softmax(x[:, :, :, :, -2:], dim=-1)  # Predict w1, w2
+        assert C % 3 == 0, "Invalid number of channels for MixtureBetaPredictionHead"
 
-        return alpha1, beta1, alpha2, beta2, weights
+        n = self.num_mix
+        alpha = F.softplus(x[:, :, :, :, :n]) + 1e-6
+        beta = F.softplus(x[:, :, :, :, n:]) + 1e-6
+        weights = F.softmax(x[:, :, :, :, 2 * n :], dim=-1)
+
+        if len(alpha.shape) == 4:
+            alpha = alpha.unsqueeze(-1)
+            beta = beta.unsqueeze(-1)
+            weights = weights.unsqueeze(-1)
+
+        assert alpha.shape == beta.shape == weights.shape, "Invalid shape for output"
+        return alpha, beta, weights
 
 
 class PatchEmbeddingWithTemporal(nn.Module):

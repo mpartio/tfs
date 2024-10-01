@@ -54,7 +54,9 @@ except FileNotFoundError:
 
 model = model.to(device)
 
-train_loader, val_loader = read_data(dataset_size=args.dataset_size, batch_size=args.batch_size)
+train_loader, val_loader = read_data(
+    dataset_size=args.dataset_size, batch_size=args.batch_size
+)
 
 criterion = MixtureBetaNLLLoss()
 
@@ -109,7 +111,7 @@ for epoch in range(1, args.epochs + 1):
 
     train_loss /= len(train_loader)
 
-    a1, b1, a2, b2, w1, w2 = [], [], [], [], [], []
+    alpha_s, beta_s, weights_s = [], [], []
 
     model.eval()
 
@@ -119,27 +121,31 @@ for epoch in range(1, args.epochs + 1):
         for inputs, targets in val_loader:
             inputs, targets = inputs.to(device), targets.to(device)
 
-            alpha1, beta1, alpha2, beta2, weights = model(inputs)
-            loss = criterion(alpha1, beta1, alpha2, beta2, weights, targets)
-            a1.append(torch.mean(alpha1).item())
-            b1.append(torch.mean(beta1).item())
-            a2.append(torch.mean(alpha2).item())
-            b2.append(torch.mean(beta2).item())
-            w1.append(torch.mean(weights[..., 0]).item())
-            w2.append(torch.mean(weights[..., 1]).item())
+            alpha, beta, weights = model(inputs)
+            loss = criterion(alpha, beta, weights, targets)
+            alpha_s.append(torch.mean(alpha, dim=0).cpu().numpy())
+            beta_s.append(torch.mean(beta, dim=0).cpu().numpy())
+            weights_s.append(torch.mean(weights, dim=0).cpu().numpy())
 
             val_loss += loss.item()
 
             assert np.isnan(val_loss) == 0, "NaN in validation loss"
     val_loss /= len(val_loader)
-    a1 = torch.tensor(a1).mean().item()
-    b1 = torch.tensor(b1).mean().item()
-    a2 = torch.tensor(a2).mean().item()
-    b2 = torch.tensor(b2).mean().item()
-    w1 = torch.tensor(w1).mean().item()
-    w2 = torch.tensor(w2).mean().item()
 
-    #    mean = torch.mean(means).item()
+    alpha_s = np.asarray(alpha_s)
+    beta_s = np.asarray(beta_s)
+    weights_s = np.asarray(weights_s)
+
+    alpha_s = alpha_s.mean(axis=(0, 1, 2, 3))
+    beta_s = beta_s.mean(axis=(0, 1, 2, 3))
+    weights_s = weights_s.mean(axis=(0, 1, 2, 3))
+
+    def format_beta(alpha, beta, weights):
+        ret = ""
+        for i in range(alpha.shape[0]):
+            ret += f"a{i}: {alpha[i]:.3f}, b{i}: {beta[i]:.3f}, w{i}: {weights[i]:.3f} "
+
+        return ret
 
     if epoch <= 10 and not found_existing_model:
         lambda_scheduler.step()
@@ -147,18 +153,13 @@ for epoch in range(1, args.epochs + 1):
         lr_scheduler.step(val_loss)  # Reduce LR if validation loss has plateaued
 
     print(
-        "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} a1: {:.3f} b1: {:.3f} w1: {:.3f} a2: {:.3f} b2: {:.3f} w2: {:.3f} LRx1M: {:.3f}".format(
+        "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} {} LRx1M: {:.3f}".format(
             epoch,
             args.epochs,
             min_loss_epoch,
             train_loss,
             val_loss,
-            a1,
-            b1,
-            w1,
-            a2,
-            b2,
-            w2,
+            format_beta(alpha_s, beta_s, weights_s),
             1e6 * optimizer.param_groups[0]["lr"],
         )
     )
