@@ -59,7 +59,7 @@ except FileNotFoundError:
 model.loss_type = args.loss_function
 model = model.to(device)
 
-train_loader, val_loader = read_data(dataset=args.datase)
+train_loader, val_loader = read_data(dataset_size=args.dataset_size)
 
 var_reg_weight = 1e-2
 if args.loss_function == "gaussian_nll":
