@@ -78,11 +78,11 @@ class PatchEmbedding(nn.Module):
         )
 
     def forward(self, x):
-        B, T, C, H, W = x.shape
-        x = x.view(B * T, C, H, W)
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
         x = self.proj(x)
         _, _, out_H, out_W = x.shape
-        x = x.view(B, T, out_H, out_W, -1)
+        x = x.reshape(B, T, out_H, out_W, -1)
         return x
 
 
@@ -104,6 +104,29 @@ class PatchRecovery(nn.Module):
         x = self.recover(x)
         x = x.view(B, T, x.shape[1], x.shape[2], x.shape[3]).permute(0, 1, 3, 4, 2)
         return x
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
+        self.norm1 = nn.BatchNorm2d(in_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
+        self.norm2 = nn.BatchNorm2d(in_channels)
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        residual = x
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x += residual  # Add residual connection
+        x = x.view(B, T, C, H, W).permute(0, 1, 3, 4, 2)
+        return self.relu(x)
 
 
 class ViTBlock(nn.Module):
