@@ -50,7 +50,7 @@ class CloudCastV2(nn.Module):
 
         self.transformer_block1 = nn.ModuleList()
 
-        for _ in range(1):
+        for _ in range(2):
             self.transformer_block1.append(
                 ViTBlock(dim=dim * 2, num_heads=4, mlp_dim=1024)
             )
@@ -59,9 +59,9 @@ class CloudCastV2(nn.Module):
 
         self.transformer_block2 = nn.ModuleList()
 
-        for _ in range(1):
+        for _ in range(2):
             self.transformer_block2.append(
-                ViTBlock(dim=dim * 4, num_heads=4, mlp_dim=2048)
+                ViTBlock(dim=dim * 4, num_heads=8, mlp_dim=2048)
             )
 
         self.upsample2 = Upsample(dim * 4)
