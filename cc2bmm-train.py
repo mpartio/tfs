@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
 from mbetanll import MixtureBetaNLLLoss
 from cc2bmm import CloudCastV2
@@ -33,6 +34,8 @@ def roll_forecast(model, x, y, steps):
 
     return total_loss / steps
 
+
+print("Starting training at", datetime.now())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -178,4 +181,4 @@ for epoch in range(1, args.epochs + 1):
         torch.save(model.state_dict(), args.save_model_to)
 
 
-print("Training done")
+print("Training done at", datetime.now())
