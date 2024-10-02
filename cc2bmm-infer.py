@@ -143,7 +143,7 @@ weights = weights.cpu().numpy().squeeze()
 for i in range(alpha.shape[-1]):
     print(
         "alpha{}: {:.3f}, beta{}: {:.3f}, w{}: {:.3f}".format(
-            i, alpha[..., i], i, beta[..., i], i, weights[..., i]
+            i, np.mean(alpha[..., i]), i, np.mean(beta[..., i]), i, np.mean(weights[..., i])
         )
     )
 
