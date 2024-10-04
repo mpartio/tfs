@@ -125,7 +125,7 @@ class CloudCastV2(nn.Module):
 
     def forward(self, x):
         # Reproject input data to latent space
-        # From (B, 1, 1, 128, 128) to (B, 1, 32, 32, C)
+        # From (B, 1, 128, 128, C) to (B, 1, 32, 32, C)
         x = self.patch_embed(x)
 
         # Store the tensor for skip connection
