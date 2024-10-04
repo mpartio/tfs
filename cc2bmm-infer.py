@@ -8,8 +8,10 @@ from cc2bmm import CloudCastV2
 
 args = get_args()
 
-args.load_model_from = "models/cc2bmm-model.pth"
-args.save_model_to = "models/cc2bmm-model.pth"
+if args.run_name is None:
+    print("Please provide a run name")
+    sys.exit(1)
+
 
 
 def plot_beta(alpha, beta, weights):
@@ -74,8 +76,8 @@ print("Using device", device)
 model = CloudCastV2(dim=args.dim, patch_size=args.patch_size)
 
 try:
-    model.load_state_dict(torch.load(args.load_model_from, weights_only=True))
-    print("Model loaded successfully from ", args.load_model_from)
+    model.load_state_dict(torch.load(f"runs/{args.run_name}/model.pth", weights_only=True))
+    print("Model loaded successfully from ", f"runs/{args.run_name}/model.pth")
 except FileNotFoundError:
     print("No model found, exiting")
     sys.exit(1)
@@ -103,22 +105,14 @@ predicted_mean = predicted_mean.cpu()
 predicted_image = predicted_mean.squeeze().numpy()
 
 print(
-    "target        --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
-        np.min(target_image), np.mean(target_image), np.max(target_image)
+        "target        --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
+        np.min(target_image), np.mean(target_image), np.std(target_image), np.max(target_image)
     )
 )
 
 print(
-    "predicted raw --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
-        np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
-    )
-)
-
-predicted_image = np.clip(predicted_image, 0.0, 1.0)
-
-print(
-    "predicted     --> min: {:.4f} mean: {:.4f} max: {:.4f}".format(
-        np.min(predicted_image), np.mean(predicted_image), np.max(predicted_image)
+        "predicted     --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
+        np.min(predicted_image), np.mean(predicted_image), np.std(predicted_image), np.max(predicted_image)
     )
 )
 
