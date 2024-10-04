@@ -24,4 +24,6 @@ def get_args():
                         help='dimension of latent space (default: 192)')
     parser.add_argument('--patch-size', type=parse_size, default="4x4", metavar='NxN',
                         help='patch size hxw (default: 4x4)')
+    parser.add_argument('--run-name', type=str, default=None, metavar='name',
+                        help='name of run (default: None)')
     return parser.parse_args()
