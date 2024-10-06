@@ -29,7 +29,7 @@ def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False
     for ds in ("train", "val"):
         s_len = n_hist + n_futu
 
-        data = np.load(f"{ds}-{dataset_size}.npz")["arr_0"]
+        data = np.load(f"data/{ds}-{dataset_size}.npz")["arr_0"]
 
         if not hourly:
             x_data, y_data = instant_split(data, s_len)
