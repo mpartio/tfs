@@ -84,13 +84,16 @@ except FileNotFoundError:
 
 model = model.to(device)
 
-pred = np.load("pred.npz")["arr_0"]  # (3, 128, 128, 1)
-pred = torch.tensor(pred, dtype=torch.float32)
+#pred = np.load("data/pred.npz")["arr_0"]  # (3, 128, 128, 1)
+pred = np.load("data/pred2.npz")["arr_0"]  # (5, 128, 128, 1)
 
+pred = torch.tensor(pred, dtype=torch.float32)
 model.eval()
 
-input_data = pred[:1, ...].unsqueeze(0).to(device)
-target_image = pred[1, ...].numpy().squeeze()
+#input_data = pred[:1, ...].unsqueeze(0).to(device)
+#target_image = pred[1, ...].numpy().squeeze()
+input_data = pred[0, ...].unsqueeze(0).unsqueeze(0).to(device)
+target_image = pred[-1, ...].numpy().squeeze()
 
 assert torch.min(input_data) >= 0.0 and torch.max(input_data) <= 1.0
 
@@ -100,7 +103,6 @@ with torch.no_grad():  # We don't need to calculate gradients for prediction
     mean = weights * (alpha / (alpha + beta))
     predicted_mean = torch.sum(mean, dim=-1, keepdim=True)
 
-print(predicted_mean.shape)
 predicted_mean = predicted_mean.cpu()
 predicted_image = predicted_mean.squeeze().numpy()
 
