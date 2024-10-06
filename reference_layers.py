@@ -4,6 +4,49 @@ import torch.nn.functional as F
 from timm.models.layers import DropPath
 
 
+def pad_tensor(x, window_size):
+    """Pad input tensor so that H and W are divisible by window_size."""
+    B, H, W, C = x.shape
+    pad_h = (window_size - H % window_size) % window_size
+    pad_w = (window_size - W % window_size) % window_size
+    padding = (0, 0, 0, pad_w, 0, pad_h)  # (left, right, top, bottom)
+
+    # Apply padding
+    x_padded = F.pad(x, padding)
+    return x_padded, pad_h, pad_w  # Return padding values for depadding later
+
+
+def depad_tensor(x_padded, pad_h, pad_w):
+    """Remove padding from the input tensor."""
+    if pad_h > 0:
+        x_padded = x_padded[:, :-pad_h, :, :]
+    if pad_w > 0:
+        x_padded = x_padded[:, :, :-pad_w, :]
+    return x_padded
+
+
+def window_partition(x, window_size):
+    """Split the input feature map into non-overlapping windows"""
+    x, pad_h, pad_w = pad_tensor(x, window_size)
+    B, H, W, C = x.shape
+    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+    windows = (
+        x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+    )
+    return windows, pad_h, pad_w
+
+
+def window_reverse(windows, window_size, H, W, pad_H, pad_W):
+    """Reverse the windows into the original image shape"""
+    B = int(windows.shape[0] / (H * W / window_size / window_size))
+    x = windows.view(
+        B, H // window_size, W // window_size, window_size, window_size, -1
+    )
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
+    x = depad_tensor(x, pad_H, pad_W)
+    return x
+
+
 class Downsample(nn.Module):
     def __init__(self, in_channels):
         super(Downsample, self).__init__()
@@ -187,7 +230,8 @@ class WindowAttention(nn.Module):
         self.scale = (dim // num_heads) ** -0.5
 
         # Define qkv projection layers
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.attn_drop = nn.Dropout(0.1)
         self.proj = nn.Linear(dim, dim)
 
         # Relative position bias table
@@ -195,40 +239,53 @@ class WindowAttention(nn.Module):
             torch.zeros((2 * window_size - 1, 2 * window_size - 1, num_heads))
         )
 
-        # Compute the relative position index
+        # Initialize the relative position index
         coords_h = torch.arange(self.window_size)
         coords_w = torch.arange(self.window_size)
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = (
-            coords_flatten[:, :, None] - coords_flatten[:, None, :]
-        )  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(
-            1, 2, 0
-        ).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += self.window_size - 1  # Shift to start from 0
+        coords = torch.stack(
+            torch.meshgrid([coords_h, coords_w])
+        )  # 2, window_size, window_size
+        coords_flatten = torch.flatten(coords, 1)  # 2, window_size*window_size
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()
+        relative_coords[:, :, 0] += self.window_size - 1
         relative_coords[:, :, 1] += self.window_size - 1
         relative_coords[:, :, 0] *= 2 * self.window_size - 1
-        self.relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        self.relative_position_index = relative_coords.sum(-1)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         B_, N, C = x.shape
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads)
-        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]  # B_, N, num_heads, head_dim
-        q = q * self.scale
-        attn = q @ k.transpose(-2, -1)
+        qkv = (
+            self.qkv(x)
+            .reshape(B_, N, 3, self.num_heads, C // self.num_heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
-        relative_position_bias = self.relative_position_bias_table[
-            self.relative_position_index.view(-1)
-        ]
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+
+        relative_position_bias = self.relative_position_bias_table.view(
+            -1, self.num_heads
+        )[self.relative_position_index.view(-1)]
         relative_position_bias = relative_position_bias.view(
             self.window_size * self.window_size, self.window_size * self.window_size, -1
         )
-        attn = attn + relative_position_bias.permute(2, 0, 1).unsqueeze(0)
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
+        attn = attn + relative_position_bias.unsqueeze(0)
 
-        attn = F.softmax(attn, dim=-1)
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(
+                1
+            ).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N)
+            attn = self.attn_drop(F.softmax(attn, dim=-1))
+        else:
+            attn = self.attn_drop(F.softmax(attn, dim=-1))
+
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
+        x = self.proj_drop(x)
         return x
 
 
@@ -263,52 +320,26 @@ class SwinBlock(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(dim, mlp_hidden_dim),
             nn.GELU(),
+            nn.Dropout(drop),
             nn.Linear(mlp_hidden_dim, dim),
             nn.Dropout(drop),
         )
 
     def forward(self, x):
-        B, T, H, W, C = x.shape
-        x = x.view(B * T, H, W, C)
+        B, T, H, W, C = x.shape  # input shape [B, T, H, W, C]
+        x = x.view(B * T, H, W, C)  # Merge batch and temporal dimensions
+
         shortcut = x
         x = self.norm1(x)
+        x_windows = window_partition(x, self.window_size)  # Partition into windows
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)
 
-        # Cyclically shift
-        if self.shift_size > 0:
-            shifted_x = torch.roll(
-                x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
-            )
-        else:
-            shifted_x = x
-
-        # Partition windows
-        x_windows = window_partition(
-            shifted_x, self.window_size
-        )  # Shape: (B*num_windows, window_size, window_size, C)
-        x_windows = x_windows.view(
-            -1, self.window_size * self.window_size, C
-        )  # Flatten windows
-
-        # Window-based multi-head self-attention
-        attn_windows = self.attn(x_windows)
-
-        # Merge windows back
+        attn_windows = self.attn(x_windows)  # Window attention
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
-        shifted_x = window_reverse(attn_windows, self.window_size, H, W)
+        x = window_reverse(attn_windows, self.window_size, H, W)
 
-        # Reverse cyclic shift
-        if self.shift_size > 0:
-            x = torch.roll(
-                shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2)
-            )
-        else:
-            x = shifted_x
-
-        x = x.view(B, H * W, C)
         x = shortcut + self.drop_path(x)
-
-        # MLP
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
-        x = x.view(B, T, H, W, C)
+        x = x.view(B, T, H, W, C)  # Un-merge the batch and temporal dimensions
         return x
