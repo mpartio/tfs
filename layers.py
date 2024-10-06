@@ -724,6 +724,95 @@ class GatedSkipConnection(nn.Module):
         return x + gated_skip
 
 
+class SwinTransformerBlock(nn.Module):
+    def __init__(self, dim, num_heads, window_size, shift_size, drop_path):
+        super(SwinTransformerBlock, self).__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+
+        # Layer norm before attention and feed-forward layers
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = WindowAttention(dim, num_heads, window_size)
+
+        # Layer norm and feed-forward network (MLP)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, 4 * dim),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(4 * dim, dim),
+            nn.Dropout(0.1),
+        )
+
+        self.patch_mask = None
+
+        if shift_size > 0:
+            self.patch_mask = torch.zeros(1, window_size, window_size, 1, 1)
+
+            for j in range(window_size):
+                for i in range(window_size):
+                    if j >= window_size - shift_size or i >= window_size - shift_size:
+                        self.patch_mask[0, j, i, 0, 0] = 1
+
+            # Repeat the mask for all heads to (almost) match the shape of attn
+            # "Almost", because we don't know the batch size yet
+            # (1, window_size ** 2, num_heads, window_size ** 2)
+            self.patch_mask = self.patch_mask.view(1, window_size**2, 1, 1).repeat(
+                1, 1, num_heads, window_size**2
+            )
+
+        self.drop_path = nn.Identity() if drop_path is None else DropPath(drop_path)
+
+#        self.gated_skip = GatedSkipConnection(
+#            dim, (input_resolution[0], input_resolution[1])
+#        )
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        assert torch.isnan(x).sum() == 0, "NaN values in input tensor"
+
+        skip = x.reshape(B, H * W, C)
+        x = self.norm1(x)
+        x = x.reshape(B, H, W, C)
+
+        # Cyclically shift
+        if self.shift_size > 0:
+            x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+
+        # Partition windows
+        x_windows, H_pad, W_pad = window_partition(
+            x, self.window_size
+        )  # Shape: (B*num_windows, window_size, window_size, C)
+        x_windows = x_windows.view(
+            -1, self.window_size * self.window_size, C
+        )  # Flatten windows
+
+        # W-MSA/SW-MSA (Window Multi-Head Self Attention)
+        attn_windows = self.attn(x_windows, mask=self.patch_mask)
+
+        # Reverse windows to original image
+        attn_reversed = window_reverse(
+            attn_windows, self.window_size, H_pad, W_pad, H, W
+        )
+
+        x = x + attn_reversed
+        # Reverse cyclic shift
+        if self.shift_size > 0:
+            x = torch.roll(x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+
+        # x = x.reshape(B, H * W, C)
+
+        # FFN and residual connection
+ #       x = self.gated_skip(skip.reshape(B, H, W, C), x)
+        x = self.drop_path(x)
+        x = x + self.mlp(self.norm2(x))
+        x = x.view(B, T, H, W, C)
+
+        return x
+
+
 class TransformerBlock(nn.Module):
     def __init__(
         self, dim, input_resolution, num_heads, window_size, shift_size, drop_path_ratio
