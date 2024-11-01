@@ -165,6 +165,70 @@ class ProbabilisticPredictionHead(nn.Module):
         return mean, torch.sqrt(var)
 
 
+class MultiScaleMixtureBetaPredictionHeadWithConv(nn.Module):
+    def __init__(self, dim, num_mix):
+        super(MultiScaleMixtureBetaPredictionHeadWithConv, self).__init__()
+
+        self.alpha_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
+        )
+        self.beta_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
+        )
+        self.weight_head = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
+        )
+
+        # Heads for refinement predictions
+        self.alpha_refine = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
+        )
+        self.beta_refine = nn.Conv2d(
+            in_channels=dim, out_channels=num_mix, kernel_size=3, padding=1
+        )
+
+        self.dropout = nn.Dropout(0.1)
+        self.num_mix = num_mix
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = self.dropout(x)
+
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)  # Reshape for Conv2d
+
+        # Predict at multiple scales and refine
+        # Start with low resolution
+        x_down = F.avg_pool2d(x, 4)
+        alpha_low = self.alpha_head(x_down)
+        beta_low = self.beta_head(x_down)
+
+        # Upsample and refine
+        alpha_up = F.interpolate(
+            alpha_low, size=x.shape[-2:], mode="bilinear", align_corners=False
+        )
+        beta_up = F.interpolate(
+            beta_low, size=x.shape[-2:], mode="bilinear", align_corners=False
+        )
+
+        # Predict refinement
+        alpha_refine = self.alpha_refine(x)
+        beta_refine = self.beta_refine(x)
+
+        # Combine
+        alpha = alpha_up + alpha_refine
+        beta = beta_up + beta_refine
+
+        alpha = F.softplus(alpha) + 1e-6
+        beta = F.softplus(beta) + 1e-6
+        weights = F.softmax(self.weight_head(x), dim=1) + 1e-6
+
+        alpha = alpha.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        beta = beta.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        weights = weights.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+
+        return alpha, beta, weights
+
+
 class MixtureBetaPredictionHeadWithConv(nn.Module):
     def __init__(self, dim, num_mix):
         super(MixtureBetaPredictionHeadWithConv, self).__init__()
@@ -765,9 +829,9 @@ class SwinTransformerBlock(nn.Module):
 
         self.drop_path = nn.Identity() if drop_path is None else DropPath(drop_path)
 
-#        self.gated_skip = GatedSkipConnection(
-#            dim, (input_resolution[0], input_resolution[1])
-#        )
+    #        self.gated_skip = GatedSkipConnection(
+    #            dim, (input_resolution[0], input_resolution[1])
+    #        )
 
     def forward(self, x):
         B, T, H, W, C = x.shape
@@ -805,7 +869,7 @@ class SwinTransformerBlock(nn.Module):
         # x = x.reshape(B, H * W, C)
 
         # FFN and residual connection
- #       x = self.gated_skip(skip.reshape(B, H, W, C), x)
+        #       x = self.gated_skip(skip.reshape(B, H, W, C), x)
         x = self.drop_path(x)
         x = x + self.mlp(self.norm2(x))
         x = x.view(B, T, H, W, C)
