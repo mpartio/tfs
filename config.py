@@ -12,18 +12,14 @@ def get_args():
                         help='input batch size for testing (default: 12)')
     parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 100)')
-    parser.add_argument('--loss-function', type=str, default='mae', metavar='LF',
-                        help='loss function to use (default: mae)')
     parser.add_argument('--dataset-size', type=str, default="10k", metavar='N',
                         help='size of dataset to use (default: 10k)')
-    parser.add_argument('--load-model-from', type=str, default='models/cc2-model.pth', metavar='file',
-                        help='load model from file (default: models/cc2-model.pth)')
-    parser.add_argument('--save-model-to', type=str, default='models/cc2-model.pth', metavar='file',
-                        help='save model to file (default: models/cc2-model.pth)')
     parser.add_argument('--dim', type=int, default=192, metavar='N',
                         help='dimension of latent space (default: 192)')
     parser.add_argument('--patch-size', type=parse_size, default="4x4", metavar='NxN',
                         help='patch size hxw (default: 4x4)')
     parser.add_argument('--run-name', type=str, default=None, metavar='name',
                         help='name of run (default: None)')
+    parser.add_argument('--num-mixtures', type=int, default=1, metavar='N',
+                        help='number of mixtures (default: 1)')
     return parser.parse_args()
