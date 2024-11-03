@@ -23,8 +23,6 @@ if args.run_name is None:
     args.run_name = randomname.get_name()
     print("No run name specified, generating a new random name:", args.run_name)
 
-run_dir = f"runs/{args.run_name}"
-os.makedirs(run_dir, exist_ok=True)
 
 bnll_criterion = MixtureBetaNLLLoss()
 l1_criterion = nn.L1Loss()
@@ -50,17 +48,17 @@ class LossWeightScheduler:
     def __init__(self, config):
         self.config = {
             "bnll": {
-                "initial": 1.0,
-                "final": 1.0,  # Stays constant
+                "initial": 0.7,
+                "final": 0.7,  # Stays constant
             },
             "smoothness": {
-                "initial": 1e-9,  # Start  small
-                "final": 1e-9,  # Gradually increase
+                "initial": 1e-5,  # Start  small
+                "final": 1e-4,  # Gradually increase
                 "warmup_epochs": 5,  # Optional warmup period
             },
             "reconstruction": {
-                "initial": 1e-9,
-                "final": 1e-9,  # Reduce over time
+                "initial": 20,
+                "final": 10,  # Reduce over time
             },
         }
         self.total_epochs = config["epochs"]
@@ -303,7 +301,7 @@ def roll_forecast(model, x, y, steps, loss_weights):
         total_loss = (
             loss_weights["bnll"] * bnll_loss
             + loss_weights["smoothness"] * apsl_loss
-            + loss_weights["reconstruction"] * recon_loss
+            + 10 * loss_weights["reconstruction"] * recon_loss
         )
         cumulative_loss += total_loss
         cumulative_bnll_loss += bnll_loss
@@ -316,27 +314,43 @@ def roll_forecast(model, x, y, steps, loss_weights):
     cumulative_recon_loss /= steps
     cumulative_smoothness_loss /= steps
 
-    return (
-        cumulative_loss,
-        cumulative_bnll_loss,
-        cumulative_recon_loss,
-        cumulative_smoothness_loss,
-        alpha,
-        beta,
-        weights,
-        prediction,
-        None,
+    return {
+        "loss": cumulative_loss,
+        "bnll_loss": cumulative_bnll_loss,
+        "recon_loss": cumulative_recon_loss,
+        "smoothness_loss": cumulative_smoothness_loss,
+        "alpha": alpha,
+        "beta": beta,
+        "weights": weights,
+        "prediction": prediction,
+    }
+
+
+def train(model, train_loader, val_loader, found_existing_model):
+
+    lr = 1e-4 if not found_existing_model else 1e-5
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=4, factor=0.5
     )
 
+    if not found_existing_model:
+        lambda_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda epoch: min(1, epoch / 8)
+        )
 
-training_start = datetime.now()
-print("Starting training at", training_start)
+    # Scheduler to adjust loss weights dynamically
+    scheduler = LossWeightScheduler({"epochs": args.epochs})
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    min_loss = None
+    min_loss_epoch = None
 
-print("Using device", device)
+    use_amp = False
 
-model = CloudCastV2(dim=args.dim, patch_size=args.patch_size, num_mix=args.num_mixtures)
+    scaler = torch.amp.GradScaler() if use_amp else None
+    autocast_context = autocast if use_amp else lambda: torch.enable_grad()
 
     config = vars(args)
     config["num_params"] = count_trainable_parameters(model)
@@ -350,190 +364,195 @@ model = CloudCastV2(dim=args.dim, patch_size=args.patch_size, num_mix=args.num_m
     ) as f:
         json.dump(vars(args), f)
 
-found_existing_model = False
-try:
-    model.load_state_dict(
-        torch.load(f"runs/{args.run_name}/model.pth", weights_only=True)
-    )
-    print("Model loaded from", f"runs/{args.run_name}/model.pth")
-    found_existing_model = True
-except FileNotFoundError:
-    print("No model found, starting from scratch")
-
-model = model.to(device)
-
-train_loader, val_loader = read_data(
-    dataset_size=args.dataset_size, batch_size=args.batch_size, hourly=True
-)
-
-bnll_criterion = MixtureBetaNLLLoss()
-#ssim_criterion = SSIMLoss()
-l1_criterion = nn.L1Loss()
-
-lr = 1e-4 if not found_existing_model else 1e-5
-
-optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-
-lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, patience=4, factor=0.5
-)
-
-if not found_existing_model:
-    lambda_scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lr_lambda=lambda epoch: min(1, epoch / 8)
-    )
-
-# Scheduler to adjust loss weights dynamically
-scheduler = LossWeightScheduler({"epochs": args.epochs})
-
-min_loss = None
-min_loss_epoch = None
-
-use_amp = False
-
-scaler = torch.amp.GradScaler() if use_amp else None
-autocast_context = autocast if use_amp else lambda: torch.enable_grad()
-
-for epoch in range(1, args.epochs + 1):
-    epoch_start_time = datetime.now()
-    model.train()
-
-    loss_weights = scheduler.get_weights(epoch)
-
-    train_loss = 0.0
-
-    for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader)):
-        assert torch.min(inputs) >= 0.0 and torch.max(inputs) <= 1.0
-        assert torch.min(targets) >= 0.0 and torch.max(targets) <= 1.0
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad()
-
-        with autocast_context():  # torch.autocast(device_type="cuda", dtype=torch.float16):
-            loss, _, _, _, _, _, _, _, _ = roll_forecast(
-                model, inputs, targets, 1, loss_weights
-            )
-            train_loss += loss.item()
-
-        if use_amp:
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-
-            # Apply gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            optimizer.step()
-
-    train_loss /= len(train_loader)
-    alpha_s, beta_s, weights_s = [], [], []
-
-    model.eval()
-
-    val_loss = 0.0
-    total_bnll_loss = 0.0
-    total_recon_loss = 0.0
-    total_smoothness_loss = 0.0
-    total_mean = 0.0
-
-    with torch.no_grad():
-
-        for inputs, targets in val_loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-
-            (
-                loss,
-                bnll_loss,
-                recon_loss,
-                smoothness_loss,
-                alpha,
-                beta,
-                weights,
-                mean,
-                var,
-            ) = roll_forecast(model, inputs, targets, 1, loss_weights)
-
-            alpha_s.append(torch.mean(alpha, dim=0).cpu().numpy())
-            beta_s.append(torch.mean(beta, dim=0).cpu().numpy())
-            weights_s.append(torch.mean(weights, dim=0).cpu().numpy())
-
-            val_loss += loss.item()
-            total_bnll_loss += bnll_loss.item()
-            total_recon_loss += recon_loss.item()
-            total_smoothness_loss += smoothness_loss.item()
-
-            total_mean += torch.mean(mean).item()
-
-            assert np.isnan(val_loss) == 0, "NaN in validation loss"
-
-    val_loss /= len(val_loader)
-    total_bnll_loss /= len(val_loader)
-    total_recon_loss /= len(val_loader)
-    total_smoothness_loss /= len(val_loader)
-    total_mean /= len(val_loader)
-
-    alpha_s = np.asarray(alpha_s).mean(axis=(0, 1, 2, 3))
-    beta_s = np.asarray(beta_s).mean(axis=(0, 1, 2, 3))
-    weights_s = np.asarray(weights_s).mean(axis=(0, 1, 2, 3))
-
-    def format_beta(alpha, beta, weights):
-        ret = ""
-        for i in range(alpha.shape[0]):
-            ret += f"a{i}: {alpha[i]:.3f}, b{i}: {beta[i]:.3f}, w{i}: {weights[i]:.3f} "
-
-        return ret
-
-    if epoch <= 10 and not found_existing_model:
-        lambda_scheduler.step()
-    else:
-        lr_scheduler.step(val_loss)  # Reduce LR if validation loss has plateaued
-
-    print(
-        "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} {} LRx1M: {:.3f}".format(
-            epoch,
-            args.epochs,
-            min_loss_epoch,
-            train_loss,
-            val_loss,
-            format_beta(alpha_s, beta_s, weights_s),
-            1e6 * optimizer.param_groups[0]["lr"],
-        )
-    )
-
-    saved = False
-    if epoch > 2 and (min_loss is None or val_loss < min_loss):
-        min_loss = val_loss
-        min_loss_epoch = epoch
-        saved = True
-        torch.save(model.state_dict(), f"{run_dir}/model.pth")
-
-    epoch_end_time = datetime.now()
-    epoch_results = {
-        "epoch": epoch,
-        "train_loss": train_loss,
-        "val_loss": val_loss,
-        "alpha": alpha_s.tolist(),
-        "beta": beta_s.tolist(),
-        "weights": weights_s.tolist(),
-        "epoch_start_time": epoch_start_time.isoformat(),
-        "epoch_end_time": epoch_end_time.isoformat(),
-        "duration": (epoch_end_time - epoch_start_time).total_seconds(),
-        "lr": optimizer.param_groups[0]["lr"],
-        "bnll_loss": total_bnll_loss * loss_weights["bnll"],
-        "recon_loss": total_recon_loss * loss_weights["reconstruction"],
-        "smoothness_loss": total_smoothness_loss * loss_weights["smoothness"],
-        "raw_bnll_loss": total_bnll_loss,
-        "raw_recon_loss": total_recon_loss,
-        "raw_smoothness_loss": total_smoothness_loss,
-        "bnll_weight": loss_weights["bnll"],
-        "recon_weight": loss_weights["reconstruction"],
-        "smoothness_weight": loss_weights["smoothness"],
-        "sampled_mean": total_mean,
-        "saved": saved,
+    grad_magnitudes = {
+        "bnll_loss": 0.0,
+        "recon_loss": 0.0,
+        "smoothness_loss": 0.0,
+        "total": 0.0,
     }
 
-    with open(
+    def save_grad_magnitude(name, grad, loss_name):
+        grad_magnitudes[loss_name] += grad.abs().sum().item()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.register_hook(
+                partial(save_grad_magnitude, grad_magnitudes, loss_name="total")
+            )
+
+    for epoch in range(1, args.epochs + 1):
+        epoch_start_time = datetime.now()
+        model.train()
+
+        loss_weights = scheduler.get_weights(epoch)
+
+        total_train_loss = 0.0
+
+        for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader)):
+            assert torch.min(inputs) >= 0.0 and torch.max(inputs) <= 1.0
+            assert torch.min(targets) >= 0.0 and torch.max(targets) <= 1.0
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            with autocast_context():  # torch.autocast(device_type="cuda", dtype=torch.float16):
+                loss = roll_forecast(model, inputs, targets, 1, loss_weights)
+                train_loss = loss["loss"]
+                total_train_loss += train_loss.item()
+
+            # optimizer.zero_grad()
+
+            if use_amp:
+                scaler.scale(train_loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # BEGIN CALCULATE GRADIENT MAGNITUDE
+
+                # Calculate individual gradient magnitudes
+                optimizer.zero_grad()  # Ensure gradients are zeroed at start
+                loss["bnll_loss"].backward(retain_graph=True)
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_magnitudes["bnll_loss"] += param.grad.abs().sum().item()
+
+                optimizer.zero_grad()  # Zero gradients before next backward pass
+                loss["recon_loss"].backward(retain_graph=True)
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_magnitudes["recon_loss"] += param.grad.abs().sum().item()
+
+                optimizer.zero_grad()  # Zero gradients before next backward pass
+                loss["smoothness_loss"].backward(retain_graph=True)
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_magnitudes["smoothness_loss"] += (
+                            param.grad.abs().sum().item()
+                        )
+
+                # END CALCULATE GRADIENT MAGNITUDE
+
+                optimizer.zero_grad()
+
+                train_loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                optimizer.step()
+
+        total_train_loss /= len(train_loader)
+        grad_magnitudes = {k: v / len(train_loader) for k, v in grad_magnitudes.items()}
+
+        alpha_s, beta_s, weights_s = [], [], []
+
+        model.eval()
+
+        total_val_loss = 0.0
+        total_bnll_loss = 0.0
+        total_recon_loss = 0.0
+        total_smoothness_loss = 0.0
+
+        with torch.no_grad():
+
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+
+                loss = roll_forecast(model, inputs, targets, 1, loss_weights)
+
+                alpha_s.append(torch.mean(loss["alpha"], dim=0).cpu().numpy())
+                beta_s.append(torch.mean(loss["beta"], dim=0).cpu().numpy())
+                weights_s.append(torch.mean(loss["weights"], dim=0).cpu().numpy())
+
+                total_val_loss += loss["loss"].item()
+                total_bnll_loss += loss["bnll_loss"].item()
+                total_recon_loss += loss["recon_loss"].item()
+                total_smoothness_loss += loss["smoothness_loss"].item()
+
+                assert np.isnan(total_val_loss) == 0, "NaN in validation loss"
+
+        n = len(val_loader)
+        total_val_loss /= n
+        total_bnll_loss /= n
+        total_recon_loss /= n
+        total_smoothness_loss /= n
+
+        alpha_s = np.asarray(alpha_s).mean(axis=(0, 1, 2, 3))
+        beta_s = np.asarray(beta_s).mean(axis=(0, 1, 2, 3))
+        weights_s = np.asarray(weights_s).mean(axis=(0, 1, 2, 3))
+
+        plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
+        plt.colorbar()
+        plt.savefig(
+            f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
+        )
+        plt.close()
+
+        def format_beta(alpha, beta, weights):
+            ret = ""
+            for i in range(alpha.shape[0]):
+                ret += f"a{i}: {alpha[i]:.3f}, b{i}: {beta[i]:.3f}, w{i}: {weights[i]:.3f} "
+
+            return ret
+
+        if epoch <= 10 and not found_existing_model:
+            lambda_scheduler.step()
+        else:
+            lr_scheduler.step(
+                total_val_loss
+            )  # Reduce LR if validation loss has plateaued
+
+        print(
+            "Epoch [{}/{}], current best: {}. Train Loss: {:.6f} Val Loss: {:.6f} {} LRx1M: {:.3f}".format(
+                epoch,
+                args.epochs,
+                min_loss_epoch,
+                total_train_loss,
+                total_val_loss,
+                format_beta(alpha_s, beta_s, weights_s),
+                1e6 * optimizer.param_groups[0]["lr"],
+            )
+        )
+
+        saved = False
+        if epoch > 2 and (min_loss is None or total_val_loss < min_loss):
+            min_loss = total_val_loss
+            min_loss_epoch = epoch
+            saved = True
+            torch.save(model.state_dict(), f"{run_dir}/model.pth")
+
+        break_loop = False
+        if epoch >= 8 and epoch - min_loss_epoch > 12:
+            print("No improvement in 12 epochs; early stopping")
+            break_loop = True
+
+        epoch_end_time = datetime.now()
+        epoch_results = {
+            "epoch": epoch,
+            "train_loss": total_train_loss,
+            "val_loss": total_val_loss,
+            "alpha": alpha_s.tolist(),
+            "beta": beta_s.tolist(),
+            "weights": weights_s.tolist(),
+            "epoch_start_time": epoch_start_time.isoformat(),
+            "epoch_end_time": epoch_end_time.isoformat(),
+            "duration": (epoch_end_time - epoch_start_time).total_seconds(),
+            "lr": optimizer.param_groups[0]["lr"],
+            "bnll_loss": total_bnll_loss * loss_weights["bnll"],
+            "recon_loss": total_recon_loss * loss_weights["reconstruction"],
+            "smoothness_loss": total_smoothness_loss * loss_weights["smoothness"],
+            "raw_bnll_loss": total_bnll_loss,
+            "raw_recon_loss": total_recon_loss,
+            "raw_smoothness_loss": total_smoothness_loss,
+            "bnll_weight": loss_weights["bnll"],
+            "recon_weight": loss_weights["reconstruction"],
+            "smoothness_weight": loss_weights["smoothness"],
+            # "sampled_mean": total_mean,
+            "saved": saved,
+            "bnll_loss_grad_magnitude": grad_magnitudes["bnll_loss"],
+            "recon_loss_grad_magnitude": grad_magnitudes["recon_loss"],
+            "smoothness_loss_grad_magnitude": grad_magnitudes["smoothness_loss"],
+            "last_epoch": break_loop,
+        }
+
+        with open(
             f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}.json", "w"
         ) as f:
             json.dump(epoch_results, f)
