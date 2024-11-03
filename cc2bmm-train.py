@@ -6,7 +6,8 @@ import randomname
 import os
 import json
 import math
-from scipy.stats import beta as stats_beta
+import mlflow
+import matplotlib.pyplot as plt
 from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
 from mbetanll import MixtureBetaNLLLoss
@@ -25,8 +26,24 @@ if args.run_name is None:
 run_dir = f"runs/{args.run_name}"
 os.makedirs(run_dir, exist_ok=True)
 
-with open(f"{run_dir}/{datetime.now().strftime('%Y%m%d%H%M%S')}-config.json", "w") as f:
-    json.dump(vars(args), f)
+bnll_criterion = MixtureBetaNLLLoss()
+l1_criterion = nn.L1Loss()
+
+
+class Dummy:
+    """Dummy element that can be called with everything."""
+
+    def __getattribute__(self, name):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        pass
 
 
 class LossWeightScheduler:
@@ -321,12 +338,17 @@ print("Using device", device)
 
 model = CloudCastV2(dim=args.dim, patch_size=args.patch_size, num_mix=args.num_mixtures)
 
-print(model)
+    config = vars(args)
+    config["num_params"] = count_trainable_parameters(model)
 
-print("Run name is ", args.run_name)
+    config["loss_weights"] = {}
+    for k in ("bnll", "reconstruction", "smoothness"):
+        config["loss_weights"][k] = scheduler.config[k]
 
-num_params = count_trainable_parameters(model)
-print(f"Number of trainable parameters: {num_params:,}")
+    with open(
+        f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-config.json", "w"
+    ) as f:
+        json.dump(vars(args), f)
 
 found_existing_model = False
 try:
@@ -513,12 +535,77 @@ for epoch in range(1, args.epochs + 1):
 
     with open(
             f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}.json", "w"
-    ) as f:
-        json.dump(epoch_results, f)
+        ) as f:
+            json.dump(epoch_results, f)
 
-    if epoch >= 8 and epoch - min_loss_epoch > 12:
-        print("No improvement in 12 epochs; early stopping")
-        break
+        n = len(epoch_results["alpha"])
+        for i in range(n):
+            epoch_results[f"alpha_{i}"] = epoch_results["alpha"][i]
+            epoch_results[f"beta_{i}"] = epoch_results["beta"][i]
+            epoch_results[f"weight_{i}"] = epoch_results["weights"][i]
 
+        epoch_results["epoch_start_time"] = epoch_start_time.timestamp()
+        epoch_results["epoch_end_time"] = epoch_end_time.timestamp()
+
+        del epoch_results["alpha"]
+        del epoch_results["beta"]
+        del epoch_results["weights"]
+
+        mlflow.log_metrics(epoch_results)
+
+        if break_loop:
+            break
+
+
+def load_model(args):
+    model = CloudCastV2(dim=args.dim, patch_size=args.patch_size, num_mix=args.num_mixtures)
+
+    print(model)
+
+    num_params = count_trainable_parameters(model)
+    print(f"Number of trainable parameters: {num_params:,}")
+
+    found_existing_model = False
+    try:
+        model.load_state_dict(
+            torch.load(f"runs/{args.run_name}/model.pth", weights_only=True)
+        )
+        print("Model loaded from", f"runs/{args.run_name}/model.pth")
+        found_existing_model = True
+    except FileNotFoundError:
+        print("No model found, starting from scratch")
+
+    model = model.to(device)
+
+    return model, num_params, found_existing_model
+
+run_dir = f"runs/{args.run_name}"
+os.makedirs(run_dir, exist_ok=True)
+
+training_start = datetime.now()
+print("Starting training at", training_start)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("Using device", device)
+
+mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
+mlflow.set_experiment("cc2bmm")
+
+model, num_params, found_existing_model = load_model(args)
+
+print("Run name is", args.run_name)
+
+train_loader, val_loader = read_data(
+    dataset_size=args.dataset_size, batch_size=args.batch_size, hourly=True
+)
+
+if os.environ.get("MLFLOW_DISABLE", None) is not None:
+    mlflow = Dummy()
+
+with mlflow.start_run(run_name=args.run_name):
+    mlflow.log_params(vars(args))
+    mlflow.log_param("num_params", num_params)
+    train(model, train_loader, val_loader, found_existing_model)
 
 print("Training done at", datetime.now())
