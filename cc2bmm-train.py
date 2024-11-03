@@ -212,35 +212,45 @@ def advanced_adaptive_smoothness_loss(
                 )
             )
 
-    return sum(losses)
+    return sum(losses) / (3 * num_mixtures)
 
 
-def sample_beta(alpha, beta, weights, num_samples=1, aggregation="median"):
-    num_mix = alpha.shape[-1]
+def sample_beta(alpha, beta, weights, num_samples=1):
+    """
+    Sample from a mixture of Beta distributions.
 
-    samples = []
+    Args:
+        alpha (torch.Tensor): Tensor of alpha parameters, shape [batch_size, num_mix, ...].
+        beta (torch.Tensor): Tensor of beta parameters, shape [batch_size, num_mix, ...].
+        weights (torch.Tensor): Tensor of weights for each Beta distribution, shape [batch_size, num_mix, ...].
+        num_samples (int): Number of samples to draw for each distribution.
 
-    for _ in range(num_samples):
-        sample = np.zeros(alpha.shape[:-1])
+    Returns:
+        torch.Tensor: Sampled values, shape [batch_size, num_samples, ...].
+    """
+    batch_size, steps, H, W, num_mix = alpha.shape
 
-        for i in range(num_mix):
-            a = alpha[..., i]
-            b = beta[..., i]
-            w = weights[..., i]
+    # Flatten batch and steps dimensions for easier handling
+    alpha = alpha.view(batch_size * steps, num_mix, H, W)
+    beta = beta.view(batch_size * steps, num_mix, H, W)
+    weights = weights.reshape(batch_size * steps, num_mix, H, W)
 
-            sample = np.random.beta(a, b, size=alpha.shape[:-1]).astype(np.float32)
-            sample += w * sample
+    # Sample from each Beta distribution
+    beta_distributions = torch.distributions.Beta(alpha, beta)
 
-        samples.append(sample)
+    # Shape: [batch_size * steps, num_mix, H, W]
+    samples = beta_distributions.sample()
 
-    if num_samples == 1:
-        sample = samples[0]
-    if aggregation == "mean":
-        sample = np.mean(samples, axis=0)
-    elif aggregation == "median":
-        sample = np.median(samples, axis=0)
+    # Weight the samples according to the weights of the Beta mixture
+    # Reshape weights to match sample dimensions and apply softmax to ensure they sum to 1
+    # Shape: [batch_size, num_mix, ...]
+    weights = weights.softmax(dim=1)
+    samples = (samples * weights).sum(dim=1)  # Weighted sum over num_mix
 
-    return sample
+    # Reshape back to [batch_size, steps, H, W]
+    samples = samples.view(batch_size, steps, H, W, 1)
+
+    return samples
 
 
 def roll_forecast(model, x, y, steps, loss_weights):
@@ -258,19 +268,20 @@ def roll_forecast(model, x, y, steps, loss_weights):
         alpha, beta, weights = model(x)
 
         bnll_loss = bnll_criterion(alpha, beta, weights, y_true)
-        # mean, var = mean_and_var(alpha, beta, weights)
-        prediction = sample_beta(
-            alpha.detach().cpu().numpy(),
-            beta.detach().cpu().numpy(),
-            weights.detach().cpu().numpy(),
-            num_samples=1,
+        prediction = (
+            sample_beta(
+                alpha,
+                beta,
+                weights,
+                num_samples=1,
+            )
+            .to(device)
+            .requires_grad_(True)
         )
-        prediction = torch.tensor(np.expand_dims(prediction, axis=-1))
 
         apsl_loss = adaptive_smoothness_loss(alpha, beta, weights, x, args.num_mixtures)
-
         # recon_loss = ssim_criterion(prediction, y_true.cpu())
-        recon_loss = l1_criterion(prediction, y_true.cpu())
+        recon_loss = l1_criterion(prediction, y_true)
 
         total_loss = (
             loss_weights["bnll"] * bnll_loss
