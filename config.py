@@ -4,7 +4,7 @@ def parse_size(size):
     h, w = map(int, size.split('x'))
     return (h, w)
 
-def get_args():
+def get_args(mode = None):
     parser = argparse.ArgumentParser(description='PyTorch Example')
     parser.add_argument('--batch-size', type=int, default=4, metavar='N',
                         help='input batch size for training (default: 4)')
@@ -22,4 +22,8 @@ def get_args():
                         help='name of run (default: None)')
     parser.add_argument('--num-mixtures', type=int, default=1, metavar='N',
                         help='number of mixtures (default: 1)')
+
+    if mode == "plot-training":
+        parser.add_argument("--latest-only", action="store_true", help="plot latest run only")
+
     return parser.parse_args()
