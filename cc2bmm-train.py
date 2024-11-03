@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
 from mbetanll import MixtureBetaNLLLoss
-#from ssim import SSIMLoss
+from functools import partial
 from cc2bmm import CloudCastV2
 from tqdm import tqdm
 from config import get_args
