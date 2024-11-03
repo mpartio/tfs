@@ -329,6 +329,8 @@ def roll_forecast(model, x, y, steps, loss_weights):
 
 def train(model, train_loader, val_loader, found_existing_model):
 
+    torch.manual_seed(0)
+
     lr = 1e-4 if not found_existing_model else 1e-5
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -364,6 +366,9 @@ def train(model, train_loader, val_loader, found_existing_model):
         f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-config.json", "w"
     ) as f:
         json.dump(vars(args), f)
+
+    mlflow.log_params(config)
+    mlflow.log_param("model", str(model))
 
     grad_magnitudes = {
         "bnll_loss": 0.0,
@@ -480,6 +485,7 @@ def train(model, train_loader, val_loader, found_existing_model):
         weights_s = np.asarray(weights_s).mean(axis=(0, 1, 2, 3))
 
         plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
+        plt.title(f"Epoch {epoch}")
         plt.colorbar()
         plt.savefig(
             f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
@@ -629,8 +635,6 @@ if not mlflow_enabled:
     mlflow = Dummy()
 
 with mlflow.start_run(run_name=f"{args.run_name}_{starting_time.isoformat()}"):
-    mlflow.log_params(vars(args))
-    mlflow.log_param("num_params", num_params)
     train(model, train_loader, val_loader, found_existing_model)
 
 if mlflow_enabled:
