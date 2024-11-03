@@ -16,6 +16,7 @@ from cc2bmm import CloudCastV2
 from tqdm import tqdm
 from config import get_args
 from util import *
+from plot import plot_training_history
 
 args = get_args()
 
@@ -577,7 +578,9 @@ def train(model, train_loader, val_loader, found_existing_model):
 
 
 def load_model(args):
-    model = CloudCastV2(dim=args.dim, patch_size=args.patch_size, num_mix=args.num_mixtures)
+    model = CloudCastV2(
+        dim=args.dim, patch_size=args.patch_size, num_mix=args.num_mixtures
+    )
 
     print(model)
 
@@ -597,6 +600,7 @@ def load_model(args):
     model = model.to(device)
 
     return model, num_params, found_existing_model
+
 
 run_dir = f"runs/{args.run_name}"
 os.makedirs(run_dir, exist_ok=True)
@@ -619,12 +623,21 @@ train_loader, val_loader = read_data(
     dataset_size=args.dataset_size, batch_size=args.batch_size, hourly=True
 )
 
-if os.environ.get("MLFLOW_DISABLE", None) is not None:
+mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
+
+if not mlflow_enabled:
     mlflow = Dummy()
 
-with mlflow.start_run(run_name=args.run_name):
+with mlflow.start_run(run_name=f"{args.run_name}_{starting_time.isoformat()}"):
     mlflow.log_params(vars(args))
     mlflow.log_param("num_params", num_params)
     train(model, train_loader, val_loader, found_existing_model)
 
+if mlflow_enabled:
+    files = plot_training_history(args.run_dir, latest_only=True)
+    for f in files:
+        mlflow.log_artifact(f)
+        os.remove(f)
+
+mlflow.end_run()
 print("Training done at", datetime.now())
