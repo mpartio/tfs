@@ -1,17 +1,24 @@
 import numpy as np
 import torch
+from glob import glob
 from torch.utils.data import DataLoader, TensorDataset
 
 
 def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False):
-
     def hourly_split_1_1(data):
         # special case when n_hist = 1 and n_futu = 1 and hourly = True
         T, H, W, C = data.shape
         N = (T // 4) * 4
         data = data[:N, ...]
-        data = data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4).reshape(-1, H, W, C)
-        x_data = np.expand_dims(data[1::2,], axis=1)
+        data = (
+            data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4).reshape(-1, H, W, C)
+        )
+        x_data = np.expand_dims(
+            data[
+                1::2,
+            ],
+            axis=1,
+        )
         y_data = np.expand_dims(data[::2], axis=1)
         return x_data, y_data
 
@@ -56,3 +63,17 @@ def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False
 
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def read_training_history(run_name, latest_only=False):
+    files = glob(f"runs/{run_name}/202*.json")
+
+    files.sort()
+
+    files = [x for x in files if "config" not in x]
+
+    if latest_only:
+        latest_time = files[-1].split("/")[-1].split("-")[0]
+        files = [x for x in files if latest_time in x]
+
+    return files
