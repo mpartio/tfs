@@ -5,7 +5,6 @@ import numpy as np
 import randomname
 import os
 import json
-import math
 import mlflow
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -17,6 +16,7 @@ from tqdm import tqdm
 from config import get_args
 from util import *
 from plot import plot_training_history
+from loss import LossWeightScheduler, adaptive_smoothness_loss
 
 args = get_args()
 
@@ -45,58 +45,6 @@ class Dummy:
         pass
 
 
-class LossWeightScheduler:
-    def __init__(self, config):
-        self.config = {
-            "bnll": {
-                "initial": 0.7,
-                "final": 0.7,  # Stays constant
-            },
-            "smoothness": {
-                "initial": 1e-5,  # Start  small
-                "final": 1e-4,  # Gradually increase
-                "warmup_epochs": 5,  # Optional warmup period
-            },
-            "reconstruction": {
-                "initial": 20,
-                "final": 10,  # Reduce over time
-            },
-        }
-        self.total_epochs = config["epochs"]
-
-    def get_weights(self, epoch):
-        # Progress from 0 to 1
-        progress = epoch / self.total_epochs
-
-        # Smoothness weight with optional warmup
-        if epoch < self.config["smoothness"]["warmup_epochs"]:
-            # Linear warmup
-            warmup_progress = epoch / self.config["smoothness"]["warmup_epochs"]
-            smoothness_weight = self.config["smoothness"]["initial"] * warmup_progress
-        else:
-            # Gradual increase
-            smoothness_weight = (
-                self.config["smoothness"]["initial"]
-                + (
-                    self.config["smoothness"]["final"]
-                    - self.config["smoothness"]["initial"]
-                )
-                * progress
-            )
-
-        # Exponential decay for reconstruction weight
-        recon_weight = self.config["reconstruction"]["final"] + (
-            self.config["reconstruction"]["initial"]
-            - self.config["reconstruction"]["final"]
-        ) * math.exp(-3 * progress)
-
-        return {
-            "bnll": self.config["bnll"]["initial"],
-            "smoothness": smoothness_weight,
-            "reconstruction": recon_weight,
-        }
-
-
 def mean_and_var(alpha, beta, weights):
     mean = alpha / (alpha + beta)
     var = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1))
@@ -113,160 +61,6 @@ def mean_and_var(alpha, beta, weights):
     )
 
     return weighted_mean, mixture_var
-
-
-def adaptive_smoothness_loss(alphas, betas, weights, input_image, num_mixtures):
-    losses = []
-
-    scale = 5.0
-
-    def compute_edge_weights(input_image):
-        padded = F.pad(input_image, (0, 1, 0, 1), mode="replicate")
-
-        # Compute gradients of input image
-        dy = padded[:, :, 1:, :-1] - padded[:, :, :-1, :-1]  # vertical differences
-        dx = padded[:, :, :-1, 1:] - padded[:, :, :-1, :-1]  # horizontal differences
-
-        # Compute gradient magnitude
-        gradient_magnitude = torch.sqrt(dx**2 + dy**2)
-
-        # Normalize to [0, 1] range
-        # edge_weights = gradient_magnitude / (gradient_magnitude.max() + 1e-8)
-
-        edge_weights = torch.sigmoid(gradient_magnitude * scale)
-        # Optional: Apply some thresholding to make it more binary
-        # edge_weights = torch.sigmoid((edge_weights - threshold) * scale)
-
-        return edge_weights
-
-    if input_image.dim() == 5:
-        input_image = input_image.squeeze(-1)  # Removes the last dimension
-
-    # Compute input image gradients to detect edges
-    edge_weights = compute_edge_weights(input_image)
-
-    for params in [alphas, betas, weights]:
-        for k in range(num_mixtures):
-            param_map = params[:, :, :, :, k]
-            padded = F.pad(param_map, (0, 1, 0, 1), mode="replicate")
-
-            dy = padded[:, :, 1:, :-1] - padded[:, :, :-1, :-1]
-            dx = padded[:, :, :-1, 1:] - padded[:, :, :-1, :-1]
-
-            # Allow larger parameter changes at cloud edges
-            weighted_dy = dy * (1.0 - edge_weights[:, :, :, :])
-            weighted_dx = dx * (1.0 - edge_weights[:, :, :, :])
-
-            losses.append(
-                torch.mean(torch.abs(weighted_dx)) + torch.mean(torch.abs(weighted_dy))
-            )
-
-    return sum(losses) / (3 * num_mixtures)
-
-
-def advanced_adaptive_smoothness_loss(
-    alphas, betas, weights, input_image, num_mixtures
-):
-    def compute_edge_weights(input_image):
-        padded = F.pad(input_image, (0, 1, 0, 1), mode="replicate")
-
-        # Compute gradients of input image
-        dy = padded[:, :, 1:, :-1] - padded[:, :, :-1, :-1]  # vertical differences
-        dx = padded[:, :, :-1, 1:] - padded[:, :, :-1, :-1]  # horizontal differences
-
-        # Compute gradient magnitude
-        gradient_magnitude = torch.sqrt(dx**2 + dy**2)
-
-        # Normalize to [0, 1] range
-        edge_weights = gradient_magnitude / (gradient_magnitude.max() + 1e-8)
-
-        # Optional: Apply some thresholding to make it more binary
-        # edge_weights = torch.sigmoid((edge_weights - threshold) * scale)
-
-        return edge_weights
-
-    if input_image.dim() == 5:
-        input_image = input_image.squeeze(-1)  # Removes the last dimension
-
-    # Compute multi-scale edge weights
-    edge_weights_small = compute_edge_weights(input_image)
-    edge_weights_medium = compute_edge_weights(
-        F.avg_pool2d(input_image, 3, stride=1, padding=1)
-    )
-    edge_weights_large = compute_edge_weights(
-        F.avg_pool2d(input_image, 5, stride=1, padding=2)
-    )
-
-    # Combine edge weights from different scales
-    edge_weights = (edge_weights_small + edge_weights_medium + edge_weights_large) / 3.0
-
-    edge_weights = edge_weights.permute(0, 2, 3, 1)
-    # Different weights for different parameter types
-    alpha_weight = 1.0
-    beta_weight = 1.0
-    mixture_weight = 0.5  # Less smoothing for mixture weights
-
-    losses = []
-    param_weights = [alpha_weight, beta_weight, mixture_weight]
-
-    for params, weight in zip([alphas, betas, weights], param_weights):
-        for k in range(num_mixtures):
-            param_map = params[:, :, :, :, k]
-            padded = F.pad(param_map, (0, 1, 0, 1), mode="replicate")
-
-            dy = padded[:, :, 1:, :-1] - padded[:, :, :-1, :-1]
-            dx = padded[:, :, :-1, 1:] - padded[:, :, :-1, :-1]
-
-            weighted_dy = dy * (1.0 - edge_weights[:, :, :, :])
-            weighted_dx = dx * (1.0 - edge_weights[:, :, :, :])
-
-            losses.append(
-                weight
-                * (
-                    torch.mean(torch.abs(weighted_dx))
-                    + torch.mean(torch.abs(weighted_dy))
-                )
-            )
-
-    return sum(losses) / (3 * num_mixtures)
-
-
-def sample_beta(alpha, beta, weights, num_samples=1):
-    """
-    Sample from a mixture of Beta distributions.
-
-    Args:
-        alpha (torch.Tensor): Tensor of alpha parameters, shape [batch_size, num_mix, ...].
-        beta (torch.Tensor): Tensor of beta parameters, shape [batch_size, num_mix, ...].
-        weights (torch.Tensor): Tensor of weights for each Beta distribution, shape [batch_size, num_mix, ...].
-        num_samples (int): Number of samples to draw for each distribution.
-
-    Returns:
-        torch.Tensor: Sampled values, shape [batch_size, num_samples, ...].
-    """
-    batch_size, steps, H, W, num_mix = alpha.shape
-
-    # Flatten batch and steps dimensions for easier handling
-    alpha = alpha.view(batch_size * steps, num_mix, H, W)
-    beta = beta.view(batch_size * steps, num_mix, H, W)
-    weights = weights.reshape(batch_size * steps, num_mix, H, W)
-
-    # Sample from each Beta distribution
-    beta_distributions = torch.distributions.Beta(alpha, beta)
-
-    # Shape: [batch_size * steps, num_mix, H, W]
-    samples = beta_distributions.sample()
-
-    # Weight the samples according to the weights of the Beta mixture
-    # Reshape weights to match sample dimensions and apply softmax to ensure they sum to 1
-    # Shape: [batch_size, num_mix, ...]
-    weights = weights.softmax(dim=1)
-    samples = (samples * weights).sum(dim=1)  # Weighted sum over num_mix
-
-    # Reshape back to [batch_size, steps, H, W]
-    samples = samples.view(batch_size, steps, H, W, 1)
-
-    return samples
 
 
 def roll_forecast(model, x, y, steps, loss_weights):

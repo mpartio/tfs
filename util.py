@@ -68,6 +68,44 @@ def count_trainable_parameters(model):
 def read_training_history(run_name, latest_only=False):
     files = glob(f"runs/{run_name}/202*.json")
 
+
+def sample_beta(alpha, beta, weights, num_samples=1):
+    """
+    Sample from a mixture of Beta distributions.
+
+    Args:
+        alpha (torch.Tensor): Tensor of alpha parameters, shape [batch_size, num_mix, ...].
+        beta (torch.Tensor): Tensor of beta parameters, shape [batch_size, num_mix, ...].
+        weights (torch.Tensor): Tensor of weights for each Beta distribution, shape [batch_size, num_mix, ...].
+        num_samples (int): Number of samples to draw for each distribution.
+
+    Returns:
+        torch.Tensor: Sampled values, shape [batch_size, num_samples, ...].
+    """
+    batch_size, steps, H, W, num_mix = alpha.shape
+
+    # Flatten batch and steps dimensions for easier handling
+    alpha = alpha.view(batch_size * steps, num_mix, H, W)
+    beta = beta.view(batch_size * steps, num_mix, H, W)
+    weights = weights.reshape(batch_size * steps, num_mix, H, W)
+
+    # Sample from each Beta distribution
+    beta_distributions = torch.distributions.Beta(alpha, beta)
+
+    # Shape: [batch_size * steps, num_mix, H, W]
+    samples = beta_distributions.sample()
+
+    # Weight the samples according to the weights of the Beta mixture
+    # Reshape weights to match sample dimensions and apply softmax to ensure they sum to 1
+    # Shape: [batch_size, num_mix, ...]
+    weights = weights.softmax(dim=1)
+    samples = (samples * weights).sum(dim=1)  # Weighted sum over num_mix
+
+    # Reshape back to [batch_size, steps, H, W]
+    samples = samples.view(batch_size, steps, H, W, 1)
+
+    return samples
+
     files.sort()
 
     files = [x for x in files if "config" not in x]
