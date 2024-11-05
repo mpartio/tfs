@@ -173,6 +173,10 @@ def plot_training_history(files, directory="/tmp"):
     plot_files = []
     current_start_time = None
 
+    if len(files) == 0:
+        print("No files to plot")
+        return []
+
     for f in files:
         start_time = f.split("/")[-1].split("-")[0]
         if current_start_time is None:
@@ -184,7 +188,6 @@ def plot_training_history(files, directory="/tmp"):
             data = initialize()
             current_start_time = start_time
             data["start_time"] = start_time
-
         data = gather(data, f)
 
     if len(data["epoch"]) > 0:
