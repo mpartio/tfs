@@ -67,6 +67,12 @@ def count_trainable_parameters(model):
 
 def read_training_history(run_name, latest_only=False):
     files = glob(f"runs/{run_name}/202*.json")
+    files = [x for x in files if "config" not in x]
+    if latest_only:
+        latest_time = files[-1].split("/")[-1].split("-")[0]
+        files = [x for x in files if latest_time in x]
+    files.sort()
+    return files
 
 
 def sample_beta(alpha, beta, weights, num_samples=1):
