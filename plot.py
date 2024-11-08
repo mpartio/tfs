@@ -1,17 +1,20 @@
 import json
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot(data, directory):
     # print("Plotting", start_time, "length", len(data["epoch"]))
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+
     ax[0].plot(data["epoch"], data["train_loss"], label="train_loss")
     ax[0].plot(data["epoch"], data["val_loss"], label="val_loss")
-    ax[0].plot(data["epoch"], data["bnll_loss"], label="bnll_loss", linestyle="--")
-    ax[0].plot(data["epoch"], data["recon_loss"], label="recon_loss", linestyle="--")
-    ax[0].plot(
-        data["epoch"], data["smoothness_loss"], label="smoothness_loss", linestyle="--"
-    )
+
+    for k, v in data["loss_components"].items():
+        if "total" in k:
+            name = "_".join(k.split("_")[1:])
+            ax[0].plot(data["epoch"], v, label=name, linestyle="--")
+
     ax[0].scatter(
         data["saved"],
         [data["val_loss"][x - 1] for x in data["saved"]],
@@ -24,76 +27,35 @@ def plot(data, directory):
     lr = [x * 1e6 for x in data["lr"]]
     ax0_2.plot(data["epoch"], lr, label="lr * 1e6", color="green")
 
-    colors = ["red", "blue", "green", "brown"]
-    for i in range(len(data["alpha"][0])):
-        ax[1].plot(
-            data["epoch"],
-            [x[i] for x in data["alpha"]],
-            label=f"alpha_{i}",
-            color=colors[i],
-            linestyle="-",
-        )
-        ax[1].plot(
-            data["epoch"],
-            [x[i] for x in data["beta"]],
-            label=f"beta_{i}",
-            color=colors[i],
-            linestyle="--",
-        )
-        ax[1].plot(
-            data["epoch"],
-            [x[i] for x in data["weights"]],
-            label=f"weight_{i}",
-            color=colors[i],
-            linestyle=":",
-        )
+    num_mix = len(data["distribution_components"]["alpha"][0])
 
-    ax[2].plot(
-        data["epoch"],
-        data["bnll_loss_grad_magnitude"],
-        label="bnll_gradients",
-        color="blue",
-    )
-    ax[2].plot(
-        data["epoch"],
-        data["recon_loss_grad_magnitude"],
-        label="recon_gradients",
-        color="red",
-    )
-    ax[2].plot(
-        data["epoch"],
-        data["smoothness_loss_grad_magnitude"],
-        label="smoothness_gradients",
-        color="green",
-    )
+    colors = ["red", "blue", "green", "brown"]
+    linestyles = ["-", "--", ":", "-."]
+    for i in range(num_mix):
+        for j, k in enumerate(data["distribution_components"].keys()):
+            d = np.asarray(data["distribution_components"][k])
+            ax[1].plot(
+                data["epoch"],
+                d[:, i],
+                label=f"{k}_{i}",
+                color=colors[i],
+                linestyle=linestyles[j],
+            )
+
+    for k, v in data["gradients"].items():
+        ax[2].plot(data["epoch"], v, label=f"{k} gradients")
 
     ax2_2 = ax[2].twinx()
-    ax2_2.plot(
-        data["epoch"],
-        data["bnll_weight"],
-        label="bnll_weight",
-        color="blue",
-        linestyle="--",
-    )
-    ax2_2.plot(
-        data["epoch"],
-        data["recon_weight"],
-        label="recon_weight",
-        color="red",
-        linestyle="--",
-    )
-    ax2_2.plot(
-        data["epoch"],
-        data["smoothness_weight"],
-        label="smoothness_weight",
-        color="green",
-        linestyle="--",
-    )
+
+    for k, v in data["loss_components"].items():
+        if "weight_" in k:
+            ax2_2.plot(data["epoch"], v, label=k, linestyle="--")
 
     ax[0].legend()
     ax[0].set_xlabel("epoch")
     ax[0].set_ylabel("loss")
-    ax0_2.legend()
+    ax0_2.legend(loc="lower left")
+    ax0_2.set_ylabel("learning rate * 1e6")
 
     ax[1].legend()
     ax[1].set_xlabel("epoch")
@@ -103,6 +65,7 @@ def plot(data, directory):
     ax[2].set_xlabel("epoch")
     ax[2].set_ylabel("gradient magnitude")
     ax2_2.legend(loc="upper left")
+    ax2_2.set_ylabel("loss weight")
 
     filename = f"{directory}/{data['start_time']}-training-history.png"
     plt.savefig(filename)
@@ -119,28 +82,28 @@ def gather(data, file):
     data["epoch"].append(new_data["epoch"])
     data["train_loss"].append(new_data["train_loss"])
     data["val_loss"].append(new_data["val_loss"])
+    data["lr"].append(new_data["lr"])
+
     if new_data["saved"]:
         data["saved"].append(new_data["epoch"])
 
-    data["alpha"].append(new_data["alpha"])
-    data["beta"].append(new_data["beta"])
-    data["weights"].append(new_data["weights"])
+    for k, v in new_data["distribution_components"].items():
+        try:
+            data["distribution_components"][k].append(v)
+        except KeyError:
+            data["distribution_components"][k] = [v]
 
-    data["lr"].append(new_data["lr"])
+    for k, v in new_data["loss_components"].items():
+        try:
+            data["loss_components"][k].append(new_data["loss_components"][k])
+        except KeyError:
+            data["loss_components"][k] = [new_data["loss_components"][k]]
 
-    data["bnll_loss"].append(new_data["bnll_loss"])
-    data["recon_loss"].append(new_data["recon_loss"])
-    data["smoothness_loss"].append(new_data["smoothness_loss"])
-
-    data["bnll_loss_grad_magnitude"].append(new_data["bnll_loss_grad_magnitude"])
-    data["recon_loss_grad_magnitude"].append(new_data["recon_loss_grad_magnitude"])
-    data["smoothness_loss_grad_magnitude"].append(
-        new_data["smoothness_loss_grad_magnitude"]
-    )
-
-    data["bnll_weight"].append(new_data["bnll_weight"])
-    data["recon_weight"].append(new_data["recon_weight"])
-    data["smoothness_weight"].append(new_data["smoothness_weight"])
+    for k, v in new_data["gradients"].items():
+        try:
+            data["gradients"][k].append(new_data["gradients"][k])
+        except KeyError:
+            data["gradients"][k] = [new_data["gradients"][k]]
 
     return data
 
@@ -152,19 +115,10 @@ def plot_training_history(files, directory="/tmp"):
             "train_loss": [],
             "val_loss": [],
             "saved": [],
-            "alpha": [],
-            "beta": [],
-            "weights": [],
+            "distribution_components": {},
             "lr": [],
-            "bnll_loss": [],
-            "recon_loss": [],
-            "smoothness_loss": [],
-            "bnll_loss_grad_magnitude": [],
-            "recon_loss_grad_magnitude": [],
-            "smoothness_loss_grad_magnitude": [],
-            "bnll_weight": [],
-            "recon_weight": [],
-            "smoothness_weight": [],
+            "loss_components": {},
+            "gradients": {},
             "start_time": None,
         }
 
