@@ -16,7 +16,10 @@ from tqdm import tqdm
 from config import get_args
 from util import *
 from plot import plot_training_history
-from loss import LossWeightScheduler, adaptive_smoothness_loss
+from loss import * #LossWeightScheduler, adaptive_smoothness_loss, CombinedLoss
+import matplotlib
+
+matplotlib.use("Agg")
 
 args = get_args()
 
@@ -25,9 +28,27 @@ if args.run_name is None:
     print("No run name specified, generating a new random name:", args.run_name)
 
 
-bnll_criterion = MixtureBetaNLLLoss()
-l1_criterion = nn.L1Loss()
+#bnll_criterion = MixtureBetaNLLLoss()
+#l1_criterion = nn.L1Loss()
 
+loss_weight_scheduler = LossWeightScheduler(
+    {
+        "total_epochs": args.epochs,
+        "bnll": {
+            "initial": 0.7,
+            "final": 0.7,  # Stays constant
+        },
+#        "smoothness": {
+#            "initial": 1e-5,  # Start  small
+#            "final": 1e-4,  # Gradually increase
+#            "warmup_epochs": 5,  # Optional warmup period
+#        },
+        "recon": {
+            "initial": 20,
+            "final": 15,  # Reduce over time
+        },
+    }
+)
 
 class Dummy:
     """Dummy element that can be called with everything."""
@@ -63,12 +84,12 @@ def mean_and_var(alpha, beta, weights):
     return weighted_mean, mixture_var
 
 
-def roll_forecast(model, x, y, steps, loss_weights):
+def roll_forecast(model, x, y, steps, combined_loss, epoch):
     assert y.shape[1] == steps
 
     cumulative_loss = 0.0
     cumulative_bnll_loss = 0.0
-    cumulative_smoothness_loss = 0.0
+#    cumulative_smoothness_loss = 0.0
     cumulative_recon_loss = 0.0
 
     for i in range(steps):
@@ -76,8 +97,6 @@ def roll_forecast(model, x, y, steps, loss_weights):
         assert torch.isnan(x).sum() == 0, "NaN in input x"
 
         alpha, beta, weights = model(x)
-
-        bnll_loss = bnll_criterion(alpha, beta, weights, y_true)
         prediction = (
             sample_beta(
                 alpha,
@@ -89,31 +108,34 @@ def roll_forecast(model, x, y, steps, loss_weights):
             .requires_grad_(True)
         )
 
-        apsl_loss = adaptive_smoothness_loss(alpha, beta, weights, x, args.num_mixtures)
-        # recon_loss = ssim_criterion(prediction, y_true.cpu())
-        recon_loss = l1_criterion(prediction, y_true)
+        total_loss, bnll_loss, recon_loss = combined_loss(epoch, alpha, beta, weights, prediction, y_true)
 
-        total_loss = (
-            loss_weights["bnll"] * bnll_loss
-            + loss_weights["smoothness"] * apsl_loss
-            + 10 * loss_weights["reconstruction"] * recon_loss
-        )
+#        bnll_loss = bnll_criterion(alpha, beta, weights, y_true)
+#        apsl_loss = adaptive_smoothness_loss(alpha, beta, weights, x, args.num_mixtures)
+        # recon_loss = ssim_criterion(prediction, y_true.cpu())
+#        recon_loss = l1_criterion(prediction, y_true)
+
+#        total_loss = (
+#            loss_weights["bnll"] * bnll_loss
+#            + loss_weights["smoothness"] * apsl_loss
+#            + 10 * loss_weights["reconstruction"] * recon_loss
+#        )
         cumulative_loss += total_loss
         cumulative_bnll_loss += bnll_loss
         cumulative_recon_loss += recon_loss
-        cumulative_smoothness_loss += apsl_loss
+#        cumulative_smoothness_loss += apsl_loss
 
     assert steps == 1
     cumulative_loss /= steps
     cumulative_bnll_loss /= steps
     cumulative_recon_loss /= steps
-    cumulative_smoothness_loss /= steps
+#    cumulative_smoothness_loss /= steps
 
     return {
         "loss": cumulative_loss,
         "bnll_loss": cumulative_bnll_loss,
         "recon_loss": cumulative_recon_loss,
-        "smoothness_loss": cumulative_smoothness_loss,
+#        "smoothness_loss": cumulative_smoothness_loss,
         "alpha": alpha,
         "beta": beta,
         "weights": weights,
@@ -138,9 +160,6 @@ def train(model, train_loader, val_loader, found_existing_model):
             optimizer, lr_lambda=lambda epoch: min(1, epoch / 8)
         )
 
-    # Scheduler to adjust loss weights dynamically
-    scheduler = LossWeightScheduler({"epochs": args.epochs})
-
     min_loss = None
     min_loss_epoch = None
 
@@ -153,8 +172,8 @@ def train(model, train_loader, val_loader, found_existing_model):
     config["num_params"] = count_trainable_parameters(model)
 
     config["loss_weights"] = {}
-    for k in ("bnll", "reconstruction", "smoothness"):
-        config["loss_weights"][k] = scheduler.config[k]
+    for k in ("bnll", "recon"):
+        config["loss_weights"][k] = loss_weight_scheduler.config[k]
 
     with open(
         f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-config.json", "w"
@@ -162,12 +181,12 @@ def train(model, train_loader, val_loader, found_existing_model):
         json.dump(vars(args), f)
 
     mlflow.log_params(config)
-    mlflow.log_param("model", str(model))
+    # mlflow.log_param("model", str(model))
 
     grad_magnitudes = {
         "bnll_loss": 0.0,
         "recon_loss": 0.0,
-        "smoothness_loss": 0.0,
+#        "smoothness_loss": 0.0,
         "total": 0.0,
     }
 
@@ -184,9 +203,9 @@ def train(model, train_loader, val_loader, found_existing_model):
         epoch_start_time = datetime.now()
         model.train()
 
-        loss_weights = scheduler.get_weights(epoch)
-
         total_train_loss = 0.0
+
+        combined_loss = CombinedLoss([BNLLLoss(), L1Loss()], loss_weight_scheduler)
 
         for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader)):
             assert torch.min(inputs) >= 0.0 and torch.max(inputs) <= 1.0
@@ -194,7 +213,7 @@ def train(model, train_loader, val_loader, found_existing_model):
             inputs, targets = inputs.to(device), targets.to(device)
 
             with autocast_context():  # torch.autocast(device_type="cuda", dtype=torch.float16):
-                loss = roll_forecast(model, inputs, targets, 1, loss_weights)
+                loss = roll_forecast(model, inputs, targets, 1, combined_loss, epoch)
                 train_loss = loss["loss"]
                 total_train_loss += train_loss.item()
 
@@ -206,6 +225,15 @@ def train(model, train_loader, val_loader, found_existing_model):
                 scaler.update()
             else:
                 # BEGIN CALCULATE GRADIENT MAGNITUDE
+
+                for name in ["bnll_loss", "recon_loss"]:
+                    continue
+                    print(name)
+                    optimizer.zero_grad()
+                    loss[name].backward(retain_graph=True)
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            grad_magnitudes[name] += param.grad.abs().sum().item()
 
                 # Calculate individual gradient magnitudes
                 optimizer.zero_grad()  # Ensure gradients are zeroed at start
@@ -220,13 +248,13 @@ def train(model, train_loader, val_loader, found_existing_model):
                     if param.grad is not None:
                         grad_magnitudes["recon_loss"] += param.grad.abs().sum().item()
 
-                optimizer.zero_grad()  # Zero gradients before next backward pass
-                loss["smoothness_loss"].backward(retain_graph=True)
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_magnitudes["smoothness_loss"] += (
-                            param.grad.abs().sum().item()
-                        )
+#                optimizer.zero_grad()  # Zero gradients before next backward pass
+#                loss["smoothness_loss"].backward(retain_graph=True)
+#                for name, param in model.named_parameters():
+#                    if param.grad is not None:
+#                        grad_magnitudes["smoothness_loss"] += (
+#                            param.grad.abs().sum().item()
+#                        )
 
                 # END CALCULATE GRADIENT MAGNITUDE
 
@@ -248,14 +276,14 @@ def train(model, train_loader, val_loader, found_existing_model):
         total_val_loss = 0.0
         total_bnll_loss = 0.0
         total_recon_loss = 0.0
-        total_smoothness_loss = 0.0
+#        total_smoothness_loss = 0.0
 
         with torch.no_grad():
 
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device), targets.to(device)
 
-                loss = roll_forecast(model, inputs, targets, 1, loss_weights)
+                loss = roll_forecast(model, inputs, targets, 1, combined_loss, epoch)
 
                 alpha_s.append(torch.mean(loss["alpha"], dim=0).cpu().numpy())
                 beta_s.append(torch.mean(loss["beta"], dim=0).cpu().numpy())
@@ -264,7 +292,7 @@ def train(model, train_loader, val_loader, found_existing_model):
                 total_val_loss += loss["loss"].item()
                 total_bnll_loss += loss["bnll_loss"].item()
                 total_recon_loss += loss["recon_loss"].item()
-                total_smoothness_loss += loss["smoothness_loss"].item()
+ #               total_smoothness_loss += loss["smoothness_loss"].item()
 
                 assert np.isnan(total_val_loss) == 0, "NaN in validation loss"
 
@@ -272,7 +300,7 @@ def train(model, train_loader, val_loader, found_existing_model):
         total_val_loss /= n
         total_bnll_loss /= n
         total_recon_loss /= n
-        total_smoothness_loss /= n
+ #       total_smoothness_loss /= n
 
         alpha_s = np.asarray(alpha_s).mean(axis=(0, 1, 2, 3))
         beta_s = np.asarray(beta_s).mean(axis=(0, 1, 2, 3))
@@ -313,7 +341,11 @@ def train(model, train_loader, val_loader, found_existing_model):
         )
 
         saved = False
-        if epoch > 2 and (min_loss is None or total_val_loss < min_loss):
+
+        if min_loss is None:
+            min_loss = total_val_loss
+
+        if epoch > 2 and total_val_loss < min_loss:
             min_loss = total_val_loss
             min_loss_epoch = epoch
             saved = True
@@ -325,6 +357,10 @@ def train(model, train_loader, val_loader, found_existing_model):
             break_loop = True
 
         epoch_end_time = datetime.now()
+
+
+        loss_weights = loss_weight_scheduler.get_weights(epoch)
+
         epoch_results = {
             "epoch": epoch,
             "train_loss": total_train_loss,
@@ -337,19 +373,18 @@ def train(model, train_loader, val_loader, found_existing_model):
             "duration": (epoch_end_time - epoch_start_time).total_seconds(),
             "lr": optimizer.param_groups[0]["lr"],
             "bnll_loss": total_bnll_loss * loss_weights["bnll"],
-            "recon_loss": total_recon_loss * loss_weights["reconstruction"],
-            "smoothness_loss": total_smoothness_loss * loss_weights["smoothness"],
+            "recon_loss": total_recon_loss * loss_weights["recon"],
+#            "smoothness_loss": total_smoothness_loss * loss_weights["smoothness"],
             "raw_bnll_loss": total_bnll_loss,
             "raw_recon_loss": total_recon_loss,
-            "raw_smoothness_loss": total_smoothness_loss,
+#            "raw_smoothness_loss": total_smoothness_loss,
             "bnll_weight": loss_weights["bnll"],
-            "recon_weight": loss_weights["reconstruction"],
-            "smoothness_weight": loss_weights["smoothness"],
-            # "sampled_mean": total_mean,
+            "recon_weight": loss_weights["recon"],
+#            "smoothness_weight": loss_weights["smoothness"],
             "saved": saved,
             "bnll_loss_grad_magnitude": grad_magnitudes["bnll_loss"],
             "recon_loss_grad_magnitude": grad_magnitudes["recon_loss"],
-            "smoothness_loss_grad_magnitude": grad_magnitudes["smoothness_loss"],
+#            "smoothness_loss_grad_magnitude": grad_magnitudes["smoothness_loss"],
             "last_epoch": break_loop,
         }
 
@@ -371,7 +406,7 @@ def train(model, train_loader, val_loader, found_existing_model):
         del epoch_results["beta"]
         del epoch_results["weights"]
 
-        mlflow.log_metrics(epoch_results)
+        mlflow.log_metrics(epoch_results, step=epoch)
 
         if break_loop:
             break
@@ -428,11 +463,11 @@ mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
 if not mlflow_enabled:
     mlflow = Dummy()
 
-with mlflow.start_run(run_name=f"{args.run_name}_{starting_time.isoformat()}"):
+with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
     train(model, train_loader, val_loader, found_existing_model)
 
 if mlflow_enabled:
-    files = plot_training_history(args.run_dir, latest_only=True)
+    files = plot_training_history(read_training_history(args.run_name, latest_only=True))
     for f in files:
         mlflow.log_artifact(f)
         os.remove(f)
