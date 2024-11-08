@@ -176,7 +176,7 @@ axs[-1].set_title("Mean Image")
 axs[-1].axis("off")  # Hide axes
 
 plt.tight_layout()
-plt.savefig("prediction.png")
+plt.savefig("cc2bmm-prediction.png")
 
 alpha = alpha.cpu().numpy().squeeze(axis=(0, 1))
 beta = beta.cpu().numpy().squeeze(axis=(0, 1))
