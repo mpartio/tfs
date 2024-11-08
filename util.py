@@ -140,3 +140,33 @@ def sample_gaussian(mean, stde, weights, num_samples=1, aggregation="median"):
             sample = torch.median(samples, axis=0)
 
     return sample
+
+
+def flatten_dict(d, parent_key="", sep="_"):
+    items = []
+    for k, v in d.items():
+        new_key = parent_key + sep + k if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        elif isinstance(v, list):
+            for i, item in enumerate(v):
+                items.append((f"{new_key}_{i}", item))
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+
+class Dummy:
+    """Dummy element that can be called with everything."""
+
+    def __getattribute__(self, name):
+        return self
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args, **kwargs):
+        pass
