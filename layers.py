@@ -136,6 +136,50 @@ class ProbabilisticPredictionHeadWithConv(nn.Module):
         return mean, torch.sqrt(var)
 
 
+class MixtureProbabilisticPredictionHeadWithConv(nn.Module):
+    def __init__(self, dim, num_mix):
+        super(MixtureProbabilisticPredictionHeadWithConv, self).__init__()
+        self.mean_head = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(inplace=True),
+        )
+        self.var_head = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(inplace=True),
+        )
+        self.weights_head = nn.Sequential(
+            nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(inplace=True),
+        )
+        self.num_mix = num_mix
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        mean = self.mean_head(x)
+        log_var = self.var_head(x)
+        var = F.softplus(log_var) + 1e-6
+        weights = F.softmax(self.weights_head(x), dim=1) + 1e-6
+
+        mean = mean.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        var = var.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+        weights = weights.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
+
+        return mean, torch.sqrt(var), weights
+
+
 class MeanPredictionHead(nn.Module):
     def __init__(self):
         super(MeanPredictionHead, self).__init__()
