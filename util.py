@@ -112,12 +112,31 @@ def sample_beta(alpha, beta, weights, num_samples=1):
 
     return samples
 
-    files.sort()
 
-    files = [x for x in files if "config" not in x]
+def sample_gaussian(mean, stde, weights, num_samples=1, aggregation="median"):
+    num_mix = mean.shape[-1]
 
-    if latest_only:
-        latest_time = files[-1].split("/")[-1].split("-")[0]
-        files = [x for x in files if latest_time in x]
+    samples = []
 
-    return files
+    for _ in range(num_samples):
+        sample = torch.zeros(mean.shape[:-1])
+
+        for i in range(num_mix):
+            m = mean[..., i]
+            s = stde[..., i]
+            w = weights[..., i]
+
+            sample = torch.normal(m, s)
+            sample += w * sample
+
+        samples.append(sample)
+
+    if num_samples == 1:
+        sample = samples[0]
+    else:
+        if aggregation == "mean":
+            sample = torch.mean(samples, axis=0)
+        elif aggregation == "median":
+            sample = torch.median(samples, axis=0)
+
+    return sample
