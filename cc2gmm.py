@@ -7,7 +7,9 @@ from timm.models.layers import DropPath
 from layers import (
     ConvolvedSkipConnection,
     SwinTransformerBlock,
-    MixtureProbabilisticPredictionHeadWithConv
+    MixtureProbabilisticPredictionHeadWithConv,
+    pad,
+    depad
 )
 from reference_layers import (
     Downsample,
@@ -17,6 +19,35 @@ from reference_layers import (
     Upsample,
     ViTBlock,
 )
+
+
+def pad_tensor(x, size=4):
+    B, T, H, W, C = x.shape
+
+    x = x.view(B * T, H, W, C)
+
+    x = pad(x, size)
+
+    _, H, W, _ = x.shape
+
+    x = x.view(B, T, H, W, C)
+
+    return x
+
+def depad_tensor(x, newH, newW):
+    B, T, H, W, C = x.shape
+
+    x = x.view(B * T, H, W, C)
+
+    x = depad(x, newH, newW)
+
+    _, H, W, _ = x.shape
+
+    x = x.view(B, T, H, W, C)
+
+    return x
+
+
 
 
 class CloudCastV2(nn.Module):
@@ -115,6 +146,7 @@ class CloudCastV2(nn.Module):
         # Reproject input data to latent space
         # From (B, T, H, W, C) to (B, T, H // patch, W // patch, C * 2)
 
+        _, _, origH, origW, _ = x.shape
         x = self.patch_embed(x)
 
         # Store the tensor for skip connection
@@ -150,6 +182,8 @@ class CloudCastV2(nn.Module):
         for block in self.transformer_block3:
             x = block(x)
 
+        skip2 = pad_tensor(skip2)
+
         x = self.conv_skip2(skip2, x)
 
         # Upsample from (B, 16, 16, 384) to (B, 32, 32, 192)
@@ -160,10 +194,11 @@ class CloudCastV2(nn.Module):
         for block in self.transformer_block4:
             x = block(x)
 
+        skip1 = pad_tensor(skip1)
         x = self.conv_skip1(skip1, x)
 
         x = self.patch_recover(x)
-
+        x = depad_tensor(x, origH, origW)
         mean, stde, weights = self.prediction_head(x)
 
         return mean, stde, weights
