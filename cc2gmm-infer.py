@@ -42,7 +42,7 @@ def plot_pdf(mean, stde, weights):
     plt.xlabel("x")
     plt.ylabel("PDF")
     plt.title("Mixture of Gaussian Distributions")
-    plt.savefig("gaussian_mix.png")
+    plt.savefig(f"runs/{args.run_name}/gaussian_mix.png")
 
 
 def plot_2d(mean, stde, weights):
@@ -65,7 +65,7 @@ def plot_2d(mean, stde, weights):
         fig.colorbar(im3, ax=axes[i, 2])
 
     plt.tight_layout()
-    plt.savefig("gaussian_mix2d.png")
+    plt.savefig(f"runs/{args.run_name}/gaussian_mix2d.png")
 
 
 def sample(mean, stde, weights):
@@ -186,7 +186,7 @@ axs[-1].set_title("Mean Image")
 axs[-1].axis("off")  # Hide axes
 
 plt.tight_layout()
-plt.savefig("cc2gmm-prediction.png")
+plt.savefig(f"runs/{args.run_name}/cc2gmm-prediction.png")
 
 
 for i in range(model.num_mix):

@@ -41,7 +41,7 @@ def plot_beta(alpha, beta, weights):
     plt.xlabel("x")
     plt.ylabel("PDF")
     plt.title("Mixture of Two Beta Distributions")
-    plt.savefig("betamix.png")
+    plt.savefig(f"runs/{args.run_name}/betamix.png")
 
 
 def plot_beta_2d(alpha, beta, weights):
@@ -64,7 +64,7 @@ def plot_beta_2d(alpha, beta, weights):
         fig.colorbar(im3, ax=axes[i, 2])
 
     plt.tight_layout()
-    plt.savefig("betamix2d.png")
+    plt.savefig(f"runs/{args.run_name}/betamix2d.png")
 
 
 def sample(alpha, beta, weights):
@@ -176,7 +176,7 @@ axs[-1].set_title("Mean Image")
 axs[-1].axis("off")  # Hide axes
 
 plt.tight_layout()
-plt.savefig("cc2bmm-prediction.png")
+plt.savefig(f"runs/{args.run_name}/cc2bmm-prediction.png")
 
 alpha = alpha.cpu().numpy().squeeze(axis=(0, 1))
 beta = beta.cpu().numpy().squeeze(axis=(0, 1))
