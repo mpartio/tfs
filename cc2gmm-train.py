@@ -15,30 +15,7 @@ from tqdm import tqdm
 from config import get_args
 from util import *
 from plot import plot_training_history
-
-# from loss import * #LossWeightScheduler, adaptive_smoothness_loss, CombinedLoss
 import matplotlib
-
-
-def setup_mlflow():
-
-    mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
-
-    if not mlflow_enabled:
-        mlflow = Dummy()
-        print("mlflow disabled")
-        return mlflow
-
-    try:
-        import mlflow
-    except ModuleNotFoundError:
-        mlflow = Dummy()
-        print("mlflow disabled")
-
-    mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
-    mlflow.set_experiment("cc2gmm")
-
-    return mlflow
 
 matplotlib.use("Agg")
 
@@ -328,7 +305,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-mlflow = setup_mlflow()
+mlflow = setup_mlflow("cc2gmm")
 
 model, num_params, found_existing_model = load_model(args)
 
@@ -345,13 +322,13 @@ with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
 
     train(model, train_loader, val_loader, found_existing_model)
 
-files = plot_training_history(
-    read_training_history(f"runs/{args.run_name}", latest_only=True)
-)
-for f in files:
-    mlflow.log_artifact(f)
+    files = plot_training_history(
+        read_training_history(f"runs/{args.run_name}", latest_only=True)
+    )
+    for f in files:
+        mlflow.log_artifact(f)
 
-mlflow.log_artifact(f"runs/{args.run_name}/model.pth", "trained_model")
-mlflow.end_run()
+    mlflow.log_artifact(f"runs/{args.run_name}/model.pth", "trained_model")
+    mlflow.end_run()
 
 print("Training done at", datetime.now())

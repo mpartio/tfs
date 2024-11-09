@@ -5,7 +5,6 @@ import numpy as np
 import randomname
 import os
 import json
-import mlflow
 import matplotlib.pyplot as plt
 from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
@@ -16,7 +15,7 @@ from tqdm import tqdm
 from config import get_args
 from util import *
 from plot import plot_training_history
-from loss import *  # LossWeightScheduler, adaptive_smoothness_loss, CombinedLoss
+from loss import *
 import matplotlib
 
 matplotlib.use("Agg")
@@ -41,7 +40,6 @@ loss_weight_scheduler = LossWeightScheduler(
         },
     }
 )
-
 
 
 def mean_and_var(alpha, beta, weights):
@@ -385,9 +383,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
-mlflow.set_experiment("cc2bmm")
-
 model, num_params, found_existing_model = load_model(args)
 
 print("Run name is", args.run_name)
@@ -396,10 +391,7 @@ train_loader, val_loader = read_data(
     dataset_size=args.dataset_size, batch_size=args.batch_size, hourly=True
 )
 
-mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
-
-if not mlflow_enabled:
-    mlflow = Dummy()
+mlflow = setup_mlflow("cc2bmm")
 
 with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
     if found_existing_model:
@@ -407,15 +399,14 @@ with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
 
     train(model, train_loader, val_loader, found_existing_model)
 
-if mlflow_enabled:
     files = plot_training_history(
         read_training_history(args.run_name, latest_only=True)
     )
     for f in files:
         mlflow.log_artifact(f)
-        os.remove(f)
 
-mlflow.log_artifact(f"runs/{args.run_name}/model.pth", "trained_model")
+    mlflow.log_artifact(f"runs/{args.run_name}/model.pth", "trained_model")
 
-mlflow.end_run()
+    mlflow.end_run()
+
 print("Training done at", datetime.now())

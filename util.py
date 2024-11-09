@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import os
 from glob import glob
 from torch.utils.data import DataLoader, TensorDataset
 from torch.distributions.kumaraswamy import Kumaraswamy
@@ -210,3 +211,23 @@ class Dummy:
 
     def __exit__(self, *args, **kwargs):
         pass
+
+
+def setup_mlflow(experiment, url="https://mlflow.apps.ock.fmi.fi"):
+    mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
+
+    if not mlflow_enabled:
+        mlflow = Dummy()
+        print("mlflow disabled")
+        return mlflow
+
+    try:
+        import mlflow
+    except ModuleNotFoundError:
+        mlflow = Dummy()
+        print("mlflow disabled")
+
+    mlflow.set_tracking_uri(url)
+    mlflow.set_experiment(experiment)
+
+    return mlflow
