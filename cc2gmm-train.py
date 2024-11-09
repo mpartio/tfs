@@ -5,7 +5,6 @@ import numpy as np
 import randomname
 import os
 import json
-import mlflow
 import matplotlib.pyplot as plt
 from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
@@ -19,6 +18,26 @@ from plot import plot_training_history
 
 # from loss import * #LossWeightScheduler, adaptive_smoothness_loss, CombinedLoss
 import matplotlib
+
+
+def setup_mlflow():
+
+    mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
+
+    if not mlflow_enabled:
+        mlflow = Dummy()
+        print("mlflow disabled")
+        return
+
+    try:
+        import mlflow
+    except ModuleNotFoundError:
+        mlflow = Dummy()
+        print("mlflow disabled")
+
+    mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
+    mlflow.set_experiment("cc2gmm")
+
 
 matplotlib.use("Agg")
 
@@ -235,7 +254,7 @@ def train(model, train_loader, val_loader, found_existing_model):
             torch.save(model.state_dict(), f"{run_dir}/model.pth")
 
         break_loop = False
-        if epoch >= 8 and epoch - min_loss_epoch > 12:
+        if min_loss_epoch is not None and (epoch >= 8 and epoch - min_loss_epoch > 12):
             print("No improvement in 12 epochs; early stopping")
             break_loop = True
 
@@ -308,8 +327,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
-mlflow.set_experiment("cc2gmm")
+setup_mlflow()
 
 model, num_params, found_existing_model = load_model(args)
 
@@ -319,10 +337,6 @@ train_loader, val_loader = read_data(
     dataset_size=args.dataset_size, batch_size=args.batch_size, hourly=True
 )
 
-mlflow_enabled = os.environ.get("MLFLOW_DISABLE", None) is None
-
-if not mlflow_enabled:
-    mlflow = Dummy()
 
 with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
     if found_existing_model:
@@ -330,15 +344,13 @@ with mlflow.start_run(run_name=f"{args.run_name}_{training_start.isoformat()}"):
 
     train(model, train_loader, val_loader, found_existing_model)
 
-if mlflow_enabled:
-    run_dir = f"runs/{args.run_name}"
-    files = plot_training_history(read_training_history(run_dir, latest_only=True))
-    for f in files:
-        mlflow.log_artifact(f)
-        os.remove(f)
+files = plot_training_history(
+    read_training_history(f"runs/{args.run_name}", latest_only=True)
+)
+for f in files:
+    mlflow.log_artifact(f)
 
 mlflow.log_artifact(f"runs/{args.run_name}/model.pth", "trained_model")
-
 mlflow.end_run()
 
 print("Training done at", datetime.now())
