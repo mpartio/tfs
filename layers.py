@@ -42,13 +42,12 @@ def window_partition(x, window_size):
 def window_reverse(windows, window_size, H_pad, W_pad, H, W):
     """Reverse the windows into the original image shape."""
     # windows shape: (B * num_windows, window_size ** 2, C)
-    assert torch.isnan(windows).sum() == 0, "NaN values in window_reverse input"
+
     # Separate batch dimension and number of windows
     B = windows.shape[0] // (H_pad // window_size * W_pad // window_size)
 
     nh = H_pad // window_size  # Number of windows along height
     nw = W_pad // window_size  # Number of windows along width
-    assert torch.isnan(windows).sum() == 0, "NaN values before rearrange"
 
     x = einops.rearrange(
         windows,
@@ -62,7 +61,6 @@ def window_reverse(windows, window_size, H_pad, W_pad, H, W):
 
     x = x.reshape(B, H_pad, W_pad, -1)
 
-    assert torch.isnan(x).sum() == 0, "NaN values after rearrange"
     x = depad(x, H, W)
 
     return x
