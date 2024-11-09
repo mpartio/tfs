@@ -141,21 +141,27 @@ class MixtureProbabilisticPredictionHeadWithConv(nn.Module):
             nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim // 2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.Conv2d(
+                in_channels=dim // 2, out_channels=num_mix, kernel_size=3, padding=1
+            ),
             nn.Softplus(),
         )
         self.var_head = nn.Sequential(
             nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim // 2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.Conv2d(
+                in_channels=dim // 2, out_channels=num_mix, kernel_size=3, padding=1
+            ),
             nn.Softplus(),
         )
         self.weights_head = nn.Sequential(
             nn.Conv2d(in_channels=dim, out_channels=dim // 2, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim // 2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=dim // 2, out_channels=1, kernel_size=3, padding=1),
+            nn.Conv2d(
+                in_channels=dim // 2, out_channels=num_mix, kernel_size=3, padding=1
+            ),
             nn.Softplus(),
         )
         self.num_mix = num_mix
