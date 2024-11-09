@@ -27,7 +27,7 @@ def setup_mlflow():
     if not mlflow_enabled:
         mlflow = Dummy()
         print("mlflow disabled")
-        return
+        return mlflow
 
     try:
         import mlflow
@@ -38,6 +38,7 @@ def setup_mlflow():
     mlflow.set_tracking_uri("https://mlflow.apps.ock.fmi.fi")
     mlflow.set_experiment("cc2gmm")
 
+    return mlflow
 
 matplotlib.use("Agg")
 
@@ -327,7 +328,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Using device", device)
 
-setup_mlflow()
+mlflow = setup_mlflow()
 
 model, num_params, found_existing_model = load_model(args)
 
