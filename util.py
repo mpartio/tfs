@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from glob import glob
 from torch.utils.data import DataLoader, TensorDataset
+from torch.distributions.kumaraswamy import Kumaraswamy
 
 
 def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False):
@@ -73,6 +74,45 @@ def read_training_history(run_name, latest_only=False):
         files = [x for x in files if latest_time in x]
     files.sort()
     return files
+
+
+def sample_kumaraswamy(alpha, beta, weights, num_samples=1):
+    """
+    Sample from a mixture of Kumaraswamy distributions.
+
+    Parameters:
+    - alpha (torch.Tensor): Tensor of alpha (concentration1) parameters, shape [num_mix].
+    - beta (torch.Tensor): Tensor of beta (concentration0) parameters, shape [num_mix].
+    - weights (torch.Tensor): Tensor of weights for each Kumaraswamy distribution in the mixture, shape [num_mix].
+    - num_samples (int): Number of samples to draw for each distribution in the mixture.
+
+    Returns:
+    - torch.Tensor: Sampled values from the mixture, shape [num_samples].
+    """
+    B, T, Y, X, num_mix = alpha.shape
+
+    # Ensure weights sum to 1 for valid mixture
+    weights = weights / weights.sum(dim=-1, keepdim=True)
+
+    # Sample from each Kumaraswamy component
+    samples = []
+    for i in range(num_mix):
+        # Define a Kumaraswamy distribution with given alpha and beta for each component
+        kumaraswamy_dist = Kumaraswamy(
+            concentration1=alpha[..., i], concentration0=beta[..., i]
+        )
+        samples_i = kumaraswamy_dist.rsample(
+            sample_shape=(num_samples,)
+        )  # Shape: [num_samples]
+        samples.append(samples_i)
+
+    # Stack samples and weight each component
+    samples = torch.stack(samples, dim=-1)  # Shape: [num_samples, num_mix]
+
+    # Weighted sum over components, shape: [num_samples]
+    weighted_samples = (samples * weights.unsqueeze(0)).sum(dim=-1)
+
+    return weighted_samples
 
 
 def sample_beta(alpha, beta, weights, num_samples=1):

@@ -1,70 +1,96 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import random
 from torch.distributions.normal import Normal
-from torch.distributions.kumaraswamy import Kumaraswamy
+
+# from torch.distributions.kumaraswamy import Kumaraswamy
+from util import sample_kumaraswamy
+
+
+def approximate_pairwise_diff(samples, num_pairs=100):
+    """
+    Approximates the mean pairwise absolute difference by sampling a subset of pairs.
+
+    Parameters:
+    - samples (torch.Tensor): Samples with shape [num_samples, -1].
+    - num_pairs (int): Number of random pairs to sample for approximation.
+
+    Returns:
+    - torch.Tensor: Approximate second expectation term, shape [batch, height, width].
+    """
+
+    N, _ = samples.shape
+    pairwise_diffs = []
+
+    # Randomly sample pairs of indices to compute differences
+    for _ in range(num_pairs):
+        i, j = random.sample(range(N), 2)
+        diff = torch.abs(samples[i] - samples[j])  # Shape: [batch, height, width]
+        pairwise_diffs.append(diff)
+
+    # Stack and compute the mean across sampled pairs
+
+    # Shape: [num_pairs, batch, height, width]
+    pairwise_diffs = torch.stack(pairwise_diffs, dim=0)
+
+    return pairwise_diffs
+
+    # Shape: [batch, height, width]
+    approx_second_term = 0.5 * pairwise_diffs.mean(dim=0)
+
+    return approx_second_term
 
 
 class CRPSKumaraswamyLoss(nn.Module):
-    def __init__(self, z=100):
-        super(CRPSBetaLoss, self).__init__()
-        self.z = z
+    def __init__(self, num_samples=100):
+        super(CRPSKumaraswamyLoss, self).__init__()
+        self.num_samples = num_samples
 
-    def forward(self, alpha, beta, weight, y_true):
+    def forward(self, alpha, beta, weights, y_true):
         """
         Compute the CRPS for a single mixture of Kumaraswamy distributions shared across all observations using Monte Carlo sampling.
 
         Parameters:
-        y_true (torch.Tensor): Tensor of true target values of shape (B, T, Y, X).
-        alpha (torch.Tensor): Tensor of 'alpha' parameters of shape (num_mix,).
-        beta (torch.Tensor): Tensor of 'beta' parameters of shape (num_mix,).
-        weights (torch.Tensor): Tensor of mixture weights of shape (num_mix,).
-        num_samples (int): Number of samples to draw per mixture component.
+        - y_true (torch.Tensor): Tensor of true target values of shape (B, T, Y, X).
+        - alpha (torch.Tensor): Alpha parameters for each cell, shape [batch, height, width, num_mix].
+        - beta (torch.Tensor): Beta parameters for each cell, shape [batch, height, width, num_mix].
+        - weights (torch.Tensor): Tensor of mixture weights of shape (num_mix,).
+        - num_samples (int): Number of samples to draw per mixture component.
 
         Returns:
-        torch.Tensor: The average CRPS over all observations.
+        - torch.Tensor: The average CRPS over all observations.
         """
 
-        B, T, Y, X = y_true.shape
+        B, T, Y, X, C = y_true.shape
 
-        # Expand y_true for broadcasting with samples
-        y_true = y_true.view(1, B, T, Y, X)  # Shape: (1, B, T, Y, X)
+        # Shape: [num_samples, batch, height, width]
+        samples = sample_kumaraswamy(alpha, beta, weights, num_samples=self.num_samples)
+        samples = samples.unsqueeze(-1)
 
-        # Sample from each component of the mixture Kumaraswamy distribution
-        samples = []
+        # Expand y_true to match samples for broadcasting
+        y_true_expanded = y_true.unsqueeze(0)  # Shape: [1, batch, height, width]
 
-        num_mix = alpha.shape[0]
-        for i in range(num_mix):
-            kumaraswamy_dist = Kumaraswamy(concentration1=a[i], concentration0=b[i])
-            # Shape: (num_samples,)
-            samples_i = kumaraswamy_dist.rsample(sample_shape=(num_samples,))
-            samples.append(samples_i)
+        # First Expectation: Mean absolute difference between samples and true values
+        # Shape: [batch, height, width]
+        term1 = torch.mean(torch.abs(samples - y_true_expanded), dim=0)
 
-        # Stack samples across components and apply weights
-        # Shape: (num_samples, num_mix)
-        samples = torch.stack(samples, dim=-1)
-        # Weighted sum over components, Shape: (num_samples,)
-        samples = (samples * weights).sum(dim=-1)
+        # Second Expectation: Mean absolute difference between pairs of samples for each cell
+        # Reshape samples for pairwise difference calculation
+        # Shape: [num_samples, batch * height * width]
+        samples_flat = samples.view(self.num_samples, -1)
 
-        # Reshape samples to (num_samples, 1, 1, 1, 1) for broadcasting with y_true
-        samples = samples.view(num_samples, 1, 1, 1, 1)
-        samples = samples.expand(num_samples, B, T, Y, X)
+        # Pairwise differences, shape: [num_samples, num_samples, batch * height * width]
+        pairwise_diff = approximate_pairwise_diff(samples_flat, num_pairs=100)
+        # pairwise_diff = samples_flat.unsqueeze(2) - samples_flat.unsqueeze(1)
 
-        # Compute the first expectation E_F[|X - y|]
-        # Shape: (B, T, Y, X)
-        term1 = torch.mean(torch.abs(samples - y_true), dim=0)
+        # Produce second expectation and reshape to match y_true
+        term2 = (0.5 * pairwise_diff.mean(dim=0)).view(y_true.shape)
 
-        # Compute the second expectation E_F[|X - X'|] using pairwise differences
-        samples_flat = samples.view(num_samples)  # Flatten to (num_samples,)
-        # Pairwise differences, Shape: (num_samples, num_samples)
-        diff = samples_flat.unsqueeze(1) - samples_flat.unsqueeze(0)
-        term2 = 0.5 * torch.mean(torch.abs(diff))  # Scalar
+        # Compute CRPS
+        crps = torch.mean(term1 - term2)
 
-        # Compute CRPS for each observation
-        crps_values = term1 - term2  # Shape: (B, T, Y, X)
-
-        # Return the average CRPS over all observations
-        return crps_values.mean()  # Return scalar average over B, T, Y, X
+        return crps
 
 
 class CRPSGaussianLoss(nn.Module):
