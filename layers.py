@@ -405,9 +405,6 @@ class PatchEmbedding(nn.Module):
     def forward(self, x):
         B, T, C, H, W = x.shape
 
-        assert x.shape[1:] == (1, 1, 128, 128), "Invalid input shape: {}".format(
-            x.shape[1:]
-        )
         # Remove the unnecessary time and channel dimension (T and C)
         # Note: this might need to be changed later
         x = x.squeeze(1)  # [:, 0, 1, :, :]  # Shape: (B, H, W)
@@ -770,7 +767,7 @@ class PatchRecoveryRaw(nn.Module):
         # are used in the input
         B, P, H, W, C = x.shape
         x = x.reshape(B * P, C, H, W)
-        x = self.conv(x)  # (B * C, 2, 128, 128)
+        x = self.conv(x)  # (B * C, 2, H, W)
         rec_H, rec_W = self.recover_size
         x = x.view(B, P, self.dim, rec_H, rec_W).permute(0, 1, 3, 4, 2)
 
@@ -787,7 +784,11 @@ class ConvolvedSkipConnection(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, skip, x):
-        assert skip.shape == x.shape, "Skip and input tensor must have the same shape"
+        assert (
+            skip.shape == x.shape
+        ), "Skip and input tensor must have the same shape: {} vs {}".format(
+            skip.shape, x.shape
+        )
         B, T, H, W, C = x.shape
 
         skip = skip.view(B * T, H, W, C).permute(0, 3, 1, 2)
