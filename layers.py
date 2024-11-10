@@ -170,8 +170,7 @@ class MixtureProbabilisticPredictionHeadWithConv(nn.Module):
         B, T, H, W, C = x.shape
         x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
         mean = self.mean_head(x)
-        log_var = self.var_head(x)
-        var = F.softplus(log_var) + 1e-6
+        var = self.var_head(x)
         weights = F.softmax(self.weights_head(x), dim=1) + 1e-6
 
         mean = mean.permute(0, 2, 3, 1).view(B, T, H, W, self.num_mix)
