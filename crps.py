@@ -8,7 +8,7 @@ from torch.distributions.normal import Normal
 from util import sample_kumaraswamy
 
 
-def approximate_pairwise_diff(samples, num_pairs=100):
+def approximate_pairwise_diff(samples, num_pairs):
     """
     Approximates the mean pairwise absolute difference by sampling a subset of pairs.
 
@@ -36,11 +36,6 @@ def approximate_pairwise_diff(samples, num_pairs=100):
 
     return pairwise_diffs
 
-    # Shape: [batch, height, width]
-    approx_second_term = 0.5 * pairwise_diffs.mean(dim=0)
-
-    return approx_second_term
-
 
 class CRPSKumaraswamyLoss(nn.Module):
     def __init__(self, num_samples=100):
@@ -62,10 +57,12 @@ class CRPSKumaraswamyLoss(nn.Module):
         - torch.Tensor: The average CRPS over all observations.
         """
 
-        B, T, Y, X, C = y_true.shape
+        B, T, H, W, C = y_true.shape
 
         # Shape: [num_samples, batch, height, width]
         samples = sample_kumaraswamy(alpha, beta, weights, num_samples=self.num_samples)
+
+        # Add channels dimension
         samples = samples.unsqueeze(-1)
 
         # Expand y_true to match samples for broadcasting
@@ -81,11 +78,12 @@ class CRPSKumaraswamyLoss(nn.Module):
         samples_flat = samples.view(self.num_samples, -1)
 
         # Pairwise differences, shape: [num_samples, num_samples, batch * height * width]
-        pairwise_diff = approximate_pairwise_diff(samples_flat, num_pairs=100)
-        # pairwise_diff = samples_flat.unsqueeze(2) - samples_flat.unsqueeze(1)
+        pairwise_diff = approximate_pairwise_diff(samples_flat, num_pairs=96)
 
         # Produce second expectation and reshape to match y_true
         term2 = (0.5 * pairwise_diff.mean(dim=0)).view(y_true.shape)
+
+        assert term1.shape == term2.shape
 
         # Compute CRPS
         crps = torch.mean(term1 - term2)
