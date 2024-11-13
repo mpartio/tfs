@@ -346,19 +346,22 @@ class MixtureBetaPredictionHead(nn.Module):
     def forward(self, x):
         B, T, H, W, C = x.shape
 
-        assert C % 3 == 0, "Invalid number of channels for MixtureBetaPredictionHead"
-
         n = self.num_mix
+
+        assert C == 3 * n, f"Expected channels to be 3*num_mix, but got {C}"
+
         alpha = F.softplus(x[:, :, :, :, :n]) + 1e-6
-        beta = F.softplus(x[:, :, :, :, n:]) + 1e-6
+        beta = F.softplus(x[:, :, :, :, n : 2 * n]) + 1e-6
         weights = F.softmax(x[:, :, :, :, 2 * n :], dim=-1)
 
-        if len(alpha.shape) == 4:
-            alpha = alpha.unsqueeze(-1)
-            beta = beta.unsqueeze(-1)
-            weights = weights.unsqueeze(-1)
+        assert len(alpha.shape) == 5
 
-        assert alpha.shape == beta.shape == weights.shape, "Invalid shape for output"
+        assert (
+            alpha.shape == beta.shape == weights.shape
+        ), "Invalid shape for output: {} - {} - {}".format(
+            alpha.shape, beta.shape, weights.shape
+        )
+
         return alpha, beta, weights
 
 
