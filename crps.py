@@ -70,7 +70,7 @@ class CRPSKumaraswamyLoss(nn.Module):
         B, T, H, W, C = y_true.shape
 
         # Shape: [num_samples, batch, height, width]
-        samples = sample_kumaraswamy(alpha, beta, weights, num_samples=self.num_samples)
+        samples = fast_sample_kumaraswamy(alpha, beta, weights, num_samples=self.num_samples)
 
         # Add channels dimension
         samples = samples.unsqueeze(-1)

@@ -77,6 +77,31 @@ def read_training_history(run_name, latest_only=False):
     return files
 
 
+def fast_sample_kumaraswamy(alpha, beta, weights, num_samples=1):
+    B, T, Y, X, num_mix = alpha.shape
+
+    # Sample uniform random variables
+    u = torch.rand(num_samples, B, T, Y, X, num_mix, device=alpha.device)
+
+    # Transform to Kumaraswamy samples with careful handling of numerical stability
+    # K(u; a, b) = (1 - (1 - u^(1/b))^(1/a))
+
+    # Step 1: u^(1/b)
+    u_safe = torch.clamp(u, min=1e-6, max=1 - 1e-6)  # Prevent 0 and 1
+    pow_1 = torch.pow(u_safe, 1.0 / beta.unsqueeze(0))
+
+    # Step 2: 1 - u^(1/b)
+    term_1 = torch.clamp(1 - pow_1, min=1e-6, max=1 - 1e-6)
+
+    # Step 3: (1 - u^(1/b))^(1/a)
+    samples = 1 - torch.pow(term_1, 1.0 / alpha.unsqueeze(0))
+
+    # Weight the samples
+    weighted_samples = (samples * weights.unsqueeze(0)).sum(dim=-1)
+
+    return weighted_samples
+
+
 def sample_kumaraswamy(alpha, beta, weights, num_samples=1):
     """
     Sample from a mixture of Kumaraswamy distributions.
