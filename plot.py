@@ -5,15 +5,22 @@ import numpy as np
 
 def plot(data, directory):
     # print("Plotting", start_time, "length", len(data["epoch"]))
-    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+
+    loss_components = int("loss_components" in data)
+    gradient_components = int("gradients" in data)
+
+    fig, ax = plt.subplots(
+        1, 1 + loss_components + gradient_components, figsize=(18, 6)
+    )
 
     ax[0].plot(data["epoch"], data["train_loss"], label="train_loss")
     ax[0].plot(data["epoch"], data["val_loss"], label="val_loss")
 
-    for k, v in data["loss_components"].items():
-        if "total" in k:
-            name = "_".join(k.split("_")[1:])
-            ax[0].plot(data["epoch"], v, label=name, linestyle="--")
+    if loss_components:
+        for k, v in data["loss_components"].items():
+            if "total" in k:
+                name = "_".join(k.split("_")[1:])
+                ax[0].plot(data["epoch"], v, label=name, linestyle="--")
 
     ax[0].scatter(
         data["saved"],
@@ -93,17 +100,19 @@ def gather(data, file):
         except KeyError:
             data["distribution_components"][k] = [v]
 
-    for k, v in new_data["loss_components"].items():
-        try:
-            data["loss_components"][k].append(new_data["loss_components"][k])
-        except KeyError:
-            data["loss_components"][k] = [new_data["loss_components"][k]]
+    if "loss_components" in new_data:
+        for k, v in new_data["loss_components"].items():
+            try:
+                data["loss_components"][k].append(new_data["loss_components"][k])
+            except KeyError:
+                data["loss_components"][k] = [new_data["loss_components"][k]]
 
-    for k, v in new_data["gradients"].items():
-        try:
-            data["gradients"][k].append(new_data["gradients"][k])
-        except KeyError:
-            data["gradients"][k] = [new_data["gradients"][k]]
+    if "gradients" in new_data:
+        for k, v in new_data["gradients"].items():
+            try:
+                data["gradients"][k].append(new_data["gradients"][k])
+            except KeyError:
+                data["gradients"][k] = [new_data["gradients"][k]]
 
     return data
 
