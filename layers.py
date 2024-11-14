@@ -342,6 +342,7 @@ class MixtureBetaPredictionHead(nn.Module):
     def __init__(self, num_mix):
         super(MixtureBetaPredictionHead, self).__init__()
         self.num_mix = num_mix
+        self.bias = 1e-6
 
     def forward(self, x):
         B, T, H, W, C = x.shape
@@ -350,9 +351,12 @@ class MixtureBetaPredictionHead(nn.Module):
 
         assert C == 3 * n, f"Expected channels to be 3*num_mix, but got {C}"
 
-        alpha = F.softplus(x[:, :, :, :, :n]) + 1e-6
-        beta = F.softplus(x[:, :, :, :, n : 2 * n]) + 1e-6
+        alpha = F.softplus(x[:, :, :, :, :n]) + self.bias
+        beta = F.softplus(x[:, :, :, :, n : 2 * n]) + self.bias
         weights = F.softmax(x[:, :, :, :, 2 * n :], dim=-1)
+
+        alpha = torch.clamp(alpha, 1e-6, 7)
+        beta = torch.clamp(beta, 1e-6, 7)
 
         assert len(alpha.shape) == 5
 
