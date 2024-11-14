@@ -8,9 +8,10 @@ from torch.distributions.normal import Normal
 from util import sample_kumaraswamy
 
 
-def approximate_pairwise_diff(samples, num_pairs):
+def approximate_pairwise_diff(samples, num_pairs, method="random"):
     """
     Approximates the mean pairwise absolute difference by sampling a subset of pairs.
+    Sampling is done within-batch.
 
     Parameters:
     - samples (torch.Tensor): Samples with shape [num_samples, -1].
@@ -23,14 +24,23 @@ def approximate_pairwise_diff(samples, num_pairs):
     N, _ = samples.shape
     pairwise_diffs = []
 
-    # Randomly sample pairs of indices to compute differences
-    for _ in range(num_pairs):
-        i, j = random.sample(range(N), 2)
-        diff = torch.abs(samples[i] - samples[j])  # Shape: [batch, height, width]
-        pairwise_diffs.append(diff)
-
+    if method == "random":
+        # Randomly sample pairs of indices to compute differences
+        for _ in range(num_pairs):
+            i, j = random.sample(range(N), 2)
+            diff = torch.abs(samples[i] - samples[j])  # Shape: [batch, height, width]
+            pairwise_diffs.append(diff)
+    elif method == "deterministic":
+        # Deterministically sample pairs of indices to compute differences
+        for i in range(0, num_pairs - 1, 2):
+            diff = torch.abs(samples[i] - samples[i + 1])
+            pairwise_diffs.append(diff)
+    elif method == "systematic":
+        i = torch.arange(num_pairs, device=samples.device)
+        j = (i + N//2) % N  # This ensures better coverage
+        diff = torch.abs(samples[i] - samples[j])
+        return diff
     # Stack and compute the mean across sampled pairs
-
     # Shape: [num_pairs, batch, height, width]
     pairwise_diffs = torch.stack(pairwise_diffs, dim=0)
 
@@ -78,7 +88,9 @@ class CRPSKumaraswamyLoss(nn.Module):
         samples_flat = samples.view(self.num_samples, -1)
 
         # Pairwise differences, shape: [num_samples, num_samples, batch * height * width]
-        pairwise_diff = approximate_pairwise_diff(samples_flat, num_pairs=96)
+        pairwise_diff = approximate_pairwise_diff(
+            samples_flat, num_pairs=32, method="systematic"
+        )
 
         # Produce second expectation and reshape to match y_true
         term2 = (0.5 * pairwise_diff.mean(dim=0)).view(y_true.shape)
@@ -87,6 +99,9 @@ class CRPSKumaraswamyLoss(nn.Module):
 
         # Compute CRPS
         crps = torch.mean(term1 - term2)
+
+        if torch.isnan(crps):
+            raise ValueError(f"NaN in CRPS: term1={term1.mean()}, term2={term2.mean()}")
 
         return crps
 
