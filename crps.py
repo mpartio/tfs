@@ -5,7 +5,7 @@ import random
 from torch.distributions.normal import Normal
 
 # from torch.distributions.kumaraswamy import Kumaraswamy
-from util import sample_kumaraswamy
+from util import fast_sample_kumaraswamy, sample_kumaraswamy
 
 
 def approximate_pairwise_diff(samples, num_pairs, method="random"):
@@ -37,7 +37,7 @@ def approximate_pairwise_diff(samples, num_pairs, method="random"):
             pairwise_diffs.append(diff)
     elif method == "systematic":
         i = torch.arange(num_pairs, device=samples.device)
-        j = (i + N//2) % N  # This ensures better coverage
+        j = (i + N // 2) % N  # This ensures better coverage
         diff = torch.abs(samples[i] - samples[j])
         return diff
     # Stack and compute the mean across sampled pairs
@@ -70,7 +70,9 @@ class CRPSKumaraswamyLoss(nn.Module):
         B, T, H, W, C = y_true.shape
 
         # Shape: [num_samples, batch, height, width]
-        samples = fast_sample_kumaraswamy(alpha, beta, weights, num_samples=self.num_samples)
+        samples = fast_sample_kumaraswamy(
+            alpha, beta, weights, num_samples=self.num_samples
+        )
 
         # Add channels dimension
         samples = samples.unsqueeze(-1)
