@@ -260,3 +260,11 @@ def setup_mlflow(experiment, url="https://mlflow.apps.ock.fmi.fi"):
     mlflow.set_experiment(experiment)
 
     return mlflow
+
+
+def beta_function(x, y):
+    """
+    Compute the Beta function B(x, y) = Γ(x) * Γ(y) / Γ(x + y)
+    using the log-Gamma function for numerical stability.
+    """
+    return torch.exp(torch.lgamma(x) + torch.lgamma(y) - torch.lgamma(x + y))
