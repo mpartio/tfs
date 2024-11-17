@@ -342,7 +342,7 @@ class MixtureBetaPredictionHead(nn.Module):
     def __init__(self, num_mix):
         super(MixtureBetaPredictionHead, self).__init__()
         self.num_mix = num_mix
-        self.bias = 1e-6
+        self.bias = 0.1
 
     def forward(self, x):
         B, T, H, W, C = x.shape
