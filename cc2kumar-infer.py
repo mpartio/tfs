@@ -7,7 +7,7 @@ from datetime import datetime
 from glob import glob
 from config import get_args
 from cc2kumar import CloudCastV2
-from util import fast_sample_kumaraswamy
+from util import fast_sample_kumaraswamy, beta_function
 
 args = get_args()
 
@@ -17,6 +17,7 @@ if args.run_name is None:
 
 
 now = datetime.now().strftime("%Y%m%d%H%M%S")
+
 
 def kumaraswamy_pdf(x, alpha, beta):
     """
@@ -86,14 +87,6 @@ def plot_beta_2d(alpha, beta, weights):
     plt.savefig(f"runs/{args.run_name}/{now}_kumarmix2d.png")
 
 
-def beta_function(x, y):
-    """
-    Compute the Beta function B(x, y) = Γ(x) * Γ(y) / Γ(x + y)
-    using the log-Gamma function for numerical stability.
-    """
-    return torch.exp(torch.lgamma(x) + torch.lgamma(y) - torch.lgamma(x + y))
-
-
 configs = glob(f"runs/{args.run_name}/*-config.json")
 
 if len(configs) == 0:
@@ -137,11 +130,15 @@ with torch.no_grad():
 
     sampled = fast_sample_kumaraswamy(alpha, beta, weights)
     mean = weights * (beta * beta_function(1 + 1 / alpha, beta))
-    # mean = weights * (alpha / (alpha + beta))
-    predicted_mean = torch.sum(mean, dim=-1, keepdim=True)
+    second_moment = beta * beta_function(1 + 2 / alpha, beta)
+    variance = second_moment - mean**2
+    stde = torch.sqrt(variance)
+    # predicted_mean = torch.sum(mean, dim=-1, keepdim=True)
 
-predicted_mean = predicted_mean.cpu()
-predicted_image = predicted_mean.squeeze().numpy()
+predicted_mean = mean.squeeze().cpu().numpy().mean(axis=-1)
+predicted_stde = stde.squeeze().cpu().numpy().mean(axis=-1)
+predicted_alpha = alpha.squeeze().cpu().numpy()
+predicted_beta = beta.squeeze().cpu().numpy()
 
 sampled_image = sampled.cpu().numpy().squeeze()
 
@@ -155,7 +152,7 @@ print(
 )
 
 print(
-    "predicted --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
+    "sampled --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
         np.min(sampled_image),
         np.mean(sampled_image),
         np.std(sampled_image),
@@ -164,28 +161,58 @@ print(
 )
 
 print(
-    "sampled   --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
-        np.min(predicted_image),
-        np.mean(predicted_image),
-        np.std(predicted_image),
-        np.max(predicted_image),
+    "mean   --> min: {:.4f} mean: {:.4f} stde: {:.4f} max: {:.4f}".format(
+        np.min(predicted_mean),
+        np.mean(predicted_mean),
+        np.std(predicted_mean),
+        np.max(predicted_mean),
     )
 )
 
-fig, axs = plt.subplots(1, 4, figsize=(12, 5))
+num_mix = predicted_alpha.shape[-1]
+
+fig, axs = plt.subplots(2, 5, figsize=(12, 5))
 
 for i in range(0, 2):
-    axs[i].imshow(pred[i + 1, ...].squeeze(), cmap="gray")
-    axs[i].set_title(f"Input Channel {i}" if i < 1 else "Target Image")
-    axs[i].axis("off")  # Hide axes
+    im = axs[0][i].imshow(pred[i + 1, ...].squeeze(), cmap="gray")
+    axs[0][i].set_title(f"Input" if i < 1 else "Target Image")
+    axs[0][i].axis("off")  # Hide axes
+    plt.colorbar(im, ax=axs[0, i])
 
-axs[-2].imshow(sampled_image, cmap="gray")
-axs[-2].set_title("Sampled Image")
-axs[-2].axis("off")  # Hide axes
+im = axs[0][2].imshow(sampled_image, cmap="gray")
+axs[0][2].set_title("Sampled Image")
+axs[0][2].axis("off")  # Hide axes
+plt.colorbar(im, ax=axs[0, 2])
 
-axs[-1].imshow(predicted_image, cmap="gray")
-axs[-1].set_title("Mean Image")
-axs[-1].axis("off")  # Hide axes
+im = axs[0][3].imshow(predicted_mean, cmap="gray")
+axs[0][3].set_title("Mean")
+axs[0][3].axis("off")  # Hide axes
+plt.colorbar(im, ax=axs[0, 3])
+
+im = axs[0][4].imshow(predicted_stde, cmap="gray")
+axs[0][4].set_title("Stde")
+axs[0][4].axis("off")  # Hide axes
+plt.colorbar(im, ax=axs[0, 4])
+
+for i in range(num_mix):
+    im = axs[1][i * 2].imshow(predicted_alpha[...,i], cmap="gray")
+    axs[1][i * 2].set_title(f"Alpha{i}")
+    axs[1][i * 2].axis("off")  # Hide axes
+    plt.colorbar(im, ax=axs[1, i * 2])
+
+    im = axs[1][i * 2 + 1].imshow(predicted_beta[...,i], cmap="gray")
+    axs[1][i * 2 + 1].set_title(f"Beta{i}")
+    axs[1][i * 2 + 1].axis("off")  # Hide axes
+    plt.colorbar(im, ax=axs[1, i * 2 + 1])
+
+bins = np.linspace(0, 1, 20)
+hist1, _ = np.histogram(sampled_image.flatten(), bins=bins, density=True)
+hist2, _ = np.histogram(target_image.flatten(), bins=bins, density=True)
+
+bar_width = 0.05
+axs[1][-1].bar(bins[:-1] - bar_width / 2, hist1, width=bar_width, alpha=0.7, color="r", label="Sampled")
+axs[1][-1].bar(bins[:-1] + bar_width / 2, hist2, width=bar_width, alpha=0.7, color="b", label="Target")
+axs[1][-1].legend()
 
 plt.tight_layout()
 plt.savefig(f"runs/{args.run_name}/{now}_cc2kumar-prediction.png")
