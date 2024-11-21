@@ -135,8 +135,8 @@ with torch.no_grad():
     stde = torch.sqrt(variance)
     # predicted_mean = torch.sum(mean, dim=-1, keepdim=True)
 
-predicted_mean = mean.squeeze().cpu().numpy().mean(axis=-1)
-predicted_stde = stde.squeeze().cpu().numpy().mean(axis=-1)
+predicted_mean = mean.squeeze().cpu().numpy() #.mean(axis=-1)
+predicted_stde = stde.squeeze().cpu().numpy() #.mean(axis=-1)
 predicted_alpha = alpha.squeeze().cpu().numpy()
 predicted_beta = beta.squeeze().cpu().numpy()
 
@@ -169,9 +169,9 @@ print(
     )
 )
 
-num_mix = predicted_alpha.shape[-1]
+num_mix = 1 #predicted_alpha.shape[-1]
 
-fig, axs = plt.subplots(2, 5, figsize=(12, 5))
+fig, axs = plt.subplots(2, 4, figsize=(12, 5))
 
 for i in range(0, 2):
     im = axs[0][i].imshow(pred[i + 1, ...].squeeze(), cmap="gray")
@@ -189,21 +189,25 @@ axs[0][3].set_title("Mean")
 axs[0][3].axis("off")  # Hide axes
 plt.colorbar(im, ax=axs[0, 3])
 
-im = axs[0][4].imshow(predicted_stde, cmap="gray")
-axs[0][4].set_title("Stde")
-axs[0][4].axis("off")  # Hide axes
-plt.colorbar(im, ax=axs[0, 4])
+im = axs[1][0].imshow(predicted_stde, cmap="gray")
+axs[1][0].set_title("Stde")
+axs[1][0].axis("off")  # Hide axes
+plt.colorbar(im, ax=axs[1, 0])
+
+if len(predicted_alpha.shape) == 2:
+    predicted_alpha = predicted_alpha[..., np.newaxis]
+    predicted_beta = predicted_beta[..., np.newaxis]
 
 for i in range(num_mix):
-    im = axs[1][i * 2].imshow(predicted_alpha[...,i], cmap="gray")
-    axs[1][i * 2].set_title(f"Alpha{i}")
-    axs[1][i * 2].axis("off")  # Hide axes
-    plt.colorbar(im, ax=axs[1, i * 2])
+    im = axs[1][1 + i * 2].imshow(predicted_alpha[...,i], cmap="gray")
+    axs[1][1 + i * 2].set_title(f"Alpha{i}")
+    axs[1][1 + i * 2].axis("off")  # Hide axes
+    plt.colorbar(im, ax=axs[1, 1 + i * 2])
 
-    im = axs[1][i * 2 + 1].imshow(predicted_beta[...,i], cmap="gray")
-    axs[1][i * 2 + 1].set_title(f"Beta{i}")
-    axs[1][i * 2 + 1].axis("off")  # Hide axes
-    plt.colorbar(im, ax=axs[1, i * 2 + 1])
+    im = axs[1][1 + i * 2 + 1].imshow(predicted_beta[...,i], cmap="gray")
+    axs[1][1 + i * 2 + 1].set_title(f"Beta{i}")
+    axs[1][1 + i * 2 + 1].axis("off")  # Hide axes
+    plt.colorbar(im, ax=axs[1, 1 + i * 2 + 1])
 
 bins = np.linspace(0, 1, 20)
 hist1, _ = np.histogram(sampled_image.flatten(), bins=bins, density=True)

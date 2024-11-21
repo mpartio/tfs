@@ -20,8 +20,10 @@ class DistributionDiagnostics:
             "error_high": [],
             "error_low": [],
             "error_mid": [],
-            "alpha_error_corr": [],
-            "beta_error_corr": [],
+            "alpha0_error_corr": [],
+            "beta0_error_corr": [],
+#            "alpha1_error_corr": [],
+#            "beta1_error_corr": [],
             "var_row_means": [],
             "var_col_means": [],
             "var_row_std": [],
@@ -37,9 +39,6 @@ class DistributionDiagnostics:
             "viewing_angle_weighted_var": [],
             "distance_profile": [],
             "radial_profile": [],
-            "last_variance_map": None,
-            "last_targets": None,
-            "last_inputs": None,
         }
         self.val_history = deepcopy(self.train_history)
 
@@ -103,29 +102,33 @@ class DistributionDiagnostics:
                 }
             )
 
+            if len(alpha.shape) == 4:
+                alpha = alpha.unsqueeze(-1)
+                beta = beta.unsqueeze(-1)
             # Parameter-error correlations
-            alpha = alpha.flatten()
-            beta = beta.flatten()
+
             error = error.flatten()
 
-            result.update(
-                {
-                    "alpha_error_corr": torch.corrcoef(torch.stack([alpha, error]))[
-                        0, 1
-                    ].item(),
-                    "beta_error_corr": torch.corrcoef(torch.stack([beta, error]))[
-                        0, 1
-                    ].item(),
-                }
-            )
+            for n in range(alpha.shape[-1]):
+                alpha_ = alpha[..., n].flatten()
+                beta_ = beta[..., n].flatten()
+
+                result.update(
+                    {
+                        f"alpha{n}_error_corr": torch.corrcoef(
+                            torch.stack([alpha_, error])
+                        )[0, 1].item(),
+                        f"beta{n}_error_corr": torch.corrcoef(
+                            torch.stack([beta_, error])
+                        )[0, 1].item(),
+                    }
+                )
 
             # Spatial variance analysis
             var_map = samples.var(dim=0)  # [B, H, W]
 
             spatial_stats = self.analyze_spatial_patterns(var_map)
             result.update(spatial_stats)
-
-            result["last_variance_map"] = var_map.detach().cpu().numpy()
 
         result["batch_size"] = batch_size
 
@@ -448,18 +451,20 @@ class DistributionDiagnostics:
         # Parameter-Error Correlations
         for prefix, style in [("Train", "-"), ("Val", "--")]:
             hist = train_hist if prefix == "Train" else val_hist
-            axes[2, 0].plot(
-                hist["alpha_error_corr"],
-                label=f"{prefix} Alpha-Error",
-                linestyle=style,
-                alpha=0.6,
-            )
-            axes[2, 0].plot(
-                hist["beta_error_corr"],
-                label=f"{prefix} Beta-Error",
-                linestyle=style,
-                alpha=0.6,
-            )
+            for n in range(1):
+                if len(hist[f"alpha{n}_error_corr"]) > 0:
+                    axes[2, 0].plot(
+                        hist[f"alpha{n}_error_corr"],
+                        label=f"{prefix} Alpha{n}-Error",
+                        linestyle=style,
+                        alpha=0.6,
+                    )
+                axes[2, 0].plot(
+                    hist[f"beta{n}_error_corr"],
+                    label=f"{prefix} Beta{n}-Error",
+                    linestyle=style,
+                    alpha=0.6,
+                )
         axes[2, 0].set_title("Parameter-Error Correlations")
         axes[2, 0].set_xlabel("Batch (x50)")
         axes[2, 0].set_ylabel("Correlation")
@@ -615,59 +620,4 @@ class DistributionDiagnostics:
 
         plt.tight_layout()
         plt.savefig(f"{self.run_dir}/spatial_diagnostics_epoch_{epoch:03d}.png")
-        plt.close()
-
-    def plot_detailed_spatial_analysis(self, epoch):
-        """Create a comprehensive spatial analysis plot"""
-        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
-        axes = np.atleast_2d(axes)
-
-        var_map = self.val_history["last_variance_map"]
-        var_map = np.mean(var_map, axis=(0, 1))
-        # 1. Variance Map with Nadir Point
-        H, W = var_map.shape[-2:]
-        im = axes[0, 0].imshow(var_map)
-        axes[0, 0].axvline(W // 2, color="r", linestyle="--", alpha=0.3)  # Nadir line
-        axes[0, 0].set_title("Variance Map with Nadir Line")
-        plt.colorbar(im, ax=axes[0, 0])
-
-        # 2. Variance vs Latitude (averaging across longitudes)
-        lat_variance = var_map.mean(axis=-1)  # Average across W
-        axes[0, 1].plot(lat_variance)
-        axes[0, 1].set_title("Variance vs Y")
-        axes[0, 1].set_xlabel("South → North")
-
-        # 3. Variance vs Longitude (averaging across latitudes)
-        lon_variance = var_map.mean(axis=-2)  # Average across H
-        axes[0, 2].plot(lon_variance)
-        axes[0, 2].set_title("Variance vs X")
-        axes[0, 2].set_xlabel("West → East")
-
-        # 4. Combined Distance Analysis
-        # Create 2D grid showing both nadir distance and radial distance
-        nadir_y, nadir_x = H, W // 2
-        y, x = np.ogrid[:H, :W]
-        nadir_dist = np.sqrt((y - nadir_y) ** 2 + (x - nadir_x) ** 2)
-
-        center_y, center_x = H // 2, W // 2
-        radial_dist = np.sqrt((y - center_y) ** 2 + (x - center_x) ** 2)
-
-        # Plot both distances
-        axes[0, 3].scatter(
-            nadir_dist.flatten(), radial_dist.flatten(), c=var_map.flatten(), alpha=0.5
-        )
-        axes[0, 3].set_xlabel("Distance from Nadir")
-        axes[0, 3].set_ylabel("Radial Distance")
-        axes[0, 3].set_title("Variance by Both Distance Metrics")
-
-        # Add your domain knowledge annotations
-        # axes[1,1].axis('off')
-        # axes[1,1].text(0.1, 0.9, "Satellite Viewing Geometry Effects:", fontsize=10)
-        # axes[1,1].text(0.1, 0.8, "• Better viewing in lower half", fontsize=10)
-        # axes[1,1].text(0.1, 0.7, "• Top-right quadrant artifact", fontsize=10)
-        # axes[1,1].text(0.1, 0.6, "• Earth curvature effects", fontsize=10)
-        # Add more domain-specific notes
-
-        plt.tight_layout()
-        plt.savefig(f"{self.run_dir}/detailed_spatial_analysis_epoch_{epoch:03d}.png")
         plt.close()
