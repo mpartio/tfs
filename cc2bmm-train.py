@@ -295,7 +295,7 @@ def train(model, train_loader, val_loader, found_existing_model):
             torch.save(model.state_dict(), f"{run_dir}/model.pth")
 
         break_loop = False
-        if epoch >= 8 and epoch - min_loss_epoch > 12:
+        if min_loss_epoch is not None and (epoch >= 8 and epoch - min_loss_epoch > 12):
             print("No improvement in 12 epochs; early stopping")
             break_loop = True
 
