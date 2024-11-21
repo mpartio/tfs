@@ -43,13 +43,13 @@ def roll_forecast(model, x, y, steps):
         alpha, beta, weights = model(x)
 
         _crps_loss = crps_loss(alpha, beta, weights, y_true)
-        _beta_reg = beta_regularization(beta)
+        # _beta_reg = mixture_regularization(weights, alpha, beta)
 
-        total_loss = _crps_loss + _beta_reg
+        total_loss = _crps_loss
 
         cumulative_loss += total_loss
         cumulative_crps_loss += _crps_loss
-        cumulative_beta_regularization += _beta_reg
+        # cumulative_beta_regularization += _beta_reg
 
     assert steps == 1
     cumulative_loss /= steps
@@ -65,65 +65,6 @@ def roll_forecast(model, x, y, steps):
         "weights": weights,
         "prediction": None,  # prediction,
     }
-
-
-# def spatial_smoothness_loss(alpha, beta, weights, lambda_smooth=100, return_raw=False):
-#    """
-#    Apply smoothness regularization to mean of Kumaraswamy distribution
-#    """
-#    # Mean of Kumaraswamy is alpha/(alpha + 1)
-#    mean_pred = alpha / (alpha + 1)
-#
-#    # Compute gradients in both directions
-#    dy = mean_pred[:, :, 1:, :] - mean_pred[:, :, :-1, :]
-#    dx = mean_pred[:, :, :, 1:] - mean_pred[:, :, :, :-1]
-#
-#    raw_loss = torch.mean(dx**2) + torch.mean(dy**2)
-#
-#    if return_raw:
-#        return (raw_loss, lambda_smooth * raw_loss)
-#    else:
-#        return lambda_smooth * raw_loss
-
-
-def beta_regularization(beta, target_beta=1.5, lambda_beta=0.1):
-    """
-    Penalize beta values that exceed target_beta
-    - Soft constraint using ReLU to only penalize when beta > target_beta
-    - Quadratic penalty for smoother gradients
-    """
-    excess_beta = torch.relu(beta - target_beta)
-    return lambda_beta * torch.mean(excess_beta**2)
-
-
-def analyze_parameter_variation(epoch, alpha, beta):
-    """Analyze spatial variation in distribution parameters"""
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-    # Parameter maps
-    im1 = axes[0, 0].imshow(alpha[0, 0].cpu())  # Single batch, channel
-    axes[0, 0].set_title("Alpha Map")
-    plt.colorbar(im1, ax=axes[0, 0])
-
-    im2 = axes[0, 1].imshow(beta[0, 0].cpu())
-    axes[0, 1].set_title("Beta Map")
-    plt.colorbar(im2, ax=axes[0, 1])
-
-    # Local variation maps
-    alpha_var = (alpha[0, 0, 1:, :] - alpha[0, 0, :-1, :]) ** 2
-    beta_var = (beta[0, 0, 1:, :] - beta[0, 0, :-1, :]) ** 2
-
-    im3 = axes[1, 0].imshow(alpha_var.cpu())
-    axes[1, 0].set_title("Alpha Local Variation")
-    plt.colorbar(im3, ax=axes[1, 0])
-
-    im4 = axes[1, 1].imshow(beta_var.cpu())
-    axes[1, 1].set_title("Beta Local Variation")
-    plt.colorbar(im4, ax=axes[1, 1])
-
-    plt.tight_layout()
-    plt.savefig(f"runs/{args.run_name}/parameter_variation_{epoch:03d}.png")
-    plt.close()
 
 
 def train(model, train_loader, val_loader, found_existing_model):
@@ -194,11 +135,11 @@ def train(model, train_loader, val_loader, found_existing_model):
                 loss = roll_forecast(model, inputs, targets, 1)
                 train_loss = loss["loss"]
                 crps_loss = loss["crps_loss"]
-                beta_regularization = loss["beta_regularization"]
+                # beta_regularization = loss["beta_regularization"]
 
                 total_train_loss += train_loss.item()
                 total_crps_loss += crps_loss.item()
-                total_beta_regularization += beta_regularization.item()
+                # total_beta_regularization += beta_regularization.item()
 
             # optimizer.zero_grad()
 
@@ -207,37 +148,36 @@ def train(model, train_loader, val_loader, found_existing_model):
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                optimizer.zero_grad()
+                # optimizer.zero_grad()
 
-                crps_loss.backward(retain_graph=True)
+                # crps_loss.backward(retain_graph=True)
 
-                grad_magnitudes["crps_loss"] = sum(
-                    p.grad.abs().sum().item()
-                    for p in model.parameters()
-                    if p.grad is not None
-                )
+                # grad_magnitudes["crps_loss"] = sum(
+                #    p.grad.abs().sum().item()
+                #    for p in model.parameters()
+                #    if p.grad is not None
+                # )
 
-                optimizer.zero_grad()
+                # optimizer.zero_grad()
 
-                beta_regularization.backward(retain_graph=True)
+                # beta_regularization.backward(retain_graph=True)
 
-                grad_magnitudes["beta_regularization"] = sum(
-                    p.grad.abs().sum().item()
-                    for p in model.parameters()
-                    if p.grad is not None
-                )
+                # grad_magnitudes["beta_regularization"] = sum(
+                #    p.grad.abs().sum().item()
+                #    for p in model.parameters()
+                #    if p.grad is not None
+                # )
 
-                optimizer.zero_grad()
+                # optimizer.zero_grad()
 
                 train_loss.backward()
-
-                grad_magnitudes["total_grad"] = sum(
-                    p.grad.norm().item()
-                    for p in model.parameters()
-                    if p.grad is not None
-                )
+                #    p.grad.norm().item()
+                #    for p in model.parameters()
+                #    if p.grad is not None
+                # )
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
                 optimizer.step()
 
             if batch_idx % 60 == 0:
@@ -257,13 +197,7 @@ def train(model, train_loader, val_loader, found_existing_model):
 
                     # Store in training history
                     for key in diagnostics.train_history:
-                        if key in ("last_variance_map", "last_targets", "last_inputs"):
-                            # diagnostics.train_history[key] = batch_diagnostics[key]
-                            continue
-                        else:
-                            diagnostics.train_history[key].append(
-                                batch_diagnostics[key]
-                            )
+                        diagnostics.train_history[key].append(batch_diagnostics[key])
 
         total_train_loss /= len(train_loader)
         total_crps_loss /= len(train_loader)
@@ -290,12 +224,16 @@ def train(model, train_loader, val_loader, found_existing_model):
 
                 total_val_loss += loss["loss"].item()
                 total_val_crps_loss += loss["crps_loss"].item()
-                total_val_beta_regularization += loss["beta_regularization"].item()
+                # total_val_beta_regularization += loss["beta_regularization"].item()
 
                 assert np.isnan(total_val_loss) == 0, "NaN in validation loss"
 
-                if batch_idx == len(val_loader) - 1:
-                    analyze_parameter_variation(epoch, loss["alpha"], loss["beta"])
+            if (
+                (epoch == 1 or epoch > 100)
+                and epoch % 10 == 0
+                and batch_idx == len(val_loader) - 1
+            ):
+                pass
 
             # Validation diagnostics (compute for all validation batches)
             samples = sample_kumaraswamy(
@@ -308,11 +246,7 @@ def train(model, train_loader, val_loader, found_existing_model):
 
             # Store in validation history
             for key in diagnostics.val_history:
-                if key in ("last_variance_map", "last_targets", "last_inputs"):
-                    # diagnostics.val_history[key] = batch_diagnostics[key]
-                    continue
-                else:
-                    diagnostics.val_history[key].append(batch_diagnostics[key])
+                diagnostics.val_history[key].append(batch_diagnostics[key])
 
         n = len(val_loader)
         total_val_loss /= n
@@ -360,8 +294,8 @@ def train(model, train_loader, val_loader, found_existing_model):
             torch.save(model.state_dict(), f"{run_dir}/model.pth")
 
         break_loop = False
-        if min_loss_epoch is not None and (epoch >= 8 and epoch - min_loss_epoch > 12):
-            print("No improvement in 12 epochs; early stopping")
+        if min_loss_epoch is not None and (epoch >= 8 and epoch - min_loss_epoch > 14):
+            print("No improvement in 14 epochs; early stopping")
             break_loop = True
 
         epoch_end_time = datetime.now()
@@ -386,8 +320,6 @@ def train(model, train_loader, val_loader, found_existing_model):
             "loss_components": {
                 "crps": total_val_crps_loss,
                 "beta_reg": total_val_beta_regularization,
-                "weight_beta_reg": 0.1,
-                "weight_beta_target": 1.5,
             },
             "gradients": {
                 "crps": grad_magnitudes["crps_loss"],
