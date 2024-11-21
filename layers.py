@@ -425,6 +425,44 @@ class PatchEmbedding(nn.Module):
         return x
 
 
+class PatchEmbeddingWithConv(nn.Module):
+    def __init__(self, dim):
+        super(PatchEmbeddingWithConv, self).__init__()
+
+        assert dim == 64, "this class only tested with dim=64"
+        self.conv1 = nn.Conv2d(
+            in_channels=1, out_channels=dim // 2, kernel_size=(2, 2), stride=(2, 2)
+        )
+
+        self.bn1 = nn.BatchNorm2d(dim // 2)
+
+        self.relu1 = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(
+            in_channels=dim // 2,
+            out_channels=dim,
+            kernel_size=(2, 2),
+            stride=(2, 2),
+        )
+
+        self.bn2 = nn.BatchNorm2d(dim)
+
+        self.relu2 = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C)
+        x = x.permute(0, 3, 1, 2)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu1(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu2(x)
+        x = x.permute(0, 1, 2, 3).reshape(B, T, H // 4, W // 4, -1)
+        return x
+
+
 class PatchEmbeddingWithPositionalEncoding(nn.Module):
     def __init__(self, patch_size, dim):
         super(PatchEmbeddingWithPositionalEncoding, self).__init__()
@@ -689,6 +727,32 @@ class PatchRecovery(nn.Module):
         x = self.conv(x)  # (B * C, 2, 128, 128)
         rec_H, rec_W = self.recover_size
         x = x.view(B, P, self.num_output, rec_H, rec_W).permute(0, 1, 3, 4, 2)
+
+        return x
+
+
+class PatchRecoveryWithConv(nn.Module):
+    def __init__(self, dim, output_dim):
+        super(PatchRecoveryWithConv, self).__init__()
+
+        self.convt1 = nn.ConvTranspose2d(
+            dim, dim // 2, kernel_size=(2, 2), stride=(2, 2)
+        )
+        self.bn = nn.BatchNorm2d(dim // 2)
+        self.relu = nn.ReLU(inplace=True)
+        self.convt2 = nn.ConvTranspose2d(
+            dim // 2, output_dim, kernel_size=(2, 2), stride=(2, 2)
+        )
+        self.output_dim = output_dim
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        x = self.convt1(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.convt2(x)
+        x = x.permute(0, 1, 2, 3).reshape(B, T, 128, 128, self.output_dim)
 
         return x
 
