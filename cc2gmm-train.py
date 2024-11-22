@@ -23,21 +23,6 @@ args = get_args()
 
 gnll_loss = MixtureGaussianNLLLoss()
 
-
-class PenaltyLoss:
-    def __init__(self, alpha=1.0):
-        self.alpha = alpha
-        pass
-
-    def __call__(self, y_pred):
-        penalty_loss = alpha * (
-            max(0, y_pred - 1)  # Penalize if y_pred > 1
-            + max(0, -y_pred)  # Penalize if y_pred < 0
-        )
-
-        return penalty_loss
-
-
 if args.run_name is None:
     args.run_name = randomname.get_name()
     print("No run name specified, generating a new random name:", args.run_name)
@@ -184,13 +169,13 @@ def train(model, train_loader, val_loader, found_existing_model):
         stde_s = np.asarray(stde_s).mean(axis=(0, 1, 2, 3))
         weights_s = np.asarray(weights_s).mean(axis=(0, 1, 2, 3))
 
-        plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
-        plt.title(f"Epoch {epoch}")
-        plt.colorbar()
-        plt.savefig(
-            f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
-        )
-        plt.close()
+        #plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
+        #plt.title(f"Epoch {epoch}")
+        #plt.colorbar()
+        #plt.savefig(
+        #    f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
+        #)
+        #plt.close()
 
         if epoch <= 10 and not found_existing_model:
             lambda_scheduler.step()

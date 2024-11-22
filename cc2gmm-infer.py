@@ -7,12 +7,15 @@ from scipy.stats import norm
 from glob import glob
 from config import get_args
 from cc2gmm import CloudCastV2
+from datetime import datetime
 
 args = get_args()
 
 if args.run_name is None:
     print("Please provide a run name")
     sys.exit(1)
+
+now = datetime.now().strftime("%Y%m%d%H%M%S")
 
 
 def plot_pdf(mean, stde, weights):
@@ -42,7 +45,7 @@ def plot_pdf(mean, stde, weights):
     plt.xlabel("x")
     plt.ylabel("PDF")
     plt.title("Mixture of Gaussian Distributions")
-    plt.savefig(f"runs/{args.run_name}/gaussian_mix.png")
+    plt.savefig(f"runs/{args.run_name}/{now}_gaussian_mix.png")
 
 
 def plot_2d(mean, stde, weights):
@@ -65,7 +68,7 @@ def plot_2d(mean, stde, weights):
         fig.colorbar(im3, ax=axes[i, 2])
 
     plt.tight_layout()
-    plt.savefig(f"runs/{args.run_name}/gaussian_mix2d.png")
+    plt.savefig(f"runs/{args.run_name}/{now}_gaussian_mix2d.png")
 
 
 def sample(mean, stde, weights):
@@ -186,7 +189,7 @@ axs[-1].set_title("Mean Image")
 axs[-1].axis("off")  # Hide axes
 
 plt.tight_layout()
-plt.savefig(f"runs/{args.run_name}/cc2gmm-prediction.png")
+plt.savefig(f"runs/{args.run_name}/{now}_cc2gmm-prediction.png")
 
 
 for i in range(model.num_mix):
