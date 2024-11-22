@@ -1,37 +1,82 @@
 import numpy as np
 import torch
 import os
+import xarray as xr
+import zarr
 from glob import glob
 from torch.utils.data import DataLoader, TensorDataset
 from torch.distributions.kumaraswamy import Kumaraswamy
 
 
-def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False):
-    def hourly_split_1_1(data):
-        # special case when n_hist = 1 and n_futu = 1 and hourly = True
-        T, H, W, C = data.shape
-        N = (T // 4) * 4
-        data = data[:N, ...]
-        data = (
-            data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4).reshape(-1, H, W, C)
-        )
-        x_data = np.expand_dims(
-            data[
-                1::2,
-            ],
-            axis=1,
-        )
-        y_data = np.expand_dims(data[::2], axis=1)
-        return x_data, y_data
+def hourly_split_1_1(data):
+    # special case when n_hist = 1 and n_futu = 1 and hourly = True
+    T, H, W, C = data.shape
+    N = (T // 4) * 4
+    data = data[:N, ...]
+    data = data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4).reshape(-1, H, W, C)
+    x_data = np.expand_dims(
+        data[
+            1::2,
+        ],
+        axis=1,
+    )
+    y_data = np.expand_dims(data[::2], axis=1)
+    return x_data, y_data
 
-    def instant_split(data, s_len):
-        T, H, W, C = data.shape
-        N = (T // s_len) * s_len
-        data = data[:N, ...]
-        data = data.reshape(N // s_len, s_len, H, W, C)
-        x_data = data[:, :n_hist, ...]
-        y_data = data[:, n_hist : n_hist + n_futu, ...]
-        return x_data, y_data
+
+def instant_split(data, s_len):
+    T, H, W, C = data.shape
+    N = (T // s_len) * s_len
+    data = data[:N, ...]
+    data = data.reshape(N // s_len, s_len, H, W, C)
+    x_data = data[:, :n_hist, ...]
+    y_data = data[:, n_hist : n_hist + n_futu, ...]
+    return x_data, y_data
+
+
+def read_zarr(filename):
+    train_loader, val_loader = None, None
+
+    ds = xr.open_mfdataset(filename, engine="zarr", data_vars="minimal")
+    ec = ds["effective-cloudiness_heightAboveGround_0"]
+
+    data = np.expand_dims(ec.values, axis=-1)
+    data = data * 0.01
+
+    time_step = (ds.time[1] - ds.time[0]).values.astype("timedelta64[s]").astype(int)
+
+    assert time_step == 3600, "Time step is not 1 hour"
+
+    T, H, W, C = data.shape
+
+    N = int(T * 0.8)
+
+    train_data = data[:N]
+    val_data = data[N:]
+
+    return train_data, val_data
+
+
+def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False):
+    def to_dataset(data):
+        x_data, y_data = instant_split(arr, n_hist + n_futu)
+        x_data = torch.tensor(x_data, dtype=torch.float32)
+        y_data = torch.tensor(y_data, dtype=torch.float32)
+        return TensorDataset(x_data, y_data)
+
+    if dataset_size.endswith(".zarr"):
+        train_data, val_data = read_zarr(dataset_size)
+
+        train_loader = DataLoader(
+            to_dataset(train_data), batch_size=batch_size, shuffle=True
+        )
+        val_loader = DataLoader(
+            to_dataset(val_data), batch_size=batch_size, shuffle=True
+        )
+        print("train number of samples: {}".format(len(train_loader.dataset)))
+        print("val number of samples: {}".format(len(val_loader.dataset)))
+
+        return train_loader, val_loader
 
     train_loader, val_loader = None, None
 
