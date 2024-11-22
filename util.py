@@ -15,17 +15,16 @@ def hourly_split_1_1(data):
     data = data[:N, ...]
     data = data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4).reshape(-1, H, W, C)
     x_data = np.expand_dims(
-        data[
-            1::2,
-        ],
+        data[1::2,],
         axis=1,
     )
     y_data = np.expand_dims(data[::2], axis=1)
     return x_data, y_data
 
 
-def instant_split(data, s_len):
+def instant_split(data, n_hist, n_futu):
     T, H, W, C = data.shape
+    s_len = n_hist + n_futu
     N = (T // s_len) * s_len
     data = data[:N, ...]
     data = data.reshape(N // s_len, s_len, H, W, C)
@@ -58,8 +57,8 @@ def read_zarr(filename):
 
 
 def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False):
-    def to_dataset(data):
-        x_data, y_data = instant_split(arr, n_hist + n_futu)
+    def to_dataset(arr):
+        x_data, y_data = instant_split(arr, n_hist, n_futu)
         x_data = torch.tensor(x_data, dtype=torch.float32)
         y_data = torch.tensor(y_data, dtype=torch.float32)
         return TensorDataset(x_data, y_data)
@@ -86,7 +85,7 @@ def read_data(n_hist=1, n_futu=1, dataset_size="10k", batch_size=8, hourly=False
         data = np.load(f"data/{ds}-{dataset_size}.npz")["arr_0"]
 
         if not hourly:
-            x_data, y_data = instant_split(data, s_len)
+            x_data, y_data = instant_split(data, n_hist, n_futu)
         else:
             if n_hist == 1 and n_futu == 1:
                 x_data, y_data = hourly_split_1_1(data)
