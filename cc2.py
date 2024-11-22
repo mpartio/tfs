@@ -3,28 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import einops
-from timm.models.layers import DropPath
-from layers import (
-    #    PatchEmbedding,
-    #    PatchEmbeddingWithTemporal,
-    #    PatchEmbeddingWithPositionalEncoding,
-    #    WindowAttention,
-    #    Downsample,
-    #    Upsample,
-    #    DownsampleWithConv,
-    #    UpsampleWithConv,
-    #    UpsampleWithInterpolation,
-    #    PatchRecovery,
-    #    PatchRecoveryRaw,
-    #    PatchRecoveryRawWithStride,
-    ConvolvedSkipConnection,
-    #    TransformerBlock,
-    #    ProcessingLayer,
-    #    GlobalAttentionLayer,
-    ProbabilisticPredictionHeadWithConv,
-    ProbabilisticPredictionHead,
-    MeanPredictionHead,
-)
+from layers import ConvolvedSkipConnection, MeanPredictionHead, pad, depad
 from reference_layers import (
     Downsample,
     Upsample,
@@ -32,6 +11,28 @@ from reference_layers import (
     PatchRecovery,
     ViTBlock,
 )
+
+
+def pad_tensor(x, size=4):
+    B, T, H, W, C = x.shape
+
+    x = x.view(B * T, H, W, C)
+    x = pad(x, size)
+    _, H, W, _ = x.shape
+    x = x.view(B, T, H, W, C)
+
+    return x
+
+
+def depad_tensor(x, newH, newW):
+    B, T, H, W, C = x.shape
+
+    x = x.view(B * T, H, W, C)
+    x = depad(x, newH, newW)
+    _, H, W, _ = x.shape
+    x = x.view(B, T, H, W, C)
+
+    return x
 
 
 class CloudCastV2(nn.Module):
@@ -110,7 +111,7 @@ class CloudCastV2(nn.Module):
 
         self.patch_recover = PatchRecovery(
             dim=dim,
-            output_dim=2,
+            output_dim=1,
             patch_size=patch_size,
         )
 
@@ -126,10 +127,15 @@ class CloudCastV2(nn.Module):
     def forward(self, x):
         # Reproject input data to latent space
         # From (B, 1, 128, 128, C) to (B, 1, 32, 32, C)
+
+        _, _, origH, origW, _ = x.shape
+
+        x = pad_tensor(x)
         x = self.patch_embed(x)
 
         # Store the tensor for skip connection
         skip1 = x
+        skip1 = pad_tensor(skip1)
 
         # Encode 1, keep dimensions the same
         # x = self.encoder1(x)
@@ -141,6 +147,7 @@ class CloudCastV2(nn.Module):
             x = block(x)
 
         skip2 = x
+        skip2 = pad_tensor(skip2)
 
         # Downsample from (B, 16, 16, C*2) to (B, 8, 8, C*4)
         x = self.downsample2(x)
@@ -150,7 +157,6 @@ class CloudCastV2(nn.Module):
 
         # Upsample from (B, 8, 8, C*4) to (B, 16, 16, C*2)
         x = self.upsample2(x)
-
         x = self.conv_skip2(skip2, x)
 
         # Upsample from (B, 16, 16, 384) to (B, 32, 32, 192)
@@ -170,34 +176,6 @@ class CloudCastV2(nn.Module):
         # x = self.norm2(x)
 
         x = self.patch_recover(x)
+        x = depad_tensor(x, origH, origW)
 
-        if self.loss_type == "gaussian_nll" or self.loss_type == "crps":
-            B, P, H, W, C = x.shape
-
-            # return self.prediction_head(x)
-
-            mean = x[..., 0]
-            variance_logits = x[..., 1]
-            var = F.softplus(variance_logits) + 1e-6
-            stde = torch.sqrt(var)
-
-            return mean, stde
-
-        elif self.loss_type == "hete":
-            B, P, H, W, C = x.shape
-            x = x.reshape(B * P, H, W, C).permute(0, 3, 1, 2)
-            mean = self.mean_head(x)
-            variance_logits = self.var_head(x)
-            var = F.softplus(variance_logits) + 1e-6
-
-            return mean, var
-
-        elif self.loss_type == "beta_nll":
-            alpha = F.softplus(x[..., 0]) + 1e-6
-            beta = F.softplus(x[..., 1]) + 1e-6
-            return alpha, beta
-
-        elif self.loss_type == "mse" or self.loss_type == "mae":
-            return x.permute(0, 1, 4, 2, 3)
-
-        raise Exception("Invalid loss function: {}".format(self.loss_type))
+        return x
