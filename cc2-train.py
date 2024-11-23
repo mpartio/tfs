@@ -88,6 +88,12 @@ if not found_existing_model:
         optimizer, lr_lambda=lambda epoch: min(1, epoch / 8)
     )
 
+config = vars(args)
+config["num_params"] = count_trainable_parameters(model)
+with open(f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-config.json", "w") as f:
+    json.dump(vars(args), f)
+
+
 min_loss = None
 min_loss_epoch = None
 
