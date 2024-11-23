@@ -6,12 +6,20 @@ import numpy as np
 def plot(data, directory):
     # print("Plotting", start_time, "length", len(data["epoch"]))
 
-    loss_components = int("loss_components" in data)
-    gradient_components = int("gradients" in data)
+    loss_components = int(
+        "loss_components" in data and len(data["loss_components"]) > 0
+    )
+    gradient_components = int("gradients" in data and len(data["gradients"]) > 0)
+    distribution_components = int(
+        "distribution_components" in data
+        and len(data["distribution_components"].keys()) > 0
+    )
 
     fig, ax = plt.subplots(
-        1, 1 + loss_components + gradient_components, figsize=(18, 6)
+        1, 1 + distribution_components + loss_components + gradient_components, figsize=(18, 6)
     )
+
+    ax = np.atleast_1d(ax)
 
     ax[0].plot(data["epoch"], data["train_loss"], label="train_loss")
     ax[0].plot(data["epoch"], data["val_loss"], label="val_loss")
@@ -34,29 +42,41 @@ def plot(data, directory):
     lr = [x * 1e6 for x in data["lr"]]
     ax0_2.plot(data["epoch"], lr, label="lr * 1e6", color="green")
 
-    num_mix = len(data["distribution_components"]["alpha"][0])
+    if distribution_components:
+        num_mix = len(data["distribution_components"]["alpha"][0])
 
-    colors = ["red", "blue", "green", "brown"]
-    linestyles = ["-", "--", ":", "-."]
-    for i in range(num_mix):
-        for j, k in enumerate(data["distribution_components"].keys()):
-            d = np.asarray(data["distribution_components"][k])
-            ax[1].plot(
-                data["epoch"],
-                d[:, i],
-                label=f"{k}_{i}",
-                color=colors[i],
-                linestyle=linestyles[j],
-            )
+        colors = ["red", "blue", "green", "brown"]
+        linestyles = ["-", "--", ":", "-."]
+        for i in range(num_mix):
+            for j, k in enumerate(data["distribution_components"].keys()):
+                d = np.asarray(data["distribution_components"][k])
+                ax[1].plot(
+                    data["epoch"],
+                    d[:, i],
+                    label=f"{k}_{i}",
+                    color=colors[i],
+                    linestyle=linestyles[j],
+                )
+        ax[1].legend()
+        ax[1].set_xlabel("epoch")
+        ax[1].set_ylabel("distribution component value")
 
-    for k, v in data["gradients"].items():
-        ax[2].plot(data["epoch"], v, label=f"{k} gradients")
+    if gradient_components:
+        for k, v in data["gradients"].items():
+            ax[2].plot(data["epoch"], v, label=f"{k} gradients")
 
-    ax2_2 = ax[2].twinx()
+        ax2_2 = ax[2].twinx()
 
-    for k, v in data["loss_components"].items():
-        if "weight_" in k:
-            ax2_2.plot(data["epoch"], v, label=k, linestyle="--")
+        for k, v in data["loss_components"].items():
+            if "weight_" in k:
+                ax2_2.plot(data["epoch"], v, label=k, linestyle="--")
+
+        ax[2].legend(loc="upper right")
+        ax[2].set_xlabel("epoch")
+        ax[2].set_ylabel("gradient magnitude")
+        ax2_2.legend(loc="upper left")
+        ax2_2.set_ylabel("loss weight")
+
 
     ax[0].legend()
     ax[0].set_xlabel("epoch")
@@ -64,15 +84,6 @@ def plot(data, directory):
     ax0_2.legend(loc="lower left")
     ax0_2.set_ylabel("learning rate * 1e6")
 
-    ax[1].legend()
-    ax[1].set_xlabel("epoch")
-    ax[1].set_ylabel("distribution component value")
-
-    ax[2].legend(loc="upper right")
-    ax[2].set_xlabel("epoch")
-    ax[2].set_ylabel("gradient magnitude")
-    ax2_2.legend(loc="upper left")
-    ax2_2.set_ylabel("loss weight")
 
     filename = f"{directory}/{data['start_time']}-training-history.png"
     plt.savefig(filename)
