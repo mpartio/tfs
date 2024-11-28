@@ -70,7 +70,9 @@ class Downsample(nn.Module):
         x = self.norm(x)
         x = self.activation(x)
         # Reshape x back to (B, T, H', W', C) format
-        x = x.view(B, T, x.shape[1], x.shape[2], x.shape[3]).permute(0, 1, 3, 4, 2)
+        _, out_channels, out_H, out_W = x.shape
+
+        x = x.view(B, T, out_channels, out_H, out_W).permute(0, 1, 3, 4, 2)
         return x
 
 
@@ -92,7 +94,7 @@ class Upsample(nn.Module):
         B, T, H, W, C = x.shape
 
         # Reshape to (B*T, C, H, W) to apply ConvTranspose2d
-        x = x.reshape(B * T, C, H, W)
+        x = x.reshape(B * T, H, W, C).permute(0, 3, 1, 2)
 
         # Apply ConvTranspose2d, normalization, and activation
         x = self.conv(x)
@@ -103,7 +105,7 @@ class Upsample(nn.Module):
         _, out_channels, out_H, out_W = x.shape
 
         # Reshape back to (B, T, H', W', C') format
-        x = x.view(B, T, out_H, out_W, out_channels)
+        x = x.permute(0, 1, 2, 3).reshape(B, T, out_H, out_W, out_channels)
 
         return x
 
