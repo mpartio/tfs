@@ -180,6 +180,59 @@ class MixtureProbabilisticPredictionHeadWithConv(nn.Module):
         return mean, torch.sqrt(var), weights
 
 
+class BetaPredictionHead(nn.Module):
+    def __init__(self, dim, height=128, width=128):
+        super(BetaPredictionHead, self).__init__()
+
+        self.height = height
+        self.width = width
+
+        size = height * width
+
+        self.alpha_head = nn.Sequential(
+            nn.Linear(dim, size),
+            nn.Softplus(),  # alpha must be positive
+        )
+        self.beta_head = nn.Sequential(
+            nn.Linear(dim, size),
+            nn.Softplus(),  # beta must be positive
+        )
+
+    def forward(self, x):
+        B, C = x.shape
+        alpha = self.alpha_head(x)
+        beta = self.beta_head(x)
+
+        alpha = alpha.view(B, self.height, self.width, 1)
+        beta = beta.view(B, self.height, self.width, 1)
+
+        return alpha, beta
+
+
+class BetaPredictionHeadWithConv(nn.Module):
+    def __init__(self, dim):
+        super(BetaPredictionHead, self).__init__()
+        self.alpha_head = nn.Sequential(
+            nn.Conv2d(dim, 1, 5, padding=2),
+            nn.Softplus(),  # alpha must be positive
+        )
+        self.beta_head = nn.Sequential(
+            nn.Conv2d(dim, 1, 5, padding=2),
+            nn.Softplus(),  # beta must be positive
+        )
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.view(B * T, H, W, C).permute(0, 3, 1, 2)
+        alpha = self.alpha_head(x)
+        beta = self.beta_head(x)
+
+        alpha = alpha.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+        beta = beta.permute(0, 2, 3, 1).view(B, T, H, W, 1)
+
+        return alpha, beta
+
+
 class MeanPredictionHead(nn.Module):
     def __init__(self):
         super(MeanPredictionHead, self).__init__()
