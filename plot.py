@@ -1,5 +1,6 @@
 import json
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 
 
@@ -157,3 +158,98 @@ def plot_training_history(files, directory="/tmp"):
         plot_files.append(plot(data, directory))
 
     return plot_files
+
+
+def plot_beta_predictions(alpha, beta, x, y, filename):
+    alpha = alpha.squeeze()
+    beta = beta.squeeze()
+    x = x.squeeze()
+    y = y.squeeze()
+
+    plt.figure(figsize=(20, 10))
+
+    plt.subplot(341)
+    plt.imshow(x)
+    plt.title("Input")
+    plt.colorbar()
+
+    plt.subplot(342)
+    plt.imshow(y)
+    plt.title("Truth")
+    plt.colorbar()
+
+    plt.subplot(343)
+    mean = alpha / (alpha + beta)
+
+    plt.imshow(mean)
+    plt.title("Predicted Mean")
+    plt.colorbar()
+
+    plt.subplot(344)
+    # Convert logvar to standard deviation
+    var = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1))
+    std = np.sqrt(var)
+
+    plt.imshow(std)
+    plt.title("Predicted Std")
+    plt.colorbar()
+
+    # Add a random sample from predictions
+    # sample = torch.distributions.Beta(alpha, beta).sample((10,)).cpu()
+    sample = np.random.beta(alpha, beta, size=((10,) + alpha.shape))
+    plt.subplot(345)
+    plt.imshow(sample[0])
+    plt.title("One Random Sample")
+    plt.colorbar()
+
+    median = np.median(sample, axis=0)
+    print(median.shape)
+    plt.subplot(346)
+    plt.imshow(median)
+    plt.title("Median of Samples (n=10)")
+    plt.colorbar()
+
+    plt.subplot(347)
+    plt.imshow(alpha)
+    plt.title("Alpha")
+    plt.colorbar()
+
+    plt.subplot(348)
+    plt.imshow(beta)
+    plt.title("Beta")
+    plt.colorbar()
+
+    data = y - x
+    cmap = plt.cm.coolwarm
+    norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+
+    plt.subplot(349)
+    plt.imshow(data, cmap=cmap, norm=norm)
+    plt.title("True Diff")
+    plt.colorbar()
+
+    data = mean - x
+    norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+    plt.subplot(3, 4, 10)
+    plt.imshow(data, cmap=cmap, norm=norm)
+    plt.title("Diff of Mean/L1={:.4f}".format(np.abs(mean, y).mean()))
+    plt.colorbar()
+
+    data = sample[0] - x
+    norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+    plt.subplot(3, 4, 11)
+    plt.imshow(data, cmap=cmap, norm=norm)
+    plt.title("Diff of Sample/L1={:.4f}".format(np.abs(sample[0] - x).mean()))
+    plt.colorbar()
+
+    data = median - x
+    norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+    plt.subplot(3, 4, 12)
+    plt.imshow(data, cmap=cmap, norm=norm)
+    plt.title("Diff of Median/L1={:.4f}".format(np.abs(median - x).mean()))
+    plt.colorbar()
+
+    plt.tight_layout()
+
+    plt.savefig(filename)
+    plt.close()
