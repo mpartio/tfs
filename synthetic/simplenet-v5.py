@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import platform
+import os
 from scipy.stats import beta as stats_beta
 from reference_layers import (
     ProcessingBlock,
@@ -33,7 +34,7 @@ def diagnostics(
     plt.figure(figsize=(20, 10))
     plt.suptitle(
         "simplenet-v5 at iteration {} (host={}, time={})".format(
-            iteration, platform.node(), datetime.now()
+            iteration, platform.node(), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
     )
     plt.subplot(351)
@@ -164,7 +165,8 @@ def diagnostics(
     plt.title("Learning rate")
 
     plt.tight_layout()
-    plt.savefig("/data/runs/iteration_{:05d}.png".format(iteration))
+    os.makedirs("figures", exist_ok=True)
+    plt.savefig("figures/iteration_{:05d}.png".format(iteration))
     plt.close()
 
 
@@ -184,14 +186,14 @@ def read_beta_data(filename):
     data = np.squeeze(data, axis=-1)
 
     x_data = np.expand_dims(
-        data[
-            1::2,
-        ],
+        data[1::2,],
         axis=1,
     )
     y_data = np.expand_dims(data[::2], axis=1)
 
-    return x_data, y_data
+    return torch.tensor(x_data, dtype=torch.float32), torch.tensor(
+        y_data, dtype=torch.float32
+    )
 
 
 def read_train_data(batch_size, input_size):
@@ -199,7 +201,12 @@ def read_train_data(batch_size, input_size):
     if x_train_data is None:
         x_train_data, y_train_data = read_beta_data("../data/train-2k.npz")
 
-    n = torch.randint(0, x_train_data.shape[0] - batch_size, (1,)).item()
+    n = torch.randint(
+        0,
+        x_train_data.shape[0] - batch_size,
+        (1,),
+        generator=torch.Generator().manual_seed(42),
+    ).item()
 
     x_data = x_train_data[n : n + batch_size]
     x_data = x_data[:, :, :input_size, :input_size]
@@ -207,7 +214,7 @@ def read_train_data(batch_size, input_size):
     y_data = y_train_data[n : n + batch_size]
     y_data = y_data[:, :, :input_size, :input_size]
 
-    return torch.tensor(x_data), torch.tensor(y_data)
+    return x_data, y_data
 
 
 def read_val_data(batch_size, input_size, shuffle=False):
@@ -225,7 +232,7 @@ def read_val_data(batch_size, input_size, shuffle=False):
     y_data = y_val_data[n : n + batch_size]
     y_data = y_data[:, :, :input_size, :input_size]
 
-    return torch.tensor(x_data), torch.tensor(y_data)
+    return x_data, y_data
 
 
 def beta_nll_loss(pred_alpha, pred_beta, target):
@@ -403,10 +410,10 @@ class SimpleNet(nn.Module):
 
         self.model_proper.bridge = MultiHeadAttentionBridge(dim * 8, dim * 16)
 
-        self.model_proper.conv5 = EnhancedConvBlock(dim * 16, dim * 8)
-        self.model_proper.conv6 = EnhancedConvBlock(dim * 8, dim * 4)
-        self.model_proper.conv7 = EnhancedConvBlock(dim * 4, dim * 2)
-        self.model_proper.conv8 = EnhancedConvBlock(dim * 2, dim)
+        # self.model_proper.conv5 = EnhancedConvBlock(dim * 16, dim * 8)
+        # self.model_proper.conv6 = EnhancedConvBlock(dim * 8, dim * 4)
+        # self.model_proper.conv7 = EnhancedConvBlock(dim * 4, dim * 2)
+        # self.model_proper.conv8 = EnhancedConvBlock(dim * 2, dim)
 
         # Modify prediction head to output alpha and beta parameters
 
@@ -443,7 +450,7 @@ print(
     sum(p.numel() for p in model.parameters() if p.requires_grad),
 )
 
-torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision("highest")
 
 optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
@@ -480,6 +487,9 @@ class Diagnostics:
 
 diag = Diagnostics()
 
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 scaler = torch.amp.GradScaler()
 
 for iteration in range(1, n_iterations + 1):
@@ -510,13 +520,15 @@ for iteration in range(1, n_iterations + 1):
         scaler.step(optimizer)
         scaler.update()
 
-        # loss.backward()
-        # optimizer.step()
-
     diag.train_loss.append(loss.item())
     diag.lr.append(optimizer.param_groups[0]["lr"])
 
     annealing_scheduler.step(iteration)
+
+    if iteration % 500 == 0:
+        continue
+
+    model.eval()
 
     with torch.no_grad():
         pred_alpha, pred_beta = model(val_input_field)
@@ -539,9 +551,6 @@ for iteration in range(1, n_iterations + 1):
         median_l1 = F.l1_loss(median, val_truth.cpu())
 
         diag.mae.append((sample_l1, median_l1))
-
-    if iteration % 500 == 0:
-        # Visualize results
 
         if best_l1 is None or median_l1 < best_l1:
             best_l1 = median_l1
