@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
+import platform
 from scipy.stats import beta as stats_beta
 from reference_layers import (
     ProcessingBlock,
@@ -30,7 +31,11 @@ def diagnostics(
     pred_beta = pred_beta[0, 0].cpu()
 
     plt.figure(figsize=(20, 10))
-    plt.title("simplenet-v5 at iteration {} ()".format(iteration, datetime.now()))
+    plt.suptitle(
+        "simplenet-v5 at iteration {} (host={}, time={})".format(
+            iteration, platform.node(), datetime.now()
+        )
+    )
     plt.subplot(351)
     plt.imshow(_input_field)
     plt.title("Input")
