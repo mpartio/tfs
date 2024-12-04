@@ -133,20 +133,20 @@ def diagnostics(
         f"Distribution (latest α={diag.concentrations[-1][0]:.3f}, β={diag.concentrations[-1][1]:.3f})"
     )
 
-    n_iterations = len(diag.train_loss)
-    n_iterations = (n_iterations // 2) * 2  # divisible with two
-    x_labels = torch.arange(1, n_iterations, 2)
+    #    n_iterations = len(diag.train_loss)
+    #    n_iterations = (n_iterations // 2) * 2  # divisible with two
+    #    x_labels = torch.arange(1, n_iterations, 2)
 
-    train_loss = (
-        torch.tensor(diag.train_loss[:n_iterations])
-        .view(n_iterations // 2, -1)
-        .mean(dim=1)
-    )
-    val_loss = (
-        torch.tensor(diag.val_loss[:n_iterations])
-        .view(n_iterations // 2, -1)
-        .mean(dim=1)
-    )
+    #    train_loss = (
+    #        torch.tensor(diag.train_loss[:n_iterations])
+    #        .view(n_iterations // 2, -1)
+    #        .mean(dim=1)
+    #    )
+    #    val_loss = (
+    #        torch.tensor(diag.val_loss[:n_iterations])
+    #        .view(n_iterations // 2, -1)
+    #        .mean(dim=1)
+    #    )
 
     plt.subplot(3, 5, 14)
     plt.title("Train Loss")
