@@ -22,7 +22,7 @@ def diagnostics(
     val_truth,
     pred_alpha,
     pred_beta,
-    epoch,
+    iteration,
 ):
     _input_field = val_input_field[0, 0].cpu()
     _truth = val_truth[0, 0].cpu()
@@ -30,7 +30,7 @@ def diagnostics(
     pred_beta = pred_beta[0, 0].cpu()
 
     plt.figure(figsize=(20, 10))
-
+    plt.title("simplenet-v5 at iteration {} ()".format(iteration, datetime.now()))
     plt.subplot(351)
     plt.imshow(_input_field)
     plt.title("Input")
@@ -127,16 +127,31 @@ def diagnostics(
         f"Distribution (latest α={diag.concentrations[-1][0]:.3f}, β={diag.concentrations[-1][1]:.3f})"
     )
 
+    n_iterations = len(diag.train_loss)
+    n_iterations = (n_iterations // 2) * 2  # divisible with two
+    x_labels = torch.arange(1, n_iterations, 2)
+
+    train_loss = (
+        torch.tensor(diag.train_loss[:n_iterations])
+        .view(n_iterations // 2, -1)
+        .mean(dim=1)
+    )
+    val_loss = (
+        torch.tensor(diag.val_loss[:n_iterations])
+        .view(n_iterations // 2, -1)
+        .mean(dim=1)
+    )
+
     plt.subplot(3, 5, 14)
-    plt.plot(diag.train_loss, label="Train Loss")
-    plt.plot(diag.val_loss, label="Val Loss")
+    plt.plot(x_labels, train_loss, label="Train Loss")
+    plt.plot(x_labels, val_loss, label="Val Loss")
     plt.legend(loc="upper left")
     plt.title("Losses")
 
     ax2 = plt.gca().twinx()
     _mae = np.array(diag.mae).T
-    ax2.plot(np.arange(epoch + 1), _mae[0], label="Sample L1", color="green")
-    ax2.plot(np.arange(epoch + 1), _mae[1], label="Median L1", color="red")
+    ax2.plot(np.arange(iteration), _mae[0], label="Sample L1", color="green")
+    ax2.plot(np.arange(iteration), _mae[1], label="Median L1", color="red")
     ax2.legend(loc="upper right")
 
     plt.subplot(3, 5, 15)
@@ -144,7 +159,7 @@ def diagnostics(
     plt.title("Learning rate")
 
     plt.tight_layout()
-    plt.savefig("epoch_{:05d}.png".format(epoch + 1))
+    plt.savefig("/data/runs/iteration_{:05d}.png".format(iteration))
     plt.close()
 
 
@@ -441,7 +456,7 @@ val_input_field = val_input_field.to(device)
 val_truth = val_truth.to(device)
 
 # Training loop
-n_epochs = 12000
+n_iterations = 12000
 best_l1 = None
 
 start_time = datetime.now()
@@ -462,7 +477,7 @@ diag = Diagnostics()
 
 scaler = torch.amp.GradScaler()
 
-for epoch in range(n_epochs):
+for iteration in range(1, n_iterations + 1):
     model.train()
 
     input_field, truth = read_train_data(batch_size=batch_size, input_size=input_size)
@@ -496,7 +511,7 @@ for epoch in range(n_epochs):
     diag.train_loss.append(loss.item())
     diag.lr.append(optimizer.param_groups[0]["lr"])
 
-    annealing_scheduler.step(epoch)
+    annealing_scheduler.step(iteration)
 
     with torch.no_grad():
         pred_alpha, pred_beta = model(val_input_field)
@@ -520,7 +535,7 @@ for epoch in range(n_epochs):
 
         diag.mae.append((sample_l1, median_l1))
 
-    if (epoch + 1) % 500 == 0:
+    if iteration % 500 == 0:
         # Visualize results
 
         if best_l1 is None or median_l1 < best_l1:
@@ -529,12 +544,12 @@ for epoch in range(n_epochs):
         stop_time = datetime.now()
 
         print(
-            f"Epoch {epoch+1:05d}, Loss: {loss.item():.4f}, L1: {median_l1:.4f} Best L1: {best_l1:.4f} Time: {convert_delta(stop_time-start_time)}"
+            f"Iteration {iteration:05d}, Loss: {loss.item():.4f}, L1: {median_l1:.4f} Best L1: {best_l1:.4f} Time: {convert_delta(stop_time-start_time)}"
         )
 
         start_time = stop_time
 
-        if (epoch + 1) % 2000 != 0:  # epoch < n_epochs - 1:
+        if iteration % 2000 != 0:
             continue
 
         diagnostics(
@@ -543,5 +558,5 @@ for epoch in range(n_epochs):
             val_truth,
             pred_alpha,
             pred_beta,
-            epoch,
+            iteration,
         )
