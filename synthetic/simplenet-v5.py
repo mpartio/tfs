@@ -208,7 +208,6 @@ def read_train_data(batch_size, input_size):
         0,
         x_train_data.shape[0] - batch_size,
         (1,),
-        generator=torch.Generator().manual_seed(42),
     ).item()
 
     x_data = x_train_data[n : n + batch_size]
