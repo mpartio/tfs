@@ -12,6 +12,7 @@ from tqdm import tqdm
 from config import get_args
 from util import *
 from datetime import datetime
+from plot import plot_training_history
 
 args = get_args()
 
@@ -202,5 +203,9 @@ for epoch in range(1, args.epochs + 1):
 
     if break_loop:
         break
+
+files = plot_training_history(
+    read_training_history(args.run_name, latest_only=True)
+)
 
 print("Training done")
