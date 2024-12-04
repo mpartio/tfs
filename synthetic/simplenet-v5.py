@@ -149,20 +149,23 @@ def diagnostics(
     )
 
     plt.subplot(3, 5, 14)
-    plt.plot(x_labels, train_loss, label="Train Loss")
-    plt.plot(x_labels, val_loss, label="Val Loss")
+    plt.title("Train Loss")
+    plt.plot(diag.train_loss, label="Train Loss", color="blue")
     plt.legend(loc="upper left")
-    plt.title("Losses")
-
     ax2 = plt.gca().twinx()
-    _mae = np.array(diag.mae).T
-    ax2.plot(np.arange(iteration), _mae[0], label="Sample L1", color="green")
-    ax2.plot(np.arange(iteration), _mae[1], label="Median L1", color="red")
+    ax2.plot(diag.lr, label="LR", color="green")
     ax2.legend(loc="upper right")
 
+
     plt.subplot(3, 5, 15)
-    plt.plot(diag.lr, label="LR")
-    plt.title("Learning rate")
+    plt.title("Validation Losses")
+    plt.plot(diag.val_loss, label="Val Loss", color="blue")
+    plt.legend(loc="upper left")
+    ax2 = plt.gca().twinx()
+    _mae = np.array(diag.mae).T
+    ax2.plot(_mae[0], label="Sample L1", color="green")
+    ax2.plot(_mae[1], label="Median L1", color="red")
+    ax2.legend(loc="upper right")
 
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
