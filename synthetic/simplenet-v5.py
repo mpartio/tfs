@@ -7,6 +7,7 @@ import matplotlib.colors as mcolors
 import numpy as np
 import platform
 import os
+import sys
 from scipy.stats import beta as stats_beta
 from reference_layers import (
     ProcessingBlock,
@@ -33,8 +34,11 @@ def diagnostics(
 
     plt.figure(figsize=(20, 10))
     plt.suptitle(
-        "simplenet-v5 at iteration {} (host={}, time={})".format(
-            iteration, platform.node(), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "{} at iteration {} (host={}, time={})".format(
+            sys.argv[0],
+            iteration,
+            platform.node(),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
     )
     plt.subplot(351)
@@ -133,15 +137,16 @@ def diagnostics(
         f"Distribution (latest α={diag.concentrations[-1][0]:.3f}, β={diag.concentrations[-1][1]:.3f})"
     )
 
-    #    n_iterations = len(diag.train_loss)
-    #    n_iterations = (n_iterations // 2) * 2  # divisible with two
-    #    x_labels = torch.arange(1, n_iterations, 2)
+    n = 20
+    n_iterations = len(diag.train_loss)
+    n_iterations = (n_iterations // n) * n  # divisible with n
+    x_labels = torch.arange(1, n_iterations, n)
 
-    #    train_loss = (
-    #        torch.tensor(diag.train_loss[:n_iterations])
-    #        .view(n_iterations // 2, -1)
-    #        .mean(dim=1)
-    #    )
+    train_loss = (
+        torch.tensor(diag.train_loss[:n_iterations])
+        .view(n_iterations // n, -1)
+        .mean(dim=1)
+    )
     #    val_loss = (
     #        torch.tensor(diag.val_loss[:n_iterations])
     #        .view(n_iterations // 2, -1)
@@ -150,12 +155,12 @@ def diagnostics(
 
     plt.subplot(3, 5, 14)
     plt.title("Train Loss")
-    plt.plot(diag.train_loss, label="Train Loss", color="blue")
+    plt.plot(x_labels, train_loss, label="Train Loss", color="blue")
+
     plt.legend(loc="upper left")
     ax2 = plt.gca().twinx()
     ax2.plot(diag.lr, label="LR", color="green")
     ax2.legend(loc="upper right")
-
 
     plt.subplot(3, 5, 15)
     plt.title("Validation Losses")
@@ -176,6 +181,23 @@ def diagnostics(
 def convert_delta(dlt: timedelta) -> str:
     minutes, seconds = divmod(int(dlt.total_seconds()), 60)
     return f"{minutes}:{seconds:02}"
+
+
+def augment_data(x, y):
+    # Random flip
+    if torch.rand(1).item() > 0.5:
+        x = torch.flip(x, [2])  # Horizontal flip
+        y = torch.flip(y, [2])
+    if torch.rand(1).item() > 0.5:
+        x = torch.flip(x, [3])  # Vertical flip
+        y = torch.flip(y, [3])
+
+    # Random 90-degree rotations
+    k = torch.randint(0, 4, (1,)).item()
+    x = torch.rot90(x, k, [2, 3])
+    y = torch.rot90(y, k, [2, 3])
+
+    return x, y
 
 
 def read_beta_data(filename):
@@ -202,7 +224,7 @@ def read_beta_data(filename):
 def read_train_data(batch_size, input_size):
     global x_train_data, y_train_data
     if x_train_data is None:
-        x_train_data, y_train_data = read_beta_data("../data/train-2k.npz")
+        x_train_data, y_train_data = read_beta_data("../data/train-100k.npz")
 
     n = torch.randint(
         0,
@@ -222,7 +244,7 @@ def read_train_data(batch_size, input_size):
 def read_val_data(batch_size, input_size, shuffle=False):
     global x_val_data, y_val_data
     if x_val_data is None:
-        x_val_data, y_val_data = read_beta_data("../data/val-2k.npz")
+        x_val_data, y_val_data = read_beta_data("../data/val-100k.npz")
 
     n = 0
     if shuffle:
@@ -316,7 +338,7 @@ class MultiHeadAttentionBridge(nn.Module):
 
 
 class WindowedAttentionBlock(nn.Module):
-    def __init__(self, channels, num_heads=8, window_size=8):
+    def __init__(self, channels, num_heads=4, window_size=4):
         super().__init__()
         self.mha = nn.MultiheadAttention(channels, num_heads, batch_first=True)
         self.norm = nn.BatchNorm2d(channels)
@@ -405,17 +427,16 @@ class SimpleNet(nn.Module):
 
         self.model_proper = UNet(dim)
 
-        self.model_proper.conv1 = EnhancedConvBlock(1, dim)
-        self.model_proper.conv2 = EnhancedConvBlock(dim, dim * 2)
-        self.model_proper.conv3 = EnhancedConvBlock(dim * 2, dim * 4)
-        self.model_proper.conv4 = EnhancedConvBlock(dim * 4, dim * 8)
+        self.model_proper.conv1 = EnhancedConvBlock(1, dim, use_attention=True)
+        self.model_proper.conv2 = EnhancedConvBlock(dim, dim * 2, use_attention=True)
+        self.model_proper.conv3 = EnhancedConvBlock(
+            dim * 2, dim * 4, use_attention=True
+        )
+        self.model_proper.conv4 = EnhancedConvBlock(
+            dim * 4, dim * 8, use_attention=True
+        )
 
         self.model_proper.bridge = MultiHeadAttentionBridge(dim * 8, dim * 16)
-
-        # self.model_proper.conv5 = EnhancedConvBlock(dim * 16, dim * 8)
-        # self.model_proper.conv6 = EnhancedConvBlock(dim * 8, dim * 4)
-        # self.model_proper.conv7 = EnhancedConvBlock(dim * 4, dim * 2)
-        # self.model_proper.conv8 = EnhancedConvBlock(dim * 2, dim)
 
         # Modify prediction head to output alpha and beta parameters
 
@@ -458,7 +479,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.0001)
 
 T_0 = 8
 T_mult = 2
-eta_min = 1e-8
+eta_min = 1e-7
 annealing_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
     optimizer, T_0, T_mult
 )
@@ -470,7 +491,7 @@ val_input_field = val_input_field.to(device)
 val_truth = val_truth.to(device)
 
 # Training loop
-n_iterations = 12000
+n_iterations = 3000
 best_l1 = None
 
 start_time = datetime.now()
@@ -489,9 +510,6 @@ class Diagnostics:
 
 diag = Diagnostics()
 
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
 scaler = torch.amp.GradScaler()
 
 for iteration in range(1, n_iterations + 1):
@@ -508,13 +526,10 @@ for iteration in range(1, n_iterations + 1):
         pred_alpha, pred_beta = model(input_field)
 
         # Calculate loss
-        prb_loss = beta_nll_loss(pred_alpha, pred_beta, truth)
-        # prb_loss = local_spatial_beta_loss(pred_alpha, pred_beta, truth)
+        train_loss = beta_nll_loss(pred_alpha, pred_beta, truth)
 
-        loss = prb_loss
         # Backward pass
-
-        scaler.scale(loss).backward()
+        scaler.scale(train_loss).backward()
         scaler.unscale_(optimizer)
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -522,12 +537,12 @@ for iteration in range(1, n_iterations + 1):
         scaler.step(optimizer)
         scaler.update()
 
-    diag.train_loss.append(loss.item())
+    diag.train_loss.append(train_loss.item())
     diag.lr.append(optimizer.param_groups[0]["lr"])
 
-    annealing_scheduler.step(iteration)
+    # annealing_scheduler.step(iteration)
 
-    if iteration % 500 == 0:
+    if iteration % 25 != 0:
         continue
 
     model.eval()
@@ -535,9 +550,9 @@ for iteration in range(1, n_iterations + 1):
     with torch.no_grad():
         pred_alpha, pred_beta = model(val_input_field)
 
-        prb_loss = beta_nll_loss(pred_alpha, pred_beta, val_truth)
+        val_loss = beta_nll_loss(pred_alpha, pred_beta, val_truth)
 
-        diag.val_loss.append(prb_loss.item())
+        diag.val_loss.append(val_loss.item())
 
         diag.concentrations.append(
             (
@@ -554,18 +569,21 @@ for iteration in range(1, n_iterations + 1):
 
         diag.mae.append((sample_l1, median_l1))
 
+        if iteration % 50 != 0:
+            continue
+
         if best_l1 is None or median_l1 < best_l1:
             best_l1 = median_l1
 
         stop_time = datetime.now()
 
         print(
-            f"Iteration {iteration:05d}, Loss: {loss.item():.4f}, L1: {median_l1:.4f} Best L1: {best_l1:.4f} Time: {convert_delta(stop_time-start_time)}"
+            f"Iteration {iteration:05d}, Train Loss: {train_loss.item():.4f}, Val Loss: {val_loss:.4f}, L1: {median_l1:.4f} Best L1: {best_l1:.4f} Time: {convert_delta(stop_time-start_time)}"
         )
 
         start_time = stop_time
 
-        if iteration % 2000 != 0:
+        if iteration % 200 != 0:
             continue
 
         diagnostics(
@@ -576,3 +594,6 @@ for iteration in range(1, n_iterations + 1):
             pred_beta,
             iteration,
         )
+
+
+print("Done at {}".format(datetime.now()))
