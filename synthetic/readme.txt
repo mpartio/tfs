@@ -8,3 +8,7 @@
   * UNet jossa multi-head attention-pohjainen bridge
   * fp16
 * simplenet-v5
+  * encoder sisältää attention-komponentin, decoder edelleen pelkkä conv
+  * koodin siivousta
+* simplenet-v6
+
