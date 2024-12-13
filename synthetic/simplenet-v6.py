@@ -248,21 +248,30 @@ def diagnostics(
     plt.subplot(3, 6, 16)
     plt.title("Validation Losses")
     plt.plot(
-        moving_average(torch.tensor(diag.val_loss), 20), label="Val Loss", color="blue"
+        moving_average(torch.tensor(diag.val_loss), 25), label="Val Loss", color="blue"
     )
     plt.legend(loc="upper left")
     ax2 = plt.gca().twinx()
     _mae = np.array(diag.mae).T
     ax2.plot(
-        moving_average(torch.tensor(_mae[0]), 20), label="Sample L1", color="green"
+        moving_average(torch.tensor(_mae[0]), 25), label="Sample L1", color="green"
     )
-    ax2.plot(moving_average(torch.tensor(_mae[1]), 20), label="Median L1", color="red")
+    ax2.plot(moving_average(torch.tensor(_mae[1]), 25), label="Median L1", color="red")
     ax2.legend(loc="upper right")
 
     plt.subplot(3, 6, 17)
-    im = plt.imshow(snr["local_snr_map"], cmap="viridis")
-    plt.title("Local SNR Map (dB)")
-    plt.colorbar(im)
+    #    im = plt.imshow(snr["local_snr_map"], cmap="viridis")
+    #    plt.title("Local SNR Map (dB)")
+    #    plt.colorbar(im)
+    plt.plot(
+        moving_average(torch.tensor(diag.bnll_loss), 100), label="BNLL", color="blue"
+    )
+    plt.plot(
+        moving_average(torch.tensor(diag.recon_loss), 100),
+        label="Recon",
+        color="orange",
+    )
+    plt.legend()
 
     snr_db = np.array(diag.snr_db).T
 
@@ -271,20 +280,20 @@ def diagnostics(
     snr_pred = torch.tensor(snr_db[1])
     plt.plot(snr_real, label="Real", color="blue", alpha=0.3)
     plt.plot(
-        moving_average(snr_real, 20),
+        moving_average(snr_real, 25),
         label="Moving Average",
         color="blue",
     )
     plt.plot(snr_pred, label="Pred", color="orange", alpha=0.3)
     plt.plot(
-        moving_average(snr_pred, 20),
+        moving_average(snr_pred, 25),
         color="orange",
         label="Moving average",
     )
-    plt.legend(loc="center right")
+    plt.legend(loc="upper left")
 
     ax2 = plt.gca().twinx()
-    ax2.plot(moving_average(snr_real - snr_pred, 20), label="Residual", color="green")
+    ax2.plot(moving_average(snr_real - snr_pred, 25), label="Residual", color="green")
     ax2.legend(loc="upper right")
 
     plt.title("Signal to Noise Ratio")
@@ -394,7 +403,7 @@ def read_beta_data(filename, n_x, n_y):
 def read_train_data(batch_size, input_size, n_x=1, n_y=1):
     global x_train_data, y_train_data
     if x_train_data is None:
-        x_train_data, y_train_data = read_beta_data("../data/train-100k.npz", n_x, n_y)
+        x_train_data, y_train_data = read_beta_data("../data/train-10k.npz", n_x, n_y)
 
     n = torch.randint(
         0,
@@ -414,7 +423,7 @@ def read_train_data(batch_size, input_size, n_x=1, n_y=1):
 def read_val_data(batch_size, input_size, shuffle=False, n_x=1, n_y=1):
     global x_val_data, y_val_data
     if x_val_data is None:
-        x_val_data, y_val_data = read_beta_data("../data/val-100k.npz", n_x, n_y)
+        x_val_data, y_val_data = read_beta_data("../data/val-10k.npz", n_x, n_y)
 
     n = 0
     if shuffle:
@@ -467,6 +476,59 @@ def get_lr_schedule(optimizer, warmup_iterations=1000, total_iterations=20000):
             return max(0.1, 1.0 - 0.9 * progress)
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+
+class DeepMultiHeadAttentionBridge(nn.Module):
+    def __init__(self, in_channels, out_channels, num_heads=8, num_layers=2):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+        self.input_proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.layers = nn.ModuleList()
+
+        for _ in range(num_layers):
+            layer = nn.ModuleDict(
+                {
+                    "attention": nn.MultiheadAttention(
+                        out_channels, num_heads, batch_first=True
+                    ),
+                    "norm1": nn.LayerNorm(out_channels),
+                    "ffn": nn.Sequential(
+                        nn.Linear(out_channels, out_channels * 4),
+                        nn.GELU(),
+                        nn.Linear(out_channels * 4, out_channels),
+                    ),
+                    "norm2": nn.LayerNorm(out_channels),
+                }
+            )
+
+            layer.register_parameter("gamma", nn.Parameter(torch.zeros(1)))
+            self.layers.append(layer)
+
+    def forward(self, x):
+        x = self.input_proj(x)
+
+        # Input: [B, C, H, W]
+        B, C, H, W = x.shape
+
+        # Reshape to sequence: [B, H*W, C]
+        x_seq = x.flatten(2).transpose(1, 2)
+
+        for layer in self.layers:
+            # Attention block
+            skip = x_seq
+            x_norm = layer["norm1"](x_seq)
+            attn_out, _ = layer["attention"](x_norm, x_norm, x_norm)
+            x_seq = skip + layer.gamma * attn_out
+
+            # FFN block
+            skip = x_seq
+            x_seq = skip + layer["ffn"](layer["norm2"](x_seq))
+
+        # Reshape back: [B, C, H, W]
+        out = x_seq.transpose(1, 2).reshape(B, C, H, W)
+
+        return out
 
 
 class MultiHeadAttentionBridge(nn.Module):
@@ -584,7 +646,82 @@ class WindowedAttentionBlock(nn.Module):
         return out
 
 
-def roll_forecast_train(model, x, y, n_steps):
+class DetailedMultiscaleParamHead(nn.Module):
+    def __init__(self, dim=128):
+        super().__init__()
+
+        # Local path - preserves fine details
+        self.local_path = nn.Sequential(
+            nn.Conv2d(dim, dim // 2, 3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(),
+            # Additional local conv to capture fine structures
+            nn.Conv2d(dim // 2, dim // 4, 3, padding=1),
+            nn.BatchNorm2d(dim // 4),
+            nn.ReLU(),
+        )
+
+        # Medium path - intermediate scale features
+        self.medium_path = nn.Sequential(
+            nn.AvgPool2d(2),  # downsample by 2
+            nn.Conv2d(dim, dim // 2, 3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(),
+            nn.Conv2d(dim // 2, dim // 4, 3, padding=1),
+            nn.BatchNorm2d(dim // 4),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+        )
+
+        # Global path - captures large-scale patterns
+        self.global_path = nn.Sequential(
+            nn.AvgPool2d(4),  # downsample by 4
+            nn.Conv2d(dim, dim // 2, 3, padding=1),
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(),
+            nn.Conv2d(dim // 2, dim // 4, 3, padding=1),
+            nn.BatchNorm2d(dim // 4),
+            nn.ReLU(),
+            nn.Upsample(scale_factor=4, mode="bilinear", align_corners=True),
+        )
+
+        # Final parameter prediction for alpha
+        self.alpha_head = nn.Sequential(
+            nn.Conv2d(3 * (dim // 4), dim // 2, 1),  # Combine all scales
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(),
+            nn.Conv2d(dim // 2, 1, 1),
+            nn.Softplus(),
+            Clamp(min_value=0.2, max_value=8.0),
+        )
+
+        # Final parameter prediction for beta
+        self.beta_head = nn.Sequential(
+            nn.Conv2d(3 * (dim // 4), dim // 2, 1),  # Combine all scales
+            nn.BatchNorm2d(dim // 2),
+            nn.ReLU(),
+            nn.Conv2d(dim // 2, 1, 1),
+            nn.Softplus(),
+            Clamp(min_value=0.2, max_value=8.0),
+        )
+
+    def forward(self, x):
+        # Process at different scales
+        local_feats = self.local_path(x)
+        medium_feats = self.medium_path(x)
+        global_feats = self.global_path(x)
+
+        # Combine features from all scales
+        combined = torch.cat([local_feats, medium_feats, global_feats], dim=1)
+
+        # Predict parameters
+        alpha = self.alpha_head(combined)
+        beta = self.beta_head(combined)
+
+        return alpha, beta
+
+
+def roll_forecast_train(model, x, y, n_steps, diag):
     assert y.shape[1] == n_steps
 
     total_loss = 0
@@ -604,10 +741,17 @@ def roll_forecast_train(model, x, y, n_steps):
         # Calculate loss
         distribution_loss = beta_nll_loss(alpha, beta, truth)
 
-        total_loss += distribution_loss
+        sample = torch.distributions.Beta(alpha, beta).sample((1,))[0]
+        reconstruction_loss = F.l1_loss(truth, sample)
+
+        # TODO ei onnistu jos step>1
+        diag.bnll_loss.append(distribution_loss.item())
+        diag.recon_loss.append(reconstruction_loss.item())
+
+        total_loss += distribution_loss + reconstruction_loss * 1.3
 
         if n_steps > 1:
-            sample = torch.distributions.Beta(alpha, beta).sample((10,))[0]
+            sample = torch.distributions.Beta(alpha, beta).sample((10,))
             median = sample.median(0)[0]
 
             x = median
@@ -643,7 +787,10 @@ def roll_forecast_eval(model, x, y, n_steps, diag):
         # Calculate loss
         distribution_loss = beta_nll_loss(alpha, beta, truth)
 
-        total_loss += distribution_loss
+        sample = torch.distributions.Beta(alpha, beta).sample((1,))[0]
+        reconstruction_loss = F.l1_loss(truth, sample) * 1.3
+
+        total_loss += distribution_loss + reconstruction_loss
 
         if n_steps > 1:
             sample = torch.distributions.Beta(alpha, beta).sample((10,))[0]
@@ -696,12 +843,13 @@ class EnhancedConvBlock(nn.Module):
 
 
 class Clamp(nn.Module):
-    def __init__(self, max_value):
+    def __init__(self, min_value, max_value):
         super().__init__()
+        self.min_value = min_value
         self.max_value = max_value
 
     def forward(self, x):
-        return torch.clamp(x, max=self.max_value)
+        return torch.clamp(x, min=self.min_value, max=self.max_value)
 
 
 # Simple UNet-like network that outputs multiple samples
@@ -714,13 +862,13 @@ class SimpleNet(nn.Module):
         self.model_proper.conv1 = EnhancedConvBlock(1, dim, use_attention=False)
         self.model_proper.conv2 = EnhancedConvBlock(dim, dim * 2, use_attention=False)
         self.model_proper.conv3 = EnhancedConvBlock(
-            dim * 2, dim * 4, use_attention=False
+            dim * 2, dim * 4, use_attention=True
         )
         self.model_proper.conv4 = EnhancedConvBlock(
             dim * 4, dim * 8, use_attention=True
         )
 
-        self.model_proper.bridge = MultiHeadAttentionBridge(dim * 8, dim * 16)
+        self.model_proper.bridge = DeepMultiHeadAttentionBridge(dim * 8, dim * 16)
 
         # Modify prediction head to output alpha and beta parameters
 
@@ -729,25 +877,30 @@ class SimpleNet(nn.Module):
 
         self.model_proper.prediction_head = nn.Identity()
 
-        self.alpha_head = nn.Sequential(
-            nn.Conv2d(dim, 1, 5, padding=2),
-            nn.Softplus(),
-            Clamp(max_value=40.0),
-        )
-        self.beta_head = nn.Sequential(
-            nn.Conv2d(dim, 1, 5, padding=2),
-            nn.Softplus(),
-            Clamp(max_value=20.0),
-        )
+        self.param_head = DetailedMultiscaleParamHead(dim)
+
+    #        self.alpha_head = nn.Sequential(
+    #            nn.Conv2d(dim, 1, 5, padding=2),
+    #            nn.Softplus(),
+    #            Clamp(max_value=40.0),
+    #        )
+    #        self.beta_head = nn.Sequential(
+    #            nn.Conv2d(dim, 1, 5, padding=2),
+    #            nn.Softplus(),
+    #            Clamp(max_value=20.0),
+    #        )
 
     def forward(self, x):
         assert x.ndim == 4  # B, C, H, W
         x = self.model_proper(x)
 
-        alpha = self.alpha_head(x)
-        beta = self.beta_head(x)
-
+        alpha, beta = self.param_head(x)
         return alpha, beta
+
+        # alpha = self.alpha_head(x)
+        # beta = self.beta_head(x)
+
+        # return alpha, beta
 
 
 class Diagnostics:
@@ -760,7 +913,8 @@ class Diagnostics:
             self.mae,
             self.snr_db,
             self.bnll_loss,
-        ) = ([], [], [], [], [], [], [])
+            self.recon_loss,
+        ) = ([], [], [], [], [], [], [], [])
 
 
 def train(n_iterations, n_steps, lr):
@@ -799,9 +953,9 @@ def train(n_iterations, n_steps, lr):
 
         with torch.autocast(device_type="cuda", dtype=torch.float32):
 
-            train_loss = roll_forecast_train(model, input_field, truth, n_steps)
+            train_loss = roll_forecast_train(model, input_field, truth, n_steps, diag)
 
-            diag.bnll_loss.append(train_loss.item())
+            # diag.bnll_loss.append(train_loss.item())
 
             scaler.scale(train_loss).backward()
             scaler.unscale_(optimizer)
@@ -816,12 +970,12 @@ def train(n_iterations, n_steps, lr):
         diag.train_loss.append(train_loss.item())
         diag.lr.append(optimizer.param_groups[0]["lr"])
 
-        if iteration % 25 != 0:
+        if iteration % 100 != 0:
             continue
 
         val_loss = evaluate(model, diag, iteration, n_steps)
 
-        if iteration % 250 == 0:
+        if iteration % 500 == 0:
             stop_time = datetime.now()
 
             print(
@@ -853,7 +1007,7 @@ def evaluate(model, diag, iteration, n_steps):
 
         diag.val_loss.append(val_loss.item())
 
-        if iteration % 1000 == 0:
+        if iteration % 2000 == 0:
 
             input_field, truth = read_val_data(
                 batch_size=batch_size * 2, input_size=input_size, n_y=n_steps
@@ -886,7 +1040,7 @@ def evaluate(model, diag, iteration, n_steps):
 # Training setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
-batch_size = 128
+batch_size = 16
 dim = 32
 
 # perceptual_criterion = PerceptualLoss()
@@ -908,7 +1062,7 @@ model_file = f"models/model-train-1.pth"
 if os.path.exists(model_file):
     model.load_state_dict(torch.load(model_file, weights_only=True))
 else:
-    train(n_iterations=30000, n_steps=1, lr=1e-4)
+    train(n_iterations=300_000, n_steps=1, lr=1e-5)
 
     torch.save(model.state_dict(), model_file)
 
