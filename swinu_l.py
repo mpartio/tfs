@@ -498,6 +498,8 @@ class WindowAttention(nn.Module):
             mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
         B_, N, C = x.shape
+
+        assert C % self.num_heads == 0, "channels are not divisible by num_heads ({} % {}); change either latent dim size or num_heads".format(C, self.num_heads)
         qkv = (
             self.qkv(x)
             .reshape(B_, N, 3, self.num_heads, C // self.num_heads)
