@@ -139,3 +139,29 @@ class CRPSGaussianLoss(nn.Module):
 
         # Return mean CRPS across batch
         return crps.mean()
+
+
+class EmpiricalCRPS(nn.Module):
+    def __init__(self):
+        super(EmpiricalCRPS, self).__init__()
+
+    def forward(self, ensemble_preds, y_true):
+        """
+        Compute CRPS loss between ensemble predictions and target.
+
+        Args:
+            ensemble_preds: tensor of shape (num_samples, batch, 1, H, W)
+            target: tensor of shape (batch, 1, H, W)
+        """
+
+        M = ensemble_preds.shape[0]  # ensemble size
+
+        # First term: mean absolute error between each member and target
+        first_term = torch.mean(torch.abs(ensemble_preds - target))
+
+        # Second term: mean absolute difference between all pairs of members
+        # Use einsum for efficient computation
+        second_term = torch.einsum("ibhw,jbhw->ijbhw", ensemble_preds, ensemble_preds)
+        second_term = torch.mean(torch.abs(second_term)) / (2 * M * M)
+
+        return first_term - second_term
