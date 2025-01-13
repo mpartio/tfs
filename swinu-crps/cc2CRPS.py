@@ -257,20 +257,33 @@ def augment_data(x, y):
 
 
 def partition(tensor, n_x, n_y):
-    S, T, H, W, C = tensor.shape
+
+    if tensor.ndim == 5:
+        S, T, H, W, C = tensor.shape
+    else:
+        # era5 data
+        tensor = tensor.unsqueeze(-1)
+        T, H, W, C = tensor.shape
+
     group_size = n_x + n_y
 
     # Reshape into groups of (n_x + n_y), with padding if necessary
     num_groups = T // group_size
     new_length = num_groups * group_size
 
-    padded_tensor = tensor[:, :new_length]
+    if tensor.ndim == 5:
+        padded_tensor = tensor[:, :new_length]
 
-    # Reshape into groups
-    reshaped = padded_tensor.reshape(S, -1, group_size, H, W)
+        # Reshape into groups
+        reshaped = padded_tensor.reshape(S, -1, group_size, H, W)
 
-    # Merge streams into one dim
-    reshaped = reshaped.reshape(S * reshaped.shape[1], group_size, H, W)  # N, G, H, W
+        # Merge streams into one dim
+        reshaped = reshaped.reshape(S * reshaped.shape[1], group_size, H, W)  # N, G, H, W
+    else:
+        padded_tensor = tensor[:new_length]
+
+        # Reshape into groups
+        reshaped = padded_tensor.reshape(-1, group_size, H, W)
 
     # Extract single elements and blocks
     x = reshaped[:, :n_x]
@@ -301,7 +314,8 @@ def read_beta_data(filename, n_x, n_y):
 
     data = np.load(filename)["arr_0"]
 
-    data = shuffle_to_hourly_streams(data)
+    if "era5" not in filename:
+        data = shuffle_to_hourly_streams(data)
     data = torch.tensor(data)
 
     x_data, y_data = partition(data, n_x, n_y)
