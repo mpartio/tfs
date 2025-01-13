@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l import *
 
+
 class SwinU(nn.Module):
     r"""Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
@@ -65,7 +66,8 @@ class SwinU(nn.Module):
             dim=embed_dim,
             patch_size=patch_size,
             stride=patch_size,
-            norm_layer=nn.LayerNorm
+            norm_layer=nn.LayerNorm,
+            in_channels=2,
         )
 
         self.patches_resolution = [img_size // patch_size, img_size // patch_size]
@@ -115,8 +117,10 @@ class SwinU(nn.Module):
             if i_layer == 0:
                 layer_up = PatchExpand(
                     input_resolution=(
-                        self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                        self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer)),
+                        self.patches_resolution[0]
+                        // (2 ** (self.num_layers - 1 - i_layer)),
+                        self.patches_resolution[1]
+                        // (2 ** (self.num_layers - 1 - i_layer)),
                     ),
                     dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
                     dim_scale=2,
@@ -126,8 +130,10 @@ class SwinU(nn.Module):
                 layer_up = BasicLayer_up(
                     dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
                     input_resolution=(
-                        self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                        self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer)),
+                        self.patches_resolution[0]
+                        // (2 ** (self.num_layers - 1 - i_layer)),
+                        self.patches_resolution[1]
+                        // (2 ** (self.num_layers - 1 - i_layer)),
                     ),
                     depth=depths[(self.num_layers - 1 - i_layer)],
                     num_heads=num_heads[(self.num_layers - 1 - i_layer)],
@@ -218,15 +224,13 @@ class SwinU(nn.Module):
 
             x = self.output(x)
 
- 
         return x
-
 
 
 if __name__ == "__main__":
     model = SwinU(embedding_dim=96, patch_size=2)
-    #print(model)
-#    img = torch.randn(1, 1, 224, 224)
+    # print(model)
+    #    img = torch.randn(1, 1, 224, 224)
     img = torch.randn(1, 1, 128, 128)
     out = model(img)
     print(img.shape, out.shape)

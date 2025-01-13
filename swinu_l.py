@@ -3,13 +3,16 @@ import torch.nn as nn
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
 
+
 class PatchEmbedding(nn.Module):
-    def __init__(self, dim, patch_size, stride, norm_layer=nn.Identity()):
+    def __init__(
+        self, dim, patch_size, stride, norm_layer=nn.Identity(), in_channels=1
+    ):
         super(PatchEmbedding, self).__init__()
 
         # Create a Conv2d layer to "embed" each patch
         self.proj = nn.Conv2d(
-            in_channels=1,
+            in_channels=in_channels,
             out_channels=dim,
             kernel_size=patch_size,
             stride=stride,
@@ -150,9 +153,9 @@ class BasicLayer(nn.Module):
                     qk_scale=qk_scale,
                     drop=drop,
                     attn_drop=attn_drop,
-                    drop_path=drop_path[i]
-                    if isinstance(drop_path, list)
-                    else drop_path,
+                    drop_path=(
+                        drop_path[i] if isinstance(drop_path, list) else drop_path
+                    ),
                     norm_layer=norm_layer,
                 )
                 for i in range(depth)
@@ -161,10 +164,11 @@ class BasicLayer(nn.Module):
 
         # patch merging layer
         if downsample is not None:
-            self.downsample = downsample(input_resolution, dim=dim, norm_layer=norm_layer)
+            self.downsample = downsample(
+                input_resolution, dim=dim, norm_layer=norm_layer
+            )
         else:
             self.downsample = None
-
 
     def forward(self, x):
         for blk in self.blocks:
@@ -177,7 +181,6 @@ class BasicLayer(nn.Module):
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
-
 
 
 class BasicLayer_up(nn.Module):
@@ -238,9 +241,9 @@ class BasicLayer_up(nn.Module):
                     qk_scale=qk_scale,
                     drop=drop,
                     attn_drop=attn_drop,
-                    drop_path=drop_path[i]
-                    if isinstance(drop_path, list)
-                    else drop_path,
+                    drop_path=(
+                        drop_path[i] if isinstance(drop_path, list) else drop_path
+                    ),
                     norm_layer=norm_layer,
                 )
                 for i in range(depth)
@@ -428,7 +431,6 @@ class SwinTransformerBlock(nn.Module):
         )
 
 
-
 class WindowAttention(nn.Module):
     r"""Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
@@ -499,7 +501,11 @@ class WindowAttention(nn.Module):
         """
         B_, N, C = x.shape
 
-        assert C % self.num_heads == 0, "channels are not divisible by num_heads ({} % {}); change either latent dim size or num_heads".format(C, self.num_heads)
+        assert (
+            C % self.num_heads == 0
+        ), "channels are not divisible by num_heads ({} % {}); change either latent dim size or num_heads".format(
+            C, self.num_heads
+        )
         qkv = (
             self.qkv(x)
             .reshape(B_, N, 3, self.num_heads, C // self.num_heads)
@@ -547,7 +553,6 @@ class WindowAttention(nn.Module):
         return f"dim={self.dim}, window_size={self.window_size}, num_heads={self.num_heads}"
 
 
-
 class Mlp(nn.Module):
     def __init__(
         self,
@@ -573,6 +578,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
 class FinalPatchExpand_X4(nn.Module):
     def __init__(self, input_resolution, dim, dim_scale=4, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -596,8 +602,13 @@ class FinalPatchExpand_X4(nn.Module):
 
         x = x.view(B, H, W, C)
 
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale,
-                      c=C // (self.dim_scale ** 2))
+        x = rearrange(
+            x,
+            "b h w (p1 p2 c)-> b (h p1) (w p2) c",
+            p1=self.dim_scale,
+            p2=self.dim_scale,
+            c=C // (self.dim_scale**2),
+        )
 
         x = x.view(B, -1, self.output_dim)
         x = self.norm(x)
