@@ -6,6 +6,8 @@ import zarr
 from glob import glob
 from torch.utils.data import DataLoader, TensorDataset
 from torch.distributions.kumaraswamy import Kumaraswamy
+import pywt
+from scipy.signal import medfilt2d
 
 
 def hourly_split_1_1(data):
@@ -312,3 +314,74 @@ def beta_function(x, y):
     using the log-Gamma function for numerical stability.
     """
     return torch.exp(torch.lgamma(x) + torch.lgamma(y) - torch.lgamma(x + y))
+
+
+def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
+    """
+    Calculate SNR using wavelet decomposition, specifically designed for neural network outputs
+    with values between 0 and 1 and sharp features.
+
+    Parameters:
+    prediction (numpy.ndarray): Predicted field from neural network (values 0-1)
+    reference (numpy.ndarray, optional): Ground truth field if available
+    wavelet (str): Wavelet type to use (default: 'db2' which preserves edges well)
+    level (int): Decomposition level
+
+    Returns:
+    dict: Dictionary containing SNR metrics and noise field
+    """
+    if prediction.ndim != 2:
+        raise ValueError("Input must be 2D array: {}".format(prediction.shape))
+    if reference is not None and reference.ndim != 2:
+        raise ValueError("Reference must be 2D array: {}".format(reference.shape))
+
+    # If we have reference data, we can calculate noise directly
+    if reference is not None:
+        noise_field = prediction - reference
+        _noise_field = noise_field.numpy()
+
+    # If no reference, estimate noise using wavelet decomposition
+    else:
+        # Perform wavelet decomposition
+        coeffs = pywt.wavedec2(prediction, wavelet, level=level)
+
+        # Get highest frequency details (typically noise)
+        cH1, cV1, cD1 = coeffs[1]
+
+        # Estimate noise standard deviation using MAD estimator
+        # MAD is more robust to outliers than standard deviation
+        noise_std = np.median(np.abs(cD1)) / 0.6745  # 0.6745 is the MAD scaling factor
+
+        # Reconstruct noise field
+        coeffs_noise = [np.zeros_like(coeffs[0])]  # Set approximation to zero
+        coeffs_noise.extend([(cH1, cV1, cD1)])  # Keep finest details
+        coeffs_noise.extend(
+            [tuple(np.zeros_like(d) for d in coeff) for coeff in coeffs[2:]]
+        )  # Set coarser details to zero
+
+        noise_field = pywt.waverec2(coeffs_noise, wavelet)
+
+        # Normalize noise field to match input scale
+        _noise_field = noise_field * (noise_std / np.std(noise_field))
+
+    _prediction = prediction.numpy()
+
+    # Calculate signal power (using smoothed prediction as signal estimate)
+    smooth_pred = medfilt2d(_prediction, kernel_size=3)
+    signal_power = np.mean(smooth_pred**2)
+
+    # Calculate noise power
+    noise_power = np.mean(_noise_field**2)
+
+    # Calculate SNR
+    snr_linear = signal_power / noise_power
+    snr_db = 10 * np.log10(snr_linear)
+
+    # Calculate local SNR map to identify problematic regions
+    local_noise_power = medfilt2d(_noise_field**2, kernel_size=5)
+    local_snr = 10 * np.log10(smooth_pred**2 / (local_noise_power + 1e-9))
+    return {
+        "snr_db": snr_db,
+        "noise_field": _noise_field,
+        "local_snr_map": local_snr,
+    }
