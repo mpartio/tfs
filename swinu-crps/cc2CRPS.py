@@ -8,90 +8,58 @@ import numpy as np
 import platform
 import os
 import sys
-import pywt
-from scipy.signal import medfilt2d
 from scipy.stats import beta as stats_beta
 from datetime import datetime, timedelta
 from swinu import SwinU
 from crps import CRPSGaussianLoss
+from util import calculate_wavelet_snr
 
 x_train_data, y_train_data, x_val_data, y_val_data = None, None, None, None
 train_no = 0
 
+import torch
+import torch.nn.functional as F
 
-def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
+
+def smooth_data(data: torch.Tensor, kernel_size: int = 3, sigma: float = 1.0):
     """
-    Calculate SNR using wavelet decomposition, specifically designed for neural network outputs
-    with values between 0 and 1 and sharp features.
+    Smooths 2D data using Gaussian blur
 
-    Parameters:
-    prediction (numpy.ndarray): Predicted field from neural network (values 0-1)
-    reference (numpy.ndarray, optional): Ground truth field if available
-    wavelet (str): Wavelet type to use (default: 'db2' which preserves edges well)
-    level (int): Decomposition level
-
-    Returns:
-    dict: Dictionary containing SNR metrics and noise field
+    Args:
+        data: Input tensor of shape (B, C, H, W) or (C, H, W)
+        kernel_size: Size of the Gaussian kernel
+        sigma: Standard deviation of the Gaussian kernel
     """
-    if prediction.ndim != 2:
-        raise ValueError("Input must be 2D array: {}".format(prediction.shape))
-    if reference is not None and reference.ndim != 2:
-        raise ValueError("Reference must be 2D array: {}".format(reference.shape))
+    # Add batch dimension if needed
+    if data.dim() == 3:
+        data = data.unsqueeze(0)
 
-    # If we have reference data, we can calculate noise directly
-    if reference is not None:
-        noise_field = prediction - reference
-        _noise_field = noise_field.numpy()
+    # Create Gaussian kernel
+    channels = data.size(1)
+    kernel = torch.zeros((channels, 1, kernel_size, kernel_size))
 
-    # If no reference, estimate noise using wavelet decomposition
-    else:
-        # Perform wavelet decomposition
-        coeffs = pywt.wavedec2(prediction, wavelet, level=level)
+    # Fill kernel with Gaussian values
+    center = kernel_size // 2
+    for x in range(kernel_size):
+        for y in range(kernel_size):
+            dx = x - center
+            dy = y - center
+            kernel[0, 0, x, y] = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
 
-        # Get highest frequency details (typically noise)
-        cH1, cV1, cD1 = coeffs[1]
+    # Normalize kernel
+    kernel = kernel / kernel.sum()
 
-        # Estimate noise standard deviation using MAD estimator
-        # MAD is more robust to outliers than standard deviation
-        noise_std = np.median(np.abs(cD1)) / 0.6745  # 0.6745 is the MAD scaling factor
+    # Apply to all channels
+    kernel = kernel.to(data.device)
+    smoothed = F.conv2d(data, kernel, padding=center, groups=channels)
 
-        # Reconstruct noise field
-        coeffs_noise = [np.zeros_like(coeffs[0])]  # Set approximation to zero
-        coeffs_noise.extend([(cH1, cV1, cD1)])  # Keep finest details
-        coeffs_noise.extend(
-            [tuple(np.zeros_like(d) for d in coeff) for coeff in coeffs[2:]]
-        )  # Set coarser details to zero
+    # Ensure output stays in [0,1]
+    smoothed = torch.clamp(smoothed, 0, 1)
 
-        noise_field = pywt.waverec2(coeffs_noise, wavelet)
-
-        # Normalize noise field to match input scale
-        _noise_field = noise_field * (noise_std / np.std(noise_field))
-
-    _prediction = prediction.numpy()
-
-    # Calculate signal power (using smoothed prediction as signal estimate)
-    smooth_pred = medfilt2d(_prediction, kernel_size=3)
-    signal_power = np.mean(smooth_pred**2)
-
-    # Calculate noise power
-    noise_power = np.mean(_noise_field**2)
-
-    # Calculate SNR
-    snr_linear = signal_power / noise_power
-    snr_db = 10 * np.log10(snr_linear)
-
-    # Calculate local SNR map to identify problematic regions
-    local_noise_power = medfilt2d(_noise_field**2, kernel_size=5)
-    local_snr = 10 * np.log10(smooth_pred**2 / (local_noise_power + 1e-9))
-
-    return {
-        "snr_db": snr_db,
-        "noise_field": _noise_field,
-        "local_snr_map": local_snr,
-    }
+    return smoothed.squeeze(0) if data.dim() == 3 else smoothed
 
 
-def diagnostics(diag, input_field, truth, pred, mean, stde, snr, iteration, train_no):
+def diagnostics(diag, input_field, truth, pred, mean, stde, iteration, train_no):
 
     #    assert pred_alpha.ndim == 2
 
@@ -105,27 +73,32 @@ def diagnostics(diag, input_field, truth, pred, mean, stde, snr, iteration, trai
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
     )
-    plt.subplot(341)
-    plt.imshow(input_field)
-    plt.title("Input")
+    plt.subplot(351)
+    plt.imshow(input_field[0])
+    plt.title("Input time=T-1")
     plt.colorbar()
 
-    plt.subplot(342)
+    plt.subplot(352)
+    plt.imshow(input_field[1])
+    plt.title("Input time=T")
+    plt.colorbar()
+
+    plt.subplot(353)
     plt.imshow(truth)
     plt.title("Truth")
     plt.colorbar()
 
-    plt.subplot(343)
+    plt.subplot(354)
     plt.imshow(pred)
     plt.title("Prediction")
     plt.colorbar()
 
-    plt.subplot(344)
+    plt.subplot(355)
     plt.imshow(mean)
     plt.title("Mean residual")
     plt.colorbar()
 
-    plt.subplot(345)
+    plt.subplot(356)
     plt.imshow(stde)
     plt.title("Std of residual")
     plt.colorbar()
@@ -134,28 +107,28 @@ def diagnostics(diag, input_field, truth, pred, mean, stde, snr, iteration, trai
     #    sample = torch.distributions.Beta(pred_alpha, pred_beta).sample((10,))
 
     sample = torch.normal(mean, stde)
-    plt.subplot(346)
+    plt.subplot(357)
     plt.imshow(sample.squeeze())
     plt.title("One Random Sample of Residual")
     plt.colorbar()
 
-    data = truth - input_field
+    data = truth - input_field[-1]
     cmap = plt.cm.coolwarm  # You can also try 'bwr' or other diverging colormaps
     norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
 
-    plt.subplot(347)
+    plt.subplot(358)
     plt.imshow(data, cmap=cmap, norm=norm)
     plt.title("True Residual")
     plt.colorbar()
 
-    data = pred - input_field
+    data = pred - input_field[-1]
     norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
-    plt.subplot(348)
+    plt.subplot(359)
     plt.imshow(data, cmap=cmap, norm=norm)
     plt.title("Residual of Prediction/L1={:.4f}".format(F.l1_loss(pred, truth)))
     plt.colorbar()
 
-    plt.subplot(349)
+    plt.subplot(3, 5, 10)
     plt.title("Losses")
     plt.plot(diag.train_loss, label="Train Loss", color="blue", alpha=0.3)
     plt.plot(
@@ -175,22 +148,9 @@ def diagnostics(diag, input_field, truth, pred, mean, stde, snr, iteration, trai
     ax2.plot(torch.tensor(diag.lr) * 1e6, label="LRx1M", color="green")
     ax2.legend(loc="upper right")
 
-    #   plt.subplot(3,4,10)
-    #    plt.title("Validation Loss")
-    #    plt.legend(loc="upper left")
-    # ax2 = plt.gca().twinx()
-    # ax2.plot(moving_average(torch.tensor(diag.mae), 20), label="L1", color="green")
-    # ax2.plot(moving_average(torch.tensor(_mae[1]), 20), label="Median L1", color="red")
-    # ax2.legend(loc="upper right")
-
-    # plt.subplot(348)
-    # im = plt.imshow(snr["local_snr_map"], cmap="viridis")
-    # plt.title("Local SNR Map (dB)")
-    # plt.colorbar(im)
-
     snr_db = np.array(diag.snr_db).T
 
-    plt.subplot(3, 4, 10)
+    plt.subplot(3, 5, 11)
     snr_real = torch.tensor(snr_db[0])
     snr_pred = torch.tensor(snr_db[1])
     plt.plot(snr_real, label="Real", color="blue", alpha=0.3)
@@ -212,11 +172,11 @@ def diagnostics(diag, input_field, truth, pred, mean, stde, snr, iteration, trai
     ax2.legend(loc="upper right")
     plt.title("Signal to Noise Ratio")
 
-    plt.subplot(3, 4, 11)
+    plt.subplot(3, 5, 12)
     plt.hist(truth.flatten(), bins=20)
     plt.title("Truth histogram")
 
-    plt.subplot(3, 4, 12)
+    plt.subplot(3, 5, 13)
     plt.hist(pred.flatten(), bins=20)
     plt.title("Predicted histogram")
 
@@ -296,25 +256,44 @@ def augment_data(x, y):
     return x, y
 
 
-def partition(tensor, n_single, n_block):
-    T, C, H, W = tensor.shape
-    total_length = T
-    group_size = n_single + n_block
+def partition(tensor, n_x, n_y):
+    S, T, H, W, C = tensor.shape
+    group_size = n_x + n_y
 
-    # Reshape into groups of (n_single + n_block), with padding if necessary
-    num_groups = total_length // group_size
+    # Reshape into groups of (n_x + n_y), with padding if necessary
+    num_groups = T // group_size
     new_length = num_groups * group_size
 
-    padded_tensor = tensor[:new_length]
+    padded_tensor = tensor[:, :new_length]
 
     # Reshape into groups
-    reshaped = padded_tensor.view(-1, group_size, C, H, W)
-    # Extract single elements and blocks
-    singles = reshaped[:, :n_single]
-    blocks = reshaped[:, n_single:]
+    reshaped = padded_tensor.reshape(S, -1, group_size, H, W)
 
-    assert singles.shape[0] > 0, "Not enough elements"
-    return singles, blocks
+    # Merge streams into one dim
+    reshaped = reshaped.reshape(S * reshaped.shape[1], group_size, H, W)  # N, G, H, W
+
+    # Extract single elements and blocks
+    x = reshaped[:, :n_x]
+    y = reshaped[:, n_x:]
+
+    assert x.shape[0] > 0, "Not enough elements"
+
+    ##    S, N, C, H, W = x.shape
+    #   x = x.reshape(S * N, C, H, W) # N, C, H, W
+    #    S, N, C, H, W = y.shape
+    #    y = y.reshape(S * N, C, H, W)
+
+    return x, y
+
+
+def shuffle_to_hourly_streams(data):
+    T, H, W, C = data.shape
+    N = (T // 4) * 4
+    data = data[:N, ...]
+
+    data = data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4)
+
+    return data
 
 
 def read_beta_data(filename, n_x, n_y):
@@ -322,15 +301,7 @@ def read_beta_data(filename, n_x, n_y):
 
     data = np.load(filename)["arr_0"]
 
-    T, H, W, C = data.shape
-    N = (T // 4) * 4
-    data = data[:N, ...]
-    data = (
-        data.reshape(-1, 4, H, W, C)
-        .transpose(1, 0, 2, 3, 4)
-        .reshape(-1, H, W, C)
-        .transpose(0, 3, 1, 2)
-    )
+    data = shuffle_to_hourly_streams(data)
     data = torch.tensor(data)
 
     x_data, y_data = partition(data, n_x, n_y)
@@ -338,23 +309,36 @@ def read_beta_data(filename, n_x, n_y):
     return x_data, y_data
 
 
+td_index = 0
+
+
 def read_train_data(batch_size, input_size, n_x=1, n_y=1):
-    global x_train_data, y_train_data
+    global x_train_data, y_train_data, td_index
     if x_train_data is None:
         x_train_data, y_train_data = read_beta_data("../data/train-150k.npz", n_x, n_y)
 
-    n = torch.randint(
-        0,
-        x_train_data.shape[0] - batch_size,
-        (1,),
-    ).item()
+    #    n = torch.randint(
+    #        0,
+    #        x_train_data.shape[0] - batch_size,
+    #        (1,),
+    #    ).item()
 
-    x_data = x_train_data[n : n + batch_size]
+    x_data = x_train_data[td_index : td_index + batch_size]
     x_data = x_data[:, :, :input_size, :input_size]
 
-    y_data = y_train_data[n : n + batch_size]
+    y_data = y_train_data[td_index : td_index + batch_size]
     y_data = y_data[:, :, :input_size, :input_size]
 
+    td_index += batch_size
+    if x_data.shape[0] - td_index < batch_size:
+        td_index = 0
+
+    # Y data can have multiple times, X not
+    if y_data.ndim == 4:
+        y_data = y_data.unsqueeze(1)
+
+    assert x_data.ndim == 4, "invalid dimensions for x: {}".x_data.shape
+    assert y_data.ndim == 5, "invalid dimensions for y: {}".y_data.shape
     return x_data, y_data
 
 
@@ -373,6 +357,11 @@ def read_val_data(batch_size, input_size, shuffle=False, n_x=1, n_y=1):
     y_data = y_val_data[n : n + batch_size]
     y_data = y_data[:, :, :input_size, :input_size]
 
+    if y_data.ndim == 4:
+        y_data = y_data.unsqueeze(1)
+
+    assert x_data.ndim == 4, "invalid dimensions for x: {}".x_data.shape
+    assert y_data.ndim == 5, "invalid dimensions for y: {}".y_data.shape
     return x_data, y_data
 
 
@@ -403,16 +392,37 @@ def roll_forecast(model, x, y, n_steps):
         if x.ndim == 5:
             x = x.squeeze(1)  # Remove "time" -> B, C, H, W
 
-        truth = y[:, step, :, :, :]
+        y_true = y[:, step, :, :, :]
+
+        # X dim: B, C=2, H, W
+        # Y dim: B, C=1, H, W
+        assert (
+            x.shape[-2:] == y_true.shape[-2:]
+        ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
 
         assert (
-            x.shape == truth.shape
-        ), "x shape does not match y shape: {} vs {}".format(x.shape, truth.shape)
+            x.ndim == y_true.ndim
+        ), "x and y need to have equal number of dimensions: {} vs {}".format(
+            x.shape, y_true.shape
+        )
         # Forward pass
 
         mean, stde = model(x)
 
-        loss = crps_loss(mean, stde, truth - x)
+        # If multiple x (n_x>1), take the last one as the target for residuals
+        last_x = x[:, -1].unsqueeze(1)
+
+        assert (
+            last_x.shape == y_true.shape
+        ), "last_x and y_true shape mismatch: {} vs {}".format(
+            last_x.shape, y_true.shape
+        )
+        loss = crps_loss(mean, stde, y_true - last_x)
+
+        next_state = last_x + mean
+        bound_penalty = torch.mean(F.relu(next_state - 1) + F.relu(-next_state))
+
+        loss = loss + 0.1 * bound_penalty
 
         total_loss.append(loss)
         means.append(mean.detach())
@@ -457,7 +467,6 @@ class SimpleNet(nn.Module):
 
     def forward(self, x):
         assert x.ndim == 4  # B, C, H, W
-        assert x.shape[1] == 1, "invalid shape: {}".format(x.shape)
         x = self.backbone(x)
         mean, stde = self.prediction_head(x)
         return mean, stde
@@ -504,9 +513,9 @@ def train(n_iterations, n_steps, lr):
         model.train()
 
         input_field, truth = read_train_data(
-            batch_size=batch_size, input_size=input_size, n_y=n_steps
+            batch_size=batch_size, input_size=input_size, n_x=2, n_y=n_steps
         )
-        input_field, truth = augment_data(input_field, truth)
+        #         input_field, truth = augment_data(input_field, truth)
 
         input_field = input_field.to(device)
         truth = truth.to(device)
@@ -546,7 +555,7 @@ def train(n_iterations, n_steps, lr):
                     "Iteration {:05d}/{:05d}, Train Loss: {:.4f}, Val Loss: {:.4f}, L1: {:.4f} Time: {}".format(
                         iteration,
                         n_iterations,
-                        loss_so_far,
+                        diag.train_loss[-1],
                         val_loss.item(),
                         mae,
                         convert_delta(stop_time - start_time),
@@ -565,7 +574,11 @@ def evaluate(model, diag, iteration, n_steps):
         n_val_batches = 1000
         for _ in range(n_val_batches):
             val_input_field, val_truth = read_val_data(
-                batch_size=batch_size, input_size=input_size, shuffle=True, n_y=n_steps
+                batch_size=batch_size,
+                input_size=input_size,
+                shuffle=True,
+                n_x=2,
+                n_y=n_steps,
             )
 
             val_input_field = val_input_field.to(device)
@@ -579,17 +592,24 @@ def evaluate(model, diag, iteration, n_steps):
         diag.val_loss.append(val_loss.item())
 
         input_field, truth = read_val_data(
-            batch_size=batch_size, input_size=input_size, n_y=n_steps
+            batch_size=batch_size, input_size=input_size, n_x=2, n_y=n_steps
         )
 
-        input_field = input_field[0].to(device)
-        truth = truth[0].unsqueeze(0).to(device)
+        input_field = input_field[0].unsqueeze(0).to(device)  # B, C, H, W
+        truth = truth[0].unsqueeze(0).to(device)  # B, T, C, H, W
 
         _, means, stdes = roll_forecast(model, input_field, truth, n_steps)
 
-        pred = (input_field.cpu() + means[0].cpu().squeeze()).squeeze()
-        truth = truth[:, -1].cpu().squeeze()
+        mean = means[0].cpu().squeeze()  # list to first tensor
+        stde = stdes[0].cpu().squeeze()
 
+        last_x = (
+            input_field[:, -1].cpu().squeeze()
+        )  # select last of channels (if n_x > 1)
+        truth = truth[:, -1].cpu().squeeze()  # select last of truths (if n_y > 1)
+
+        pred = last_x + mean
+        pred = torch.clamp(pred, 0, 1)
         diag.mae.append(F.l1_loss(pred, truth).item())
 
         snr_pred = calculate_wavelet_snr(pred, None)
@@ -601,12 +621,11 @@ def evaluate(model, diag, iteration, n_steps):
 
             diagnostics(
                 diag,
-                input_field[0][0].cpu().squeeze(),
+                input_field.cpu().squeeze(),
                 truth,
                 pred,
-                means[0].cpu().squeeze(),
-                stdes[0].cpu().squeeze(),
-                snr_pred,
+                mean,
+                stde,
                 iteration,
                 train_no,
             )
@@ -618,7 +637,7 @@ def evaluate(model, diag, iteration, n_steps):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
 batch_size = 32
-dim = 192
+dim = 96
 
 crps_loss = CRPSGaussianLoss()
 
