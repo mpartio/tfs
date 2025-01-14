@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import einops
 from timm.models.layers import DropPath
+from torch.nn.init import trunc_normal_
 
 
 def pad(x, window_size):
@@ -555,61 +556,69 @@ class WindowAttention(nn.Module):
     def __init__(self, dim, num_heads, window_size):
         super(WindowAttention, self).__init__()
         self.num_heads = num_heads
+        head_dim = dim // num_heads
         self.dim = dim
-        self.scale = (dim // num_heads) ** -0.5
+        # self.scale = (dim // num_heads) ** -0.5
+        self.scale = head_dim**-0.5
 
         # Linear layers for query, key, and value
-        self.query = nn.Linear(dim, dim)
-        self.key = nn.Linear(dim, dim)
-        self.value = nn.Linear(dim, dim)
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
 
         # Output projection
         self.proj = nn.Linear(dim, dim)
 
         # Relative positional bias (simplified)
         self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size - 1, 2 * window_size - 1, num_heads))
+            torch.zeros(2 * window_size - 1, 2 * window_size - 1, num_heads)
         )
 
-        self.relative_position_index = create_relative_position_index(window_size)
+        #        self.relative_position_index = create_relative_position_index(window_size)
         self.window_size = window_size
+
+        # Initialize with truncated normal
+        trunc_normal_(self.relative_position_bias_table, std=0.02)
+
+        self.register_buffer(
+            "relative_position_index", create_relative_position_index(window_size)
+        )
 
     def forward(self, x, mask=None):
         B, N, C = x.shape  # B: batch size, N: number of patches in window, C: channels
-        q = self.query(x).view(B, N, self.num_heads, C // self.num_heads)
-        k = self.key(x).view(B, N, self.num_heads, C // self.num_heads)
-        v = self.value(x).view(B, N, self.num_heads, C // self.num_heads)
+
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # 3, B, num_heads, N, head_dim
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
         # Scaled dot-product attention
-        attn = torch.einsum("bnhc,bmhc->bnhm", q, k) * self.scale
+        attn = (q @ k.transpose(-2, -1)) * self.scale
 
-        relative_position_index = self.relative_position_index.reshape(-1)
-        relative_position_bias_table = self.relative_position_bias_table.view(
-            1, -1, self.num_heads
-        )
+        # Reshape relative position bias properly for window size
+        relative_position_bias = self.relative_position_bias_table.reshape(
+            -1, self.num_heads
+        )  # [81, 4]
+        relative_position_bias = relative_position_bias[
+            self.relative_position_index
+        ].reshape(
+            self.window_size**2, self.window_size**2, self.num_heads
+        )  # [25, 25, 4]
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).unsqueeze(
+            0
+        )  # [1, 4, 25, 25]
 
-        relative_position_bias = relative_position_bias_table[
-            0, relative_position_index
-        ]  # .view(49, 49, 6)
-
-        # Broadcast the same positional bias to all batches
-        relative_position_bias = relative_position_bias.unsqueeze(0).expand(
-            B, -1, -1, -1
-        )
-        relative_position_bias = relative_position_bias.view(B, N, self.num_heads, N)
-
-        # Add relative positional bias
-        attn += relative_position_bias
+        attn = attn + relative_position_bias
 
         if mask is not None:
-            mask = mask.expand(B, -1, -1, -1).to(x.device)
-            attn = attn.masked_fill(mask == 1, -1e9)
+            # Reshape mask to match attention dimensions
+            mask = mask.reshape(1, 1, N, N).expand(B, self.num_heads, -1, -1)
+            mask = mask.to(x.device)
+            attn = attn.masked_fill(mask == 1, float("-1e4"))
 
         attn = F.softmax(attn, dim=-1)
-        out = torch.einsum("bnhm,bmhc->bnhc", attn, v)
-        out = out.reshape(B, N, C)
 
-        return self.proj(out)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+
+        return x
 
 
 class GlobalAttentionLayer(nn.Module):
@@ -982,18 +991,15 @@ class SwinTransformerBlock(nn.Module):
         self.patch_mask = None
 
         if shift_size > 0:
-            self.patch_mask = torch.zeros(1, window_size, window_size, 1, 1)
+            self.patch_mask = torch.zeros(1, window_size, window_size)
 
             for j in range(window_size):
                 for i in range(window_size):
                     if j >= window_size - shift_size or i >= window_size - shift_size:
-                        self.patch_mask[0, j, i, 0, 0] = 1
+                        self.patch_mask[0, j, i] = 1
 
-            # Repeat the mask for all heads to (almost) match the shape of attn
-            # "Almost", because we don't know the batch size yet
-            # (1, window_size ** 2, num_heads, window_size ** 2)
-            self.patch_mask = self.patch_mask.view(1, window_size**2, 1, 1).repeat(
-                1, 1, num_heads, window_size**2
+            self.patch_mask = self.patch_mask.reshape(1, window_size**2, 1).repeat(
+                1, 1, window_size**2
             )
 
         self.drop_path = nn.Identity() if drop_path is None else DropPath(drop_path)
@@ -1137,6 +1143,7 @@ class TransformerBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         x = x.view(B, T, H, W, C)
 
+        assert torch.isnan(x).sum() == 0, "NaN values in output tensor"
         return x
 
 

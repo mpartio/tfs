@@ -35,8 +35,8 @@ loss_weight_scheduler = LossWeightScheduler(
             "final": 0.7,  # Stays constant
         },
         "recon": {
-            "initial": 20,
-            "final": 15,  # Reduce over time
+            "initial": 10,
+            "final": 4,  # Reduce over time
         },
     }
 )
@@ -249,13 +249,13 @@ def train(model, train_loader, val_loader, found_existing_model):
         beta_s = np.asarray(beta_s).mean(axis=(0, 1, 2, 3))
         weights_s = np.asarray(weights_s).mean(axis=(0, 1, 2, 3))
 
-        plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
-        plt.title(f"Epoch {epoch}")
-        plt.colorbar()
-        plt.savefig(
-            f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
-        )
-        plt.close()
+#        plt.imshow(loss["prediction"][0, 0, ...].detach().cpu().numpy())
+#        plt.title(f"Epoch {epoch}")
+#        plt.colorbar()
+#        plt.savefig(
+#            f"{run_dir}/{training_start.strftime('%Y%m%d%H%M%S')}-{epoch:03d}-val.png"
+#        )
+#        plt.close()
 
         def format_beta(alpha, beta, weights):
             ret = ""

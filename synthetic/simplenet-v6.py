@@ -90,7 +90,7 @@ def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
     }
 
 
-def trimmed_mean(samples, trim_percent=0.2):
+def trimmed_mean(samples, trim_percent):
     # Sort and remove extreme values
     sorted_samples, _ = torch.sort(samples, dim=0)
     n_samples = samples.shape[0]
@@ -157,8 +157,8 @@ def diagnostics(
     plt.colorbar()
 
     plt.subplot(367)
-    plt.imshow(trimmed_mean(sample, 0.2))
-    plt.title("Trimmed Mean of Samples (%=0.2)")
+    plt.imshow(trimmed_mean(sample, 0.3))
+    plt.title("Trimmed Mean of Samples (%=30%)")
     plt.colorbar()
 
     plt.subplot(368)
@@ -300,7 +300,7 @@ def diagnostics(
 
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    plt.savefig("figures/train_{}_iteration_{:05d}.png".format(train_no, iteration))
+    plt.savefig("figures/{}_train_{}_iteration_{:05d}.png".format(platform.node(), train_no, iteration))
     plt.close()
 
 
@@ -459,6 +459,28 @@ def beta_nll_loss(pred_alpha, pred_beta, target):
     )
 
     return -loss.mean()  # Negative because we minimize
+
+
+def weighted_beta_nll_loss(pred_alpha, pred_beta, target, weight_beta=0.5):
+    # Regular Beta NLL
+    nll = -(
+        torch.lgamma(pred_alpha + pred_beta)
+        - torch.lgamma(pred_alpha)
+        - torch.lgamma(pred_beta)
+        + (pred_alpha - 1)
+        * torch.log(target + 1e-6)  # add small epsilon to avoid log(0)
+        + (pred_beta - 1) * torch.log(1 - target + 1e-6)
+    )
+
+    # Weight using total concentration (α+β)
+    # Higher concentration = lower variance
+
+    if weight_beta > 0:
+        concentration = pred_alpha + pred_beta
+
+        nll = nll * (1 / concentration.detach()) ** weight_beta
+
+    return nll.mean()
 
 
 def get_lr_schedule(optimizer, warmup_iterations=1000, total_iterations=20000):
@@ -739,7 +761,7 @@ def roll_forecast_train(model, x, y, n_steps, diag):
         alpha, beta = model(x)
 
         # Calculate loss
-        distribution_loss = beta_nll_loss(alpha, beta, truth)
+        distribution_loss = weighted_beta_nll_loss(alpha, beta, truth)
 
         sample = torch.distributions.Beta(alpha, beta).sample((1,))[0]
         reconstruction_loss = F.l1_loss(truth, sample)
@@ -753,7 +775,6 @@ def roll_forecast_train(model, x, y, n_steps, diag):
         if n_steps > 1:
             sample = torch.distributions.Beta(alpha, beta).sample((10,))
             median = sample.median(0)[0]
-
             x = median
 
     return total_loss / n_steps
@@ -785,7 +806,7 @@ def roll_forecast_eval(model, x, y, n_steps, diag):
         )
 
         # Calculate loss
-        distribution_loss = beta_nll_loss(alpha, beta, truth)
+        distribution_loss = weighted_beta_nll_loss(alpha, beta, truth)
 
         sample = torch.distributions.Beta(alpha, beta).sample((1,))[0]
         reconstruction_loss = F.l1_loss(truth, sample) * 1.3
@@ -793,7 +814,7 @@ def roll_forecast_eval(model, x, y, n_steps, diag):
         total_loss += distribution_loss + reconstruction_loss
 
         if n_steps > 1:
-            sample = torch.distributions.Beta(alpha, beta).sample((10,))[0]
+            sample = torch.distributions.Beta(alpha, beta).sample((10,))
             median = sample.median(0)[0]
 
             x = median
@@ -1040,7 +1061,7 @@ def evaluate(model, diag, iteration, n_steps):
 # Training setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
-batch_size = 16
+batch_size = 12
 dim = 32
 
 # perceptual_criterion = PerceptualLoss()
