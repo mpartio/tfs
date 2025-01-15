@@ -201,7 +201,9 @@ class AlmostFairCRPSLoss(nn.Module):
         # Compute mean across spatial dimensions
         loss = (first_term - 0.5 * second_term).mean(dim=[1, 2, 3])
 
-        return loss.mean()
+        loss = loss.mean()
+        assert loss == loss, "NaN in loss"
+        return loss
 
 
 class WeightedAlmostFairCRPSLoss(AlmostFairCRPSLoss):
