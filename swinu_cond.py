@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from swinu_l import *
+from swinu_l_cond import *
 
 
 class SwinU(nn.Module):
@@ -36,9 +36,9 @@ class SwinU(nn.Module):
         patch_size=2,
         in_chans=1,
         embed_dim=96,
-        depths=[2, 2, 2, 2],
+        depths=[1, 1, 1, 1],
         depths_decoder=[1, 2, 2, 2],
-        num_heads=[3, 6, 12, 24],
+        num_heads=[3, 6],
         window_size=8,
         mlp_ratio=4.0,
         qkv_bias=True,
@@ -233,6 +233,7 @@ if __name__ == "__main__":
     model = SwinU(embedding_dim=96, patch_size=2)
     # print(model)
     #    img = torch.randn(1, 1, 224, 224)
-    img = torch.randn(1, 1, 128, 128)
-    out = model(img)
+    img = torch.randn(1, 2, 128, 128)
+    noise = torch.randn(128,128)
+    out = model(img, noise)
     print(img.shape, out.shape)

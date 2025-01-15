@@ -40,7 +40,7 @@ class ConditionalLayerNorm(nn.Module):
 
 class PatchEmbedding(nn.Module):
     def __init__(
-        self, dim, patch_size, stride, norm_layer=nn.Identity(), in_channels=1
+        self, dim, patch_size, stride, in_channels=1
     ):
         super(PatchEmbedding, self).__init__()
 
@@ -52,7 +52,7 @@ class PatchEmbedding(nn.Module):
             stride=stride,
         )
 
-        self.norm = norm_layer(dim)
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -358,7 +358,7 @@ class SwinTransformerBlock(nn.Module):
             0 <= self.shift_size < self.window_size
         ), "shift_size must in 0-window_size"
 
-        self.norm1 = norm_layer(dim, noise_dim)
+        self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.attn = WindowAttention(
             dim,
             window_size=to_2tuple(self.window_size),
@@ -370,7 +370,7 @@ class SwinTransformerBlock(nn.Module):
         )
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim, noise_dim)
+        self.norm2 = ConditionalLayerNorm(dim, noise_dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
@@ -624,8 +624,8 @@ class FinalPatchExpand_X4(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
         self.dim_scale = dim_scale
-        self.expand = nn.Linear(dim, dim * (dim_scale**2), bias=False)
-        self.output_dim = dim
+        self.expand = nn.Linear(dim, dim * dim_scale, bias=False)
+        self.output_dim = dim // dim_scale
         self.norm = norm_layer(self.output_dim)
 
     def forward(self, x):
@@ -651,6 +651,7 @@ class FinalPatchExpand_X4(nn.Module):
 
         x = x.view(B, -1, self.output_dim)
         x = self.norm(x)
+        x = x.reshape(B, H*2, W*2, C//4).permute(0, 3, 1, 2) 
         return x
 
 
