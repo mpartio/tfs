@@ -329,7 +329,7 @@ td_index = 0
 def read_train_data(batch_size, input_size, n_x=1, n_y=1):
     global x_train_data, y_train_data, td_index
     if x_train_data is None:
-        x_train_data, y_train_data = read_beta_data("../data/train-150k.npz", n_x, n_y)
+        x_train_data, y_train_data = read_beta_data("../data/train-era5.npz", n_x, n_y)
 
     #    n = torch.randint(
     #        0,
@@ -344,7 +344,7 @@ def read_train_data(batch_size, input_size, n_x=1, n_y=1):
     y_data = y_data[:, :, :input_size, :input_size]
 
     td_index += batch_size
-    if x_data.shape[0] - td_index < batch_size:
+    if x_train_data.shape[0] - td_index < batch_size:
         td_index = 0
 
     # Y data can have multiple times, X not
@@ -359,7 +359,7 @@ def read_train_data(batch_size, input_size, n_x=1, n_y=1):
 def read_val_data(batch_size, input_size, shuffle=False, n_x=1, n_y=1):
     global x_val_data, y_val_data
     if x_val_data is None:
-        x_val_data, y_val_data = read_beta_data("../data/val-150k.npz", n_x, n_y)
+        x_val_data, y_val_data = read_beta_data("../data/val-era5.npz", n_x, n_y)
 
     n = 0
     if shuffle:
@@ -509,7 +509,7 @@ def train(n_iterations, n_steps, lr):
         )
     )
 
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.AdamW(model.parameters(), lr=lr)
 
     start_time = datetime.now()
 
@@ -650,7 +650,7 @@ def evaluate(model, diag, iteration, n_steps):
 # Training setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
-batch_size = 32
+batch_size = 48
 dim = 96
 
 crps_loss = CRPSGaussianLoss()

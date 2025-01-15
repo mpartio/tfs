@@ -17,9 +17,6 @@ from util import calculate_wavelet_snr
 x_train_data, y_train_data, x_val_data, y_val_data = None, None, None, None
 train_no = 0
 
-import torch
-import torch.nn.functional as F
-
 
 def smooth_data(data: torch.Tensor, kernel_size: int = 3, sigma: float = 1.0):
     """
@@ -335,7 +332,7 @@ def read_train_data(batch_size, input_size, n_x=1, n_y=1):
     y_data = y_data[:, :, :input_size, :input_size]
 
     td_index += batch_size
-    if x_data.shape[0] - td_index < batch_size:
+    if x_train_data.shape[0] - td_index < batch_size:
         td_index = 0
 
     # Y data can have multiple times, X not
@@ -485,9 +482,7 @@ class SimpleNet(nn.Module):
         # Calculate full predictions
         last_state = x[:, -1, :, :].unsqueeze(1).unsqueeze(1)  # B, 1, 1, H, W
 
-        predictions = (
-            last_state + deltas
-        )  # Add current state to all deltas
+        predictions = last_state + deltas  # Add current state to all deltas
 
         predictions = torch.clamp(predictions, 0, 1)
 
@@ -504,6 +499,45 @@ class Diagnostics:
             self.snr_db,
             self.bnll_loss,
         ) = ([], [], [], [], [], [])
+
+
+def analyze_gradients(model):
+    # Group gradients by network section
+    gradient_stats = {
+        "backbone_down": [],  # Encoder path
+        "backbone_up": [],  # Decoder path
+        "attention": [],  # Attention blocks
+        "norms": [],  # Layer norms
+        "prediction": [],  # Final head
+    }
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.abs().mean().item()
+
+            if "backbone.layers." in name:
+                gradient_stats["backbone_down"].append(grad_norm)
+            elif "backbone.layers_up." in name:
+                gradient_stats["backbone_up"].append(grad_norm)
+            elif "attn" in name:
+                gradient_stats["attention"].append(grad_norm)
+            elif "norm" in name:
+                gradient_stats["norms"].append(grad_norm)
+            elif "prediction_head" in name:
+                gradient_stats["prediction"].append(grad_norm)
+
+    # Compute statistics for each section
+    stats = {}
+    for section, grads in gradient_stats.items():
+        if grads:
+            stats[section] = {
+                "mean": np.mean(grads),
+                "std": np.std(grads),
+                "min": np.min(grads),
+                "max": np.max(grads),
+            }
+
+    return stats
 
 
 def train(n_iterations, n_steps, lr):
@@ -546,7 +580,9 @@ def train(n_iterations, n_steps, lr):
 
         with torch.autocast(device_type="cuda", dtype=torch.float16):
 
-            train_loss, _, _ = roll_forecast(model, input_field, truth, n_steps)
+            train_loss, tendencies, predictions = roll_forecast(
+                model, input_field, truth, n_steps
+            )
             train_loss = train_loss.mean()
             loss_so_far += train_loss.item()
 
@@ -556,10 +592,20 @@ def train(n_iterations, n_steps, lr):
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
+            grad_stats = analyze_gradients(model)
+
             scaler.step(optimizer)
             scaler.update()
 
             scheduler.step()
+
+        if iteration % 100 == 0:
+
+            print("\nGradient Analysis:")
+            for section, metrics_ in grad_stats.items():
+                print(
+                    f"{section:15s}: mean={metrics_['mean']:.2e}, min={metrics_['min']:.2e}, max={metrics_['max']:.2e}"
+                )
 
         if iteration % 1000 == 0:
             val_loss = evaluate(model, diag, iteration, n_steps)
@@ -585,6 +631,11 @@ def train(n_iterations, n_steps, lr):
                 )
 
             start_time = datetime.now()
+
+    if iteration % 100000 == 0:
+        torch.save(
+            model.state_dict(), "models/{}-{}.pth".format(sys.argv[0], iteration)
+        )
 
 
 def evaluate(model, diag, iteration, n_steps):
@@ -649,7 +700,7 @@ def evaluate(model, diag, iteration, n_steps):
 # Training setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
-batch_size = 32
+batch_size = 24
 dim = 96
 
 crps_loss = AlmostFairCRPSLoss(alpha=0.95)
