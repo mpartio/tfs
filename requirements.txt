@@ -8,3 +8,4 @@ zarr
 xarray
 scipy
 lightning
+PyWavelets
