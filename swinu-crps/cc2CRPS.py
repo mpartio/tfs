@@ -10,6 +10,7 @@ from swinu_l_cond import (
 )
 import lightning as L
 
+
 class NoiseProcessor(nn.Module):
     def __init__(self, noise_dim, hidden_dim=None):
         super().__init__()
@@ -163,7 +164,7 @@ class cc2CRPS(nn.Module):
 
         # Attention Bridge (like AIFS-CRPS)
         self.bridge = MultiHeadAttentionBridge(
-            in_dim=dim * 2, bridge_dim=dim * 4, n_layers=2
+            in_dim=dim * 2, bridge_dim=dim * 4, n_layers=n_layers
         )
 
         # Decoder (mirroring encoder)
