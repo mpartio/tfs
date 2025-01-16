@@ -11,6 +11,7 @@ from util import calculate_wavelet_snr
 from cc2CRPS_data import cc2DataModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
 from cc2util import roll_forecast
+from lightning.pytorch.callbacks import ModelSummary
 
 
 def convert_delta(dlt: timedelta) -> str:
@@ -33,8 +34,6 @@ def get_lr_schedule(optimizer, warmup_iterations, total_iterations):
             return max(0.1, 1.0 - 0.9 * progress)
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-
 
 
 def analyze_gradients(model):
@@ -80,7 +79,7 @@ class cc2CRPSModel(L.LightningModule):
     def __init__(self, n_y=1):
         super().__init__()
         self.model = cc2CRPS(
-            dim=128, input_resolution=(128, 128), n_members=3, n_layers=4
+            dim=192, input_resolution=(128, 128), n_members=3, n_layers=6
         )
         self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
         self.max_iterations = int(5e5)
@@ -90,17 +89,13 @@ class cc2CRPSModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        loss, _, _ = roll_forecast(
-            self.model, x, y, 1, loss_fn=self.crps_loss
-        )
+        loss, _, _ = roll_forecast(self.model, x, y, 1, loss_fn=self.crps_loss)
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        loss, _, _ = roll_forecast(
-            self.model, x, y, 1, loss_fn=self.crps_loss
-        )
+        loss, _, _ = roll_forecast(self.model, x, y, 1, loss_fn=self.crps_loss)
         self.log("val_loss", loss)
         return loss
 
@@ -119,17 +114,21 @@ class cc2CRPSModel(L.LightningModule):
 iterations = int(5e5)
 
 model = cc2CRPSModel()
-cc2Data = cc2DataModule(batch_size=8, n_x=2, n_y=1)
+cc2Data = cc2DataModule(batch_size=32, n_x=2, n_y=1)
 
 trainer = L.Trainer(
     max_steps=iterations,
     precision="16-mixed",
     accelerator="cuda",
     devices=1,
-    callbacks=[TrainDataPlotterCallback(), DiagnosticCallback()],
+    callbacks=[
+        TrainDataPlotterCallback(),
+        DiagnosticCallback(),
+        ModelSummary(max_depth=-1),
+    ],
 )
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision("high")
 
 trainer.fit(model, cc2Data.train_dataloader(), cc2Data.val_dataloader())
 
