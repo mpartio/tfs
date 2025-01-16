@@ -71,7 +71,7 @@ class DiagnosticCallback(L.Callback):
 
             val_loss = np.nan if len(self.val_loss) == 0 else self.val_loss[-1]
 
-            mae = None if len(self.mae) == 0 else self.mae[-1]
+            mae = np.nan if len(self.mae) == 0 else self.mae[-1]
 
             print(
                 "Iteration {:05d} Train Loss: {:.4f}, Val Loss: {:.4f}, L1: {:.4f}".format(

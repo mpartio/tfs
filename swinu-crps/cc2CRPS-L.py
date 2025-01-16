@@ -114,7 +114,7 @@ class cc2CRPSModel(L.LightningModule):
 iterations = int(5e5)
 
 model = cc2CRPSModel()
-cc2Data = cc2DataModule(batch_size=32, n_x=2, n_y=1)
+cc2Data = cc2DataModule(batch_size=24, n_x=2, n_y=1)
 
 trainer = L.Trainer(
     max_steps=iterations,
