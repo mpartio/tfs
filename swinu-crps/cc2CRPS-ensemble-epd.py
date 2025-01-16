@@ -938,7 +938,7 @@ batch_size = 32
 crps_loss = AlmostFairCRPSLoss(alpha=0.95)
 
 model = SimpleNet(
-    dim=128, input_size=(input_size, input_size), n_members=3, n_layers=4
+    dim=128, input_resolution=(input_size, input_size), n_members=3, n_layers=4
 ).to(device)
 
 print(model)
@@ -952,7 +952,7 @@ torch.set_float32_matmul_precision("high")
 
 # First training loop
 
-model_file = f"models/model-train-1.pth"
+model_file = "models/{}-{}.pth".format(sys.argv[0], 500_000)
 
 if os.path.exists(model_file):
     model.load_state_dict(torch.load(model_file, weights_only=True))
