@@ -163,9 +163,13 @@ class cc2DataModule(L.LightningDataModule):
         self.setup(dataset_size, n_x, n_y)
 
     def setup(self, dataset_size, n_x, n_y):
-        self.cc2_test = read_data("test", dataset_size, n_x, n_y)
         self.cc2_val = read_data("val", dataset_size, n_x, n_y)
         self.cc2_train = read_data("train", dataset_size, n_x, n_y)
+
+        try:
+            self.cc2_test = read_data("test", dataset_size, n_x, n_y)
+        except FileNotFoundError as e:
+            print("Test data not found for dataset {}".format(dataset_size))
 
     def train_dataloader(self):
         return DataLoader(self.cc2_train, batch_size=self.batch_size, shuffle=True, num_workers=2)
@@ -174,4 +178,5 @@ class cc2DataModule(L.LightningDataModule):
         return DataLoader(self.cc2_val, batch_size=self.batch_size, num_workers=2)
 
     def test_dataloader(self):
-        return DataLoader(self.cc2_test, batch_size=self.batch_size)
+        if self.cc2_test is not None:
+            return DataLoader(self.cc2_test, batch_size=self.batch_size)
