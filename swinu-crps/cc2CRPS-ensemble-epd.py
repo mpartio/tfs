@@ -174,6 +174,16 @@ def diagnostics(diag, input_field, truth, pred, tendencies, iteration, train_no)
     plt.hist(pred.flatten(), bins=20)
     plt.title("Predicted histogram")
 
+    plt.subplot(3, 4, 12)
+    plt.hist(pred.flatten(), bins=20)
+    plt.title("Gradients")
+    colors = ["blue", "orange", "green", "red", "black", "purple"]
+    for section, grads in diag.gradients.items():
+        data = grads["mean"]
+        color = colors.pop(0)
+        plt.plot(data, label=section, color=color, alpha=0.3)
+        plt.plot(moving_average(data, 50), color=color)
+
     plt.tight_layout()
     os.makedirs("figures", exist_ok=True)
     plt.savefig(
@@ -450,59 +460,111 @@ class NoiseProcessor(nn.Module):
 
 
 class MultiHeadAttentionBridge(nn.Module):
-    def __init__(self, in_dim, bridge_dim):
+    def __init__(self, in_dim, bridge_dim, n_layers=1):
         super().__init__()
         self.input_proj = nn.Linear(in_dim, bridge_dim)
-        self.mha = nn.MultiheadAttention(bridge_dim, num_heads=8)
+
+        self.layers = nn.ModuleList()
+
+        for _ in range(n_layers):
+            self.layers.append(
+                nn.ModuleDict(
+                    {
+                        "mha": nn.MultiheadAttention(
+                            bridge_dim, num_heads=8, dropout=0.05, batch_first=True
+                        ),
+                        "norm1": nn.LayerNorm(bridge_dim),
+                        "norm2": nn.LayerNorm(bridge_dim),
+                        "ff": nn.Sequential(
+                            nn.Linear(bridge_dim, bridge_dim),
+                            nn.GELU(),
+                            nn.Linear(bridge_dim, bridge_dim),
+                        ),
+                    }
+                )
+            )
+
+        # self.mha = nn.MultiheadAttention(bridge_dim, num_heads=8)
 
     def forward(self, x):
         # x shape: [B, N_patches, C]
         B, N, C = x.shape
         # Project features
 
-        x = self.input_proj(x)  # [B, N_patches, bridge_dim]
+        x = self.input_proj(x)
 
+        # Prevent NaNs
         x = F.layer_norm(x, (x.shape[-1],))
 
-        # Prepare for attention (already in right format)
-        x = x.transpose(0, 1)  # [N_patches, B, bridge_dim]
+        for layer in self.layers:
+            # Attention
+            attn_out, _ = layer["mha"](x, x, x)
+            x = layer["norm1"](x + attn_out)
 
-        # Apply attention
-        x, _ = self.mha(x, x, x)
-
-        if torch.isnan(x).sum() > 1:
-            print("Bridge : NaNs after mha")
-            print(
-                "After projection stats:",
-                "min:",
-                x.min().item(),
-                "max:",
-                x.max().item(),
-                "mean:",
-                x.mean().item(),
-                "std:",
-                x.std().item(),
-            )
-            sys.exit(1)
-        # Back to batch-first
-        x = x.transpose(0, 1)  # [B, N_patches, bridge_dim]
+            # FFN
+            ffn_out = layer["ff"](x)
+            x = layer["norm2"](x + ffn_out)
 
         return x
 
 
+#    def forward(self, x):
+#        # x shape: [B, N_patches, C]
+#        B, N, C = x.shape
+#        # Project features
+#
+#        x = self.input_proj(x)  # [B, N_patches, bridge_dim]
+#
+#        x = F.layer_norm(x, (x.shape[-1],))
+#
+#        # Prepare for attention (already in right format)
+#        x = x.transpose(0, 1)  # [N_patches, B, bridge_dim]
+#
+#        # Apply attention
+#        x, _ = self.mha(x, x, x)
+#
+#        if torch.isnan(x).sum() > 1:
+#            print("Bridge : NaNs after mha")
+#            print(
+#                "After projection stats:",
+#                "min:",
+#                x.min().item(),
+#                "max:",
+#                x.max().item(),
+#                "mean:",
+#                x.mean().item(),
+#                "std:",
+#                x.std().item(),
+#            )
+#            sys.exit(1)
+#        # Back to batch-first
+#        x = x.transpose(0, 1)  # [B, N_patches, bridge_dim]
+#
+#        return x
+
+
 class SimpleNet(nn.Module):
-    def __init__(self, dim, n_members, input_resolution=(128, 128), noise_dim=128):
+    def __init__(
+        self,
+        dim,
+        n_members=3,
+        n_layers=4,
+        input_resolution=(128, 128),
+        noise_dim=128,
+        window_size=4,
+        num_heads=[8, 8, 8, 8],
+    ):
         super().__init__()
 
         self.patch_embed = PatchEmbedding(
             in_channels=2, dim=dim, patch_size=2, stride=2
         )
 
-        # Encoder (can keep SWIN-style blocks but fewer)
+        # Encoder
         self.encoder1 = SwinTransformerBlock(
             dim=dim,
-            num_heads=8,
-            window_size=8,
+            num_heads=num_heads[0],
+            window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_resolution[0] // 2,
@@ -521,8 +583,8 @@ class SimpleNet(nn.Module):
 
         self.encoder2 = SwinTransformerBlock(
             dim=dim * 2,
-            num_heads=8,
-            window_size=8,
+            num_heads=num_heads[1],
+            window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_resolution[0] // 4,
@@ -531,13 +593,15 @@ class SimpleNet(nn.Module):
         )
 
         # Attention Bridge (like AIFS-CRPS)
-        self.bridge = MultiHeadAttentionBridge(in_dim=dim * 2, bridge_dim=dim * 4)
+        self.bridge = MultiHeadAttentionBridge(
+            in_dim=dim * 2, bridge_dim=dim * 4, n_layers=2
+        )
 
         # Decoder (mirroring encoder)
         self.decoder2 = SwinTransformerBlock(
             dim=dim * 4,
-            num_heads=8,
-            window_size=8,
+            num_heads=num_heads[2],
+            window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_resolution[0] // 4,
@@ -556,8 +620,8 @@ class SimpleNet(nn.Module):
 
         self.decoder1 = SwinTransformerBlock(
             dim=dim * 2,
-            num_heads=8,
-            window_size=8,
+            num_heads=num_heads[3],
+            window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_resolution[0] // 2,
@@ -579,7 +643,7 @@ class SimpleNet(nn.Module):
         )
 
         # Add noise processing
-        self.noise_dim = 128  # Start with smaller dimension
+        self.noise_dim = noise_dim
         self.noise_processor = NoiseProcessor(self.noise_dim)
 
         self.n_members = n_members
@@ -647,17 +711,17 @@ class Diagnostics:
             self.lr,
             self.mae,
             self.snr_db,
-            self.bnll_loss,
+            self.gradients,
         ) = ([], [], [], [], [], [])
 
 
 def analyze_gradients(model):
     # Group gradients by network section
     gradient_stats = {
-        "backbone_down": [],  # Encoder path
-        "backbone_up": [],  # Decoder path
+        "encoder": [],  # Encoder blocks
         "attention": [],  # Attention blocks
         "norms": [],  # Layer norms
+        "decoder": [],  # Decoder blocks
         "prediction": [],  # Final head
     }
 
@@ -665,10 +729,10 @@ def analyze_gradients(model):
         if param.grad is not None:
             grad_norm = param.grad.abs().mean().item()
 
-            if "backbone.layers." in name:
-                gradient_stats["backbone_down"].append(grad_norm)
-            elif "backbone.layers_up." in name:
-                gradient_stats["backbone_up"].append(grad_norm)
+            if "encoder" in name:
+                gradient_stats["encoder"].append(grad_norm)
+            elif "decoder" in name:
+                gradient_stats["decoder"].append(grad_norm)
             elif "attn" in name:
                 gradient_stats["attention"].append(grad_norm)
             elif "norm" in name:
@@ -737,44 +801,44 @@ def train(n_iterations, n_steps, lr):
             train_loss = train_loss.mean()
             loss_so_far += train_loss.item()
             assert loss_so_far == loss_so_far, "NaN loss"
-            diag.bnll_loss.append(train_loss.item())
+
             scaler.scale(train_loss).backward()
             scaler.unscale_(optimizer)
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             grad_stats = analyze_gradients(model)
+            diag.gradients.append(grad_stats)
 
             scaler.step(optimizer)
             scaler.update()
 
             scheduler.step()
 
-        if iteration % 1000 == 0:
+        if iteration % 10000 == 0:
 
-            fig, ax = plt.subplots(1, 5, figsize=(12, 4))
-            ax[0].imshow(input_field[0, 0, ...].detach().cpu().squeeze())
-            ax[0].set_title("T-1")
-            ax[0].set_axis_off()
-            ax[1].imshow(input_field[0, 1, ...].detach().cpu().squeeze())
-            ax[1].set_title("T")
-            ax[1].set_axis_off()
-            ax[2].imshow(truth[0, 0, ...].detach().cpu().squeeze())
-            ax[2].set_title("Truth")
-            ax[2].set_axis_off()
-            ax[3].imshow(predictions[0, 0, ...].detach().cpu().squeeze())
-            ax[3].set_title("Pred 1")
-            ax[3].set_axis_off()
-            ax[4].imshow(predictions[0, 1, ...].detach().cpu().squeeze())
-            ax[4].set_title("Pred 2")
-            ax[4].set_axis_off()
-            plt.savefig(f"figures/train-{iteration:05d}-predictions.png")
-            plt.clf()
+            rows = 2
+            cols = np.ceil((3 + predicions.shape[1]) / 2)
+            fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
+            ax[0, 0].imshow(input_field[0, 0, ...].detach().cpu().squeeze())
+            ax[0, 0].set_title("T-1")
+            ax[0, 0].set_axis_off()
+            ax[0, 1].imshow(input_field[0, 1, ...].detach().cpu().squeeze())
+            ax[0, 1].set_title("T")
+            ax[0, 1].set_axis_off()
+            ax[0, 2].imshow(truth[0, 0, ...].detach().cpu().squeeze())
+            ax[0, 2].set_title("Truth")
+            ax[0, 2].set_axis_off()
 
-            for section, metrics_ in grad_stats.items():
-                print(
-                    f"Step {iteration} {section:15s}: mean={metrics_['mean']:.2e}, min={metrics_['min']:.2e}, max={metrics_['max']:.2e}"
-                )
+            for i in range(predictions.shape[1]):
+                ax[1, i].imshow(predictions[0, i, ...].detach().cpu().squeeze())
+                ax[1, i].set_title(f"Pred {i}")
+                ax[1, i].set_axis_off()
+
+            plt.savefig(
+                f"figures/{platform.node()}_train-{iteration:05d}-predictions.png"
+            )
+            plt.close()
 
         if iteration % 1000 == 0:
             val_loss = evaluate(model, diag, iteration, n_steps)
@@ -787,7 +851,7 @@ def train(n_iterations, n_steps, lr):
             mae = diag.mae[-1] if len(diag.mae) > 0 else float("nan")
             loss_so_far = 0
 
-            if iteration % 2000 == 0:
+            if iteration % 5000 == 0:
                 print(
                     "Iteration {:05d}/{:05d}, Train Loss: {:.4f}, Val Loss: {:.4f}, L1: {:.4f} Time: {}".format(
                         iteration,
@@ -851,7 +915,7 @@ def evaluate(model, diag, iteration, n_steps):
 
         diag.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
-        if iteration % 2000 == 0:
+        if iteration % 20_000 == 0:
 
             diagnostics(
                 diag,
@@ -869,12 +933,14 @@ def evaluate(model, diag, iteration, n_steps):
 # Training setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 input_size = 128
-batch_size = 36
-dim = 96
+batch_size = 32
 
 crps_loss = AlmostFairCRPSLoss(alpha=0.95)
 
-model = SimpleNet(dim=dim, n_members=2).to(device)
+model = SimpleNet(
+    dim=128, input_size=(input_size, input_size), n_members=3, n_layers=4
+).to(device)
+
 print(model)
 print(
     "Number of trainable parameters: {:,}".format(
