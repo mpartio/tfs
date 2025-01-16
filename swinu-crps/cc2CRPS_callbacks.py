@@ -17,13 +17,17 @@ class TrainDataPlotterCallback(L.Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
+            _, _, predictions = roll_forecast(pl_module, x, y, 1, loss_fn=None)
+            truth = y.cpu().squeeze()
+            predictions = predictions.cpu().squeeze()[0]
+
             rows = 2
             cols = int(np.ceil((3 + predictions.shape[1]) / 2))
             fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
-            ax[0, 0].imshow(input_field[0, 0, ...].detach().cpu().squeeze())
+            ax[0, 0].imshow(x[0, 0, ...].detach().cpu().squeeze())
             ax[0, 0].set_title("T-1")
             ax[0, 0].set_axis_off()
-            ax[0, 1].imshow(input_field[0, 1, ...].detach().cpu().squeeze())
+            ax[0, 1].imshow(x[0, 1, ...].detach().cpu().squeeze())
             ax[0, 1].set_title("T")
             ax[0, 1].set_axis_off()
             ax[0, 2].imshow(truth[0, 0, ...].detach().cpu().squeeze())
