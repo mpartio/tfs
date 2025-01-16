@@ -63,9 +63,8 @@ class DiagnosticCallback(L.Callback):
             self.train_loss.append(outputs["loss"].detach().cpu().item())
 
             # b) learning rate
-            optimizers = trainer.optimizers
             assert len(trainer.optimizers) > 0, "No optimizer found"
-            self.lr.append(optimizers.param_groups[0]["lr"])
+            self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
 
             # d) gradients
             self.gradients.append(analyze_gradients(pl_module))
