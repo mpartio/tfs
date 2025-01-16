@@ -818,7 +818,7 @@ def train(n_iterations, n_steps, lr):
         if iteration % 10000 == 0:
 
             rows = 2
-            cols = np.ceil((3 + predicions.shape[1]) / 2)
+            cols = int(np.ceil((3 + predictions.shape[1]) / 2))
             fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
             ax[0, 0].imshow(input_field[0, 0, ...].detach().cpu().squeeze())
             ax[0, 0].set_title("T-1")

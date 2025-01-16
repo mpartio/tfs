@@ -18,7 +18,7 @@ class TrainDataPlotterCallback(L.Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
             rows = 2
-            cols = np.ceil((3 + predictions.shape[1]) / 2)
+            cols = int(np.ceil((3 + predictions.shape[1]) / 2))
             fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
             ax[0, 0].imshow(input_field[0, 0, ...].detach().cpu().squeeze())
             ax[0, 0].set_title("T-1")
