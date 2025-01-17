@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 
+
 def moving_average(arr, window_size):
     """
     Calculate the running mean of a 1D array using a sliding window.
@@ -38,12 +39,12 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
 
     total_loss = []
 
-    assert x.ndim == 4, "invalid dimensions for x: {}".x.shape
-    assert y.ndim == 5, "invalid dimensions for y: {}".y.shape
+    assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
+    assert y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
 
     for step in range(n_steps):
-#        if x.ndim == 5:
-#            x = x.squeeze(1)  # Remove "time" -> B, C, H, W
+        #        if x.ndim == 5:
+        #            x = x.squeeze(1)  # Remove "time" -> B, C, H, W
 
         y_true = y[:, step, :, :, :]
 
@@ -115,4 +116,3 @@ def analyze_gradients(model):
             }
 
     return stats
-
