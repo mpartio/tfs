@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from cc2CRPS import cc2CRPS
 from crps import AlmostFairCRPSLoss
 from util import calculate_wavelet_snr
-from cc2CRPS_data import cc2DataModule
+from cc2CRPS_data import cc2DataModule, cc2ZarrModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
 from cc2util import roll_forecast
 from lightning.pytorch.callbacks import ModelSummary, ModelCheckpoint
@@ -114,7 +114,10 @@ class cc2CRPSModel(L.LightningModule):
 iterations = int(5e5)
 
 model = cc2CRPSModel()
-cc2Data = cc2DataModule(batch_size=24, n_x=2, n_y=1)
+# cc2Data = cc2DataModule(batch_size=24, n_x=2, n_y=1)
+cc2Data = cc2ZarrModule(
+    zarr_path="../data/nwcsaf-128x128.zarr", batch_size=18, n_x=2, n_y=1
+)
 
 trainer = L.Trainer(
     max_steps=iterations,
