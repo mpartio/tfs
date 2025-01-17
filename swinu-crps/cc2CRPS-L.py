@@ -11,7 +11,7 @@ from util import calculate_wavelet_snr
 from cc2CRPS_data import cc2DataModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
 from cc2util import roll_forecast
-from lightning.pytorch.callbacks import ModelSummary
+from lightning.pytorch.callbacks import ModelSummary, ModelCheckpoint
 
 
 def convert_delta(dlt: timedelta) -> str:
@@ -125,6 +125,7 @@ trainer = L.Trainer(
         TrainDataPlotterCallback(),
         DiagnosticCallback(),
         ModelSummary(max_depth=-1),
+        ModelCheckpoint(monitor='val_loss')
     ],
 )
 
