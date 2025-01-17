@@ -2,7 +2,6 @@ import torch
 import zarr
 import numpy as np
 from torch.utils.data import Dataset
-from cc2util import partition
 
 
 class HourlyStreamZarrDataset(Dataset):
