@@ -12,30 +12,33 @@ from datetime import datetime
 
 
 class TrainDataPlotterCallback(L.Callback):
-    def __init__(self, freq=10000):
+    def __init__(self, freq=1000):
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
+            x, y = batch
             _, _, predictions = roll_forecast(pl_module, x, y, 1, loss_fn=None)
-            truth = y.cpu().squeeze()
-            predictions = predictions.cpu().squeeze()[0]
+            # Take first batch member
+            input_field = x[0].detach().cpu().squeeze()
+            truth = y[0].detach().cpu().squeeze() # By squeezeing we remove the time dim
+            predictions = predictions[0].detach().cpu().squeeze()
 
             rows = 2
-            cols = int(np.ceil((3 + predictions.shape[1]) / 2))
+            cols = int(np.ceil((3 + predictions.shape[0]) / 2))
             fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
-            ax[0, 0].imshow(x[0, 0, ...].detach().cpu().squeeze())
+            ax[0, 0].imshow(input_field[0])
             ax[0, 0].set_title("T-1")
             ax[0, 0].set_axis_off()
-            ax[0, 1].imshow(x[0, 1, ...].detach().cpu().squeeze())
+            ax[0, 1].imshow(input_field[1])
             ax[0, 1].set_title("T")
             ax[0, 1].set_axis_off()
-            ax[0, 2].imshow(truth[0, 0, ...].detach().cpu().squeeze())
+            ax[0, 2].imshow(truth)
             ax[0, 2].set_title("Truth")
             ax[0, 2].set_axis_off()
 
-            for i in range(predictions.shape[1]):
-                ax[1, i].imshow(predictions[0, i, ...].detach().cpu().squeeze())
+            for i in range(predictions.shape[0]):
+                ax[1, i].imshow(predictions[i, ...])
                 ax[1, i].set_title(f"Pred {i}")
                 ax[1, i].set_axis_off()
 
@@ -46,20 +49,24 @@ class TrainDataPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, freq=1000):
+    def __init__(self, freq=100):
         (
             self.iteration,
             self.train_loss,
             self.val_loss,
             self.lr,
-            self.mae,
             self.snr_db,
             self.gradients,
-        ) = ([], [], [], [], [], [], [])
+        ) = ([], [], [], [], [], [])
 
+        self.x, self.y, self.predictions, self.tendencies = None, None, None, None
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if trainer.global_step > 0 and trainer.global_step % 10:
+            self.train_loss.append(outputs["loss"].detach().cpu().item())
+            pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
+
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
             self.iteration.append(trainer.global_step)
 
@@ -73,20 +80,11 @@ class DiagnosticCallback(L.Callback):
             # d) gradients
             self.gradients.append(analyze_gradients(pl_module))
 
-            val_loss = np.nan if len(self.val_loss) == 0 else self.val_loss[-1]
-
-            mae = np.nan if len(self.mae) == 0 else self.mae[-1]
-
-            print(
-                "Iteration {:05d} Train Loss: {:.4f}, Val Loss: {:.4f}, L1: {:.4f}".format(
-                    trainer.global_step,
-                    self.train_loss[-1],
-                    val_loss,
-                    mae,
-                )
-            )
-
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if trainer.global_step > 0 and trainer.global_step % 20 == 0:
+            val_loss = outputs.detach().cpu()
+            pl_module.log("val_loss", val_loss, prog_bar=True)
+
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
             # a) Validation loss
             val_loss = outputs.detach().cpu()
@@ -99,24 +97,35 @@ class DiagnosticCallback(L.Callback):
                 _, tendencies, predictions = roll_forecast(
                     pl_module, x, y, 1, loss_fn=None
                 )
-                truth = y.cpu().squeeze()
-                pred = predictions.cpu().squeeze()
+                truth = y[0].cpu().squeeze()
+                # Select first member and first of batch
+                pred = predictions[0, 0].cpu().squeeze()
                 # pred = torch.mean(pred, dim=1)
-                pred = pred[:, 0, ...]  # Select first member
-                self.mae.append(F.l1_loss(pred, truth).item())
 
-                snr_pred = calculate_wavelet_snr(pred[0], None)
-                snr_real = calculate_wavelet_snr(truth[0], None)
+                snr_pred = calculate_wavelet_snr(pred, None)
+                snr_real = calculate_wavelet_snr(truth, None)
                 self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
-        if trainer.global_step > 0 and trainer.global_step % (self.freq * 20) == 0:
-            self.plot(
-                x[0].cpu().squeeze(),
-                y[0].cpu().squeeze(),
-                predictions.cpu()[0].squeeze(),
-                tendencies.cpu()[0, 0, ...].squeeze(),
-                trainer.global_step,
-            )
+            self.x = x[0].cpu().squeeze()
+            self.y = y[0].cpu().squeeze()
+            self.predictions = pred
+            self.tendencies = tendencies[0][0].cpu().squeeze()
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+
+        if self.x is None:
+            print("self.x is none")
+            return
+
+        self.plot(
+            self.x,
+            self.y,
+            self.predictions,
+            self.tendencies,
+            trainer.global_step,
+        )
 
     def plot(self, input_field, truth, pred, tendencies, iteration):
         plt.figure(figsize=(24, 12))
