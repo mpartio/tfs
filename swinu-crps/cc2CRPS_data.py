@@ -7,7 +7,8 @@ import os
 import sys
 import lightning as L
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
+from zarr_dataset import HourlyStreamZarrDataset, SplitWrapper
 
 
 def smooth_data(data: torch.Tensor, kernel_size: int = 3, sigma: float = 1.0):
@@ -113,11 +114,6 @@ def partition(tensor, n_x, n_y):
 
     assert x.shape[0] > 0, "Not enough elements"
 
-    ##    S, N, C, H, W = x.shape
-    #   x = x.reshape(S * N, C, H, W) # N, C, H, W
-    #    S, N, C, H, W = y.shape
-    #    y = y.reshape(S * N, C, H, W)
-
     return x, y
 
 
@@ -172,7 +168,9 @@ class cc2DataModule(L.LightningDataModule):
             print("Test data not found for dataset {}".format(dataset_size))
 
     def train_dataloader(self):
-        return DataLoader(self.cc2_train, batch_size=self.batch_size, shuffle=True, num_workers=2)
+        return DataLoader(
+            self.cc2_train, batch_size=self.batch_size, shuffle=True, num_workers=2
+        )
 
     def val_dataloader(self):
         return DataLoader(self.cc2_val, batch_size=self.batch_size, num_workers=2)
@@ -180,3 +178,47 @@ class cc2DataModule(L.LightningDataModule):
     def test_dataloader(self):
         if self.cc2_test is not None:
             return DataLoader(self.cc2_test, batch_size=self.batch_size)
+
+
+class cc2ZarrModule(L.LightningDataModule):
+    def __init__(self, zarr_path: str, batch_size: int, n_x: int = 1, n_y: int = 1):
+        self.batch_size = batch_size
+        self.n_x = n_x
+        self.n_y = n_y
+        self.val_split = 0.1
+
+        self.cc2_train = None
+        self.cc2_val = None
+        self.cc2_test = None
+
+        self.setup(zarr_path)
+
+    def setup(self, zarr_path):
+        samples_per_stream = self.n_x + self.n_y
+
+        ds = HourlyStreamZarrDataset(zarr_path, samples_per_stream=samples_per_stream)
+        indices = np.arange(len(ds))
+
+        rng = np.random.RandomState(0)
+        rng.shuffle(indices)
+
+        val_size = int(self.val_split * len(ds))
+        train_indices, val_indices = indices[val_size:], indices[:val_size]
+
+        self.cc2_train = Subset(ds, train_indices)
+        self.cc2_val = Subset(ds, val_indices)
+
+    def _get_dataloader(self, dataset, shuffle=False):
+        return DataLoader(
+            SplitWrapper(dataset, n_x=self.n_x),
+            batch_size=self.batch_size,
+            num_workers=2,
+            pin_memory=True,
+            shuffle=shuffle,
+        )
+
+    def train_dataloader(self):
+        return self._get_dataloader(self.cc2_train, shuffle=True)
+
+    def val_dataloader(self):
+        return self._get_dataloader(self.cc2_val)
