@@ -116,7 +116,6 @@ class DiagnosticCallback(L.Callback):
             return
 
         if self.x is None:
-            print("self.x is none")
             return
 
         self.plot(
