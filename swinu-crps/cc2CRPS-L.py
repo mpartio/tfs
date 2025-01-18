@@ -76,13 +76,13 @@ def analyze_gradients(model):
 
 
 class cc2CRPSModel(L.LightningModule):
-    def __init__(self, n_y=1):
+    def __init__(self, max_iterations, n_y=1):
         super().__init__()
         self.model = cc2CRPS(
             dim=192, input_resolution=(128, 128), n_members=3, n_layers=8
         )
         self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
-        self.max_iterations = int(5e5)
+        self.max_iterations = max_iterations
 
     def forward(self, x):
         return self.model(x)
@@ -92,7 +92,7 @@ class cc2CRPSModel(L.LightningModule):
         loss, tendencies, predictions = roll_forecast(
             self.model, x, y, 1, loss_fn=self.crps_loss
         )
-        # self.log("train_loss", loss)
+        self.log("train_loss", loss)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def validation_step(self, batch, batch_idx):
@@ -100,7 +100,7 @@ class cc2CRPSModel(L.LightningModule):
         loss, tendencies, predictions = roll_forecast(
             self.model, x, y, 1, loss_fn=self.crps_loss
         )
-        # self.log("val_loss", loss)
+        self.log("val_loss", loss)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def configure_optimizers(self):
@@ -117,7 +117,7 @@ class cc2CRPSModel(L.LightningModule):
 
 iterations = int(5e5)
 
-model = cc2CRPSModel()
+model = cc2CRPSModel(iterations)
 # cc2Data = cc2DataModule(batch_size=24, n_x=2, n_y=1)
 cc2Data = cc2ZarrModule(
     zarr_path="../data/nwcsaf-128x128.zarr", batch_size=18, n_x=2, n_y=1
