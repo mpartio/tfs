@@ -79,7 +79,7 @@ class cc2CRPSModel(L.LightningModule):
     def __init__(self, n_y=1):
         super().__init__()
         self.model = cc2CRPS(
-            dim=192, input_resolution=(128, 128), n_members=3, n_layers=6
+            dim=192, input_resolution=(128, 128), n_members=3, n_layers=8
         )
         self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
         self.max_iterations = int(5e5)
@@ -89,15 +89,19 @@ class cc2CRPSModel(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        loss, _, _ = roll_forecast(self.model, x, y, 1, loss_fn=self.crps_loss)
-        self.log("train_loss", loss)
-        return loss
+        loss, tendencies, predictions = roll_forecast(
+            self.model, x, y, 1, loss_fn=self.crps_loss
+        )
+        # self.log("train_loss", loss)
+        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        loss, _, _ = roll_forecast(self.model, x, y, 1, loss_fn=self.crps_loss)
-        self.log("val_loss", loss)
-        return loss
+        loss, tendencies, predictions = roll_forecast(
+            self.model, x, y, 1, loss_fn=self.crps_loss
+        )
+        # self.log("val_loss", loss)
+        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
@@ -128,7 +132,7 @@ trainer = L.Trainer(
         TrainDataPlotterCallback(),
         DiagnosticCallback(),
         ModelSummary(max_depth=-1),
-        ModelCheckpoint(monitor='val_loss')
+        ModelCheckpoint(monitor="val_loss"),
     ],
 )
 
