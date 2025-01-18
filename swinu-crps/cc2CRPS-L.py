@@ -132,7 +132,7 @@ trainer = L.Trainer(
         TrainDataPlotterCallback(),
         DiagnosticCallback(),
         ModelSummary(max_depth=-1),
-        ModelCheckpoint(monitor="val_loss"),
+        ModelCheckpoint(monitor="val_loss", dirpath="models"),
     ],
 )
 
