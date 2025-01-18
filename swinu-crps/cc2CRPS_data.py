@@ -212,9 +212,10 @@ class cc2ZarrModule(L.LightningDataModule):
         return DataLoader(
             SplitWrapper(dataset, n_x=self.n_x),
             batch_size=self.batch_size,
-            num_workers=2,
+            num_workers=6,
             pin_memory=True,
             shuffle=shuffle,
+            prefetch_factor=3,
         )
 
     def train_dataloader(self):
