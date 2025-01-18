@@ -364,7 +364,7 @@ def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
         # Normalize noise field to match input scale
         _noise_field = noise_field * (noise_std / np.std(noise_field))
 
-    _prediction = prediction.numpy()
+    _prediction = prediction.numpy().astype(np.float32)
 
     # Calculate signal power (using smoothed prediction as signal estimate)
     smooth_pred = medfilt2d(_prediction, kernel_size=3)
