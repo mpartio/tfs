@@ -16,6 +16,9 @@ class TrainDataPlotterCallback(L.Callback):
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if not trainer.is_global_zero:
+            return
+
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
             x, y = batch
             # Take first batch member
@@ -71,6 +74,9 @@ class DiagnosticCallback(L.Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
+        if not trainer.is_global_zero:
+            return
+
         if trainer.global_step % self.freq == 0:
 
             # a) train loss
@@ -91,6 +97,9 @@ class DiagnosticCallback(L.Callback):
                     pass
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+
+        if not trainer.is_global_zero:
+            return
 
         if trainer.global_step % self.freq == 0:
             # a) Validation loss
@@ -120,6 +129,9 @@ class DiagnosticCallback(L.Callback):
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
+            return
+
+        if not trainer.is_global_zero:
             return
 
         if self.x is None:
