@@ -12,16 +12,18 @@ from datetime import datetime
 
 
 class TrainDataPlotterCallback(L.Callback):
-    def __init__(self, freq=1000):
+    def __init__(self, freq=2000):
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
             x, y = batch
-            _, _, predictions = roll_forecast(pl_module, x, y, 1, loss_fn=None)
             # Take first batch member
             input_field = x[0].detach().cpu().squeeze()
-            truth = y[0].detach().cpu().squeeze() # By squeezeing we remove the time dim
+            truth = (
+                y[0].detach().cpu().squeeze()
+            )  # By squeezeing we remove the time dim
+            predictions = outputs["predictions"]
             predictions = predictions[0].detach().cpu().squeeze()
 
             rows = 2
@@ -49,62 +51,67 @@ class TrainDataPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, freq=100):
+    def __init__(self, freq=50):
         (
-            self.iteration,
             self.train_loss,
             self.val_loss,
             self.lr,
             self.snr_db,
-            self.gradients,
-        ) = ([], [], [], [], [], [])
+        ) = ([], [], [], [])
 
+        self.gradients = {
+            "encoder": [],
+            "decoder": [],
+            "attention": [],
+            "norms": [],
+            "prediction": [],
+        }
         self.x, self.y, self.predictions, self.tendencies = None, None, None, None
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if trainer.global_step > 0 and trainer.global_step % 10:
-            self.train_loss.append(outputs["loss"].detach().cpu().item())
-            pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
 
-        if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
-            self.iteration.append(trainer.global_step)
+        if trainer.global_step % self.freq == 0:
 
             # a) train loss
             self.train_loss.append(outputs["loss"].detach().cpu().item())
+            pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
 
             # b) learning rate
             assert len(trainer.optimizers) > 0, "No optimizer found"
             self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
 
-            # d) gradients
-            self.gradients.append(analyze_gradients(pl_module))
+            # c) gradients
+            grads = analyze_gradients(pl_module)
+
+            for k in self.gradients.keys():
+                try:
+                    self.gradients[k].append(grads[k])
+                except KeyError as e:
+                    pass
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if trainer.global_step > 0 and trainer.global_step % 20 == 0:
-            val_loss = outputs.detach().cpu()
-            pl_module.log("val_loss", val_loss, prog_bar=True)
 
-        if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
+        if trainer.global_step % self.freq == 0:
             # a) Validation loss
-            val_loss = outputs.detach().cpu()
+            self.val_loss.append(outputs["loss"].detach().cpu().item())
 
-            self.val_loss.append(val_loss)
+            pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
 
             # b) signal to noise ratio
-            x, y = batch
-            with torch.no_grad():
-                _, tendencies, predictions = roll_forecast(
-                    pl_module, x, y, 1, loss_fn=None
-                )
-                truth = y[0].cpu().squeeze()
-                # Select first member and first of batch
-                pred = predictions[0, 0].cpu().squeeze()
-                # pred = torch.mean(pred, dim=1)
+            tendencies = outputs["tendencies"]
+            predictions = outputs["tendencies"]
 
-                snr_pred = calculate_wavelet_snr(pred, None)
-                snr_real = calculate_wavelet_snr(truth, None)
-                self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
+            x, y = batch
+
+            truth = y[0].cpu().squeeze()
+            # Select first of batch
+            pred = predictions[0].cpu().squeeze()
+            # pred = torch.mean(pred, dim=1)
+
+            snr_pred = calculate_wavelet_snr(pred[0], None)
+            snr_real = calculate_wavelet_snr(truth, None)
+            self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
             self.x = x[0].cpu().squeeze()
             self.y = y[0].cpu().squeeze()
@@ -236,16 +243,15 @@ class DiagnosticCallback(L.Callback):
         plt.hist(pred.flatten(), bins=20)
         plt.title("Predicted histogram")
 
-        plt.subplot(3, 4, 12)
-        plt.hist(pred.flatten(), bins=20)
-        plt.title("Gradients")
-        colors = ["blue", "orange", "green", "red", "black", "purple"]
-        for item in self.gradients:
-            section, grads = item.items()
-            data = grads["mean"]
-            color = colors.pop(0)
-            plt.plot(data, label=section, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 50), color=color)
+        #plt.subplot(3, 4, 12)
+        #plt.hist(pred.flatten(), bins=20)
+        #plt.title("Gradients")
+        #colors = ["blue", "orange", "green", "red", "black", "purple"]
+        #for section in self.gradients.keys():
+        #    data = self.gradients[section]
+        #    color = colors.pop(0)
+        #    plt.plot(data, label=section, color=color, alpha=0.3)
+        #    plt.plot(moving_average(data, 50), color=color)
 
         plt.tight_layout()
         plt.savefig(
