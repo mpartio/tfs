@@ -83,7 +83,6 @@ def partition(tensor, n_x, n_y):
         S, T, H, W, C = tensor.shape
     else:
         # era5 data
-        tensor = tensor.unsqueeze(-1)
         T, H, W, C = tensor.shape
 
     group_size = n_x + n_y
