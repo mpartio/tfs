@@ -100,7 +100,7 @@ class DiagnosticCallback(L.Callback):
 
             # b) signal to noise ratio
             tendencies = outputs["tendencies"]
-            predictions = outputs["tendencies"]
+            predictions = outputs["predictions"]
 
             x, y = batch
 
