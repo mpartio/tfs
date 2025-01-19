@@ -12,7 +12,7 @@ from datetime import datetime
 
 
 class TrainDataPlotterCallback(L.Callback):
-    def __init__(self, freq=2000):
+    def __init__(self, freq=500):
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -54,7 +54,7 @@ class TrainDataPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, freq=50):
+    def __init__(self, freq=100):
         (
             self.train_loss,
             self.val_loss,
@@ -92,7 +92,7 @@ class DiagnosticCallback(L.Callback):
 
             for k in self.gradients.keys():
                 try:
-                    self.gradients[k].append(grads[k])
+                    self.gradients[k].append(grads[k]["mean"].item())
                 except KeyError as e:
                     pass
 
@@ -142,7 +142,7 @@ class DiagnosticCallback(L.Callback):
             self.y,
             self.predictions,
             self.tendencies,
-            trainer.global_step,
+            trainer.current_epoch,
         )
 
     def plot(self, input_field, truth, pred, tendencies, iteration):
@@ -255,19 +255,21 @@ class DiagnosticCallback(L.Callback):
         plt.hist(pred.flatten(), bins=20)
         plt.title("Predicted histogram")
 
-        #plt.subplot(3, 4, 12)
-        #plt.hist(pred.flatten(), bins=20)
-        #plt.title("Gradients")
-        #colors = ["blue", "orange", "green", "red", "black", "purple"]
-        #for section in self.gradients.keys():
-        #    data = self.gradients[section]
-        #    color = colors.pop(0)
-        #    plt.plot(data, label=section, color=color, alpha=0.3)
-        #    plt.plot(moving_average(data, 50), color=color)
+        plt.subplot(3, 4, 12)
+        plt.yscale("log")
+        plt.title("Gradients")
+        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        for section in self.gradients.keys():
+            data = self.gradients[section]
+            data = torch.tensor(data)
+            color = colors.pop(0)
+            plt.plot(data, label=section, color=color, alpha=0.3)
+            plt.plot(moving_average(data, 50), color=color)
 
+        plt.legend()
         plt.tight_layout()
         plt.savefig(
-            "figures/{}_iteration_{:05d}.png".format(platform.node(), iteration)
+            "figures/{}_epoch_{:03d}.png".format(platform.node(), iteration)
         )
 
         plt.close()
