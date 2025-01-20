@@ -15,11 +15,6 @@ from lightning.pytorch.callbacks import ModelSummary, ModelCheckpoint
 from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
 
 
-# def convert_delta(dlt: timedelta) -> str:
-#    minutes, seconds = divmod(int(dlt.total_seconds()), 60)
-#    return f"{minutes}:{seconds:02}"
-
-
 # def get_lr_schedule(optimizer, warmup_iterations, total_iterations):
 #    def lr_lambda(current_iteration):
 #        # Warmup phase
@@ -37,50 +32,11 @@ from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealing
 #    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def analyze_gradients(model):
-    # Group gradients by network section
-    gradient_stats = {
-        "encoder": [],  # Encoder blocks
-        "attention": [],  # Attention blocks
-        "norms": [],  # Layer norms
-        "decoder": [],  # Decoder blocks
-        "prediction": [],  # Final head
-    }
-
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad_norm = param.grad.abs().mean().item()
-
-            if "encoder" in name:
-                gradient_stats["encoder"].append(grad_norm)
-            elif "decoder" in name:
-                gradient_stats["decoder"].append(grad_norm)
-            elif "attn" in name:
-                gradient_stats["attention"].append(grad_norm)
-            elif "norm" in name:
-                gradient_stats["norms"].append(grad_norm)
-            elif "prediction_head" in name:
-                gradient_stats["prediction"].append(grad_norm)
-
-    # Compute statistics for each section
-    stats = {}
-    for section, grads in gradient_stats.items():
-        if grads:
-            stats[section] = {
-                "mean": np.mean(grads),
-                "std": np.std(grads),
-                "min": np.min(grads),
-                "max": np.max(grads),
-            }
-
-    return stats
-
-
 class cc2CRPSModel(L.LightningModule):
     def __init__(self, max_iterations, n_y=1):
         super().__init__()
         self.model = cc2CRPS(
-            dim=192, input_resolution=(128, 128), n_members=3, n_layers=8
+            dim=128, input_resolution=(128, 128), n_members=3, n_layers=4, window_size=8
         )
         self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
         self.max_iterations = max_iterations
