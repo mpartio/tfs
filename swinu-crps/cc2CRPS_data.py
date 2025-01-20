@@ -193,9 +193,7 @@ class cc2ZarrModule(L.LightningDataModule):
         self.setup(zarr_path)
 
     def setup(self, zarr_path):
-        samples_per_stream = self.n_x + self.n_y
-
-        ds = HourlyStreamZarrDataset(zarr_path, samples_per_stream=samples_per_stream)
+        ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
         indices = np.arange(len(ds))
 
         rng = np.random.RandomState(0)
