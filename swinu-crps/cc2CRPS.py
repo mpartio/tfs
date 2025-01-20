@@ -29,6 +29,31 @@ class NoiseProcessor(nn.Module):
         return self.norm(processed)
 
 
+class BasicBlock(nn.Module):
+    def __init__(
+        self, dim, num_blocks, num_heads, window_size, noise_dim, input_resolution
+    ):
+        super(BasicBlock, self).__init__()
+
+        self.layers = nn.ModuleList()
+        for i in range(num_blocks):
+            self.layers.append(
+                SwinTransformerBlock(
+                    dim=dim,
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    noise_dim=noise_dim,
+                    input_resolution=input_resolution,
+                    shift_size=0 if i % 2 == 0 else window_size // 2,
+                )
+            )
+
+    def forward(self, x, noise_embedding):
+        for layer in self.layers:
+            x = layer(x, noise_embedding)
+        return x
+
+
 class MultiHeadAttentionBridge(nn.Module):
     def __init__(self, in_dim, bridge_dim, n_layers=1):
         super().__init__()
@@ -54,8 +79,6 @@ class MultiHeadAttentionBridge(nn.Module):
                 )
             )
 
-        # self.mha = nn.MultiheadAttention(bridge_dim, num_heads=8)
-
     def forward(self, x):
         # x shape: [B, N_patches, C]
         B, N, C = x.shape
@@ -78,41 +101,6 @@ class MultiHeadAttentionBridge(nn.Module):
         return x
 
 
-#    def forward(self, x):
-#        # x shape: [B, N_patches, C]
-#        B, N, C = x.shape
-#        # Project features
-#
-#        x = self.input_proj(x)  # [B, N_patches, bridge_dim]
-#
-#        x = F.layer_norm(x, (x.shape[-1],))
-#
-#        # Prepare for attention (already in right format)
-#        x = x.transpose(0, 1)  # [N_patches, B, bridge_dim]
-#
-#        # Apply attention
-#        x, _ = self.mha(x, x, x)
-#
-#        if torch.isnan(x).sum() > 1:
-#            print("Bridge : NaNs after mha")
-#            print(
-#                "After projection stats:",
-#                "min:",
-#                x.min().item(),
-#                "max:",
-#                x.max().item(),
-#                "mean:",
-#                x.mean().item(),
-#                "std:",
-#                x.std().item(),
-#            )
-#            sys.exit(1)
-#        # Back to batch-first
-#        x = x.transpose(0, 1)  # [B, N_patches, bridge_dim]
-#
-#        return x
-
-
 class cc2CRPS(nn.Module):
     def __init__(
         self,
@@ -121,8 +109,8 @@ class cc2CRPS(nn.Module):
         n_layers=4,
         input_resolution=(128, 128),
         noise_dim=128,
-        window_size=4,
-        num_heads=[8, 8, 8, 8],
+        window_size=8,
+        num_heads=[8, 8, 8, 8, 8, 8],
     ):
         super(cc2CRPS, self).__init__()
 
@@ -130,81 +118,127 @@ class cc2CRPS(nn.Module):
             in_channels=2, dim=dim, patch_size=2, stride=2
         )
 
+        input_h, input_w = input_resolution
+
         # Encoder
-        self.encoder1 = SwinTransformerBlock(
+        self.encoder1 = BasicBlock(
             dim=dim,
             num_heads=num_heads[0],
             window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
-                input_resolution[0] // 2,
-                input_resolution[1] // 2,
+                input_h // 2,
+                input_w // 2,
             ),
+            num_blocks=2,
         )
 
-        # Downsample layers between blocks
         self.downsample1 = PatchMerging(
             dim=dim,
             input_resolution=(
-                input_resolution[0] // 2,
-                input_resolution[1] // 2,
+                input_h // 2,
+                input_w // 2,
             ),
         )
 
-        self.encoder2 = SwinTransformerBlock(
+        self.encoder2 = BasicBlock(
             dim=dim * 2,
             num_heads=num_heads[1],
             window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
-                input_resolution[0] // 4,
-                input_resolution[1] // 4,
+                input_h // 4,
+                input_w // 4,
+            ),
+            num_blocks=2,
+        )
+
+        self.downsample2 = PatchMerging(
+            dim=dim * 2,
+            input_resolution=(
+                input_h // 4,
+                input_w // 4,
             ),
         )
 
-        # Attention Bridge (like AIFS-CRPS)
-        self.bridge = MultiHeadAttentionBridge(
-            in_dim=dim * 2, bridge_dim=dim * 4, n_layers=n_layers
-        )
-
-        # Decoder (mirroring encoder)
-        self.decoder2 = SwinTransformerBlock(
+        self.encoder3 = BasicBlock(
             dim=dim * 4,
             num_heads=num_heads[2],
             window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
-                input_resolution[0] // 4,
-                input_resolution[1] // 4,
+                input_h // 8,
+                input_w // 8,
             ),
+            num_blocks=6,
+        )
+
+        # Attention Bridge (like AIFS-CRPS)
+        self.bridge = MultiHeadAttentionBridge(
+            in_dim=dim * 4, bridge_dim=dim * 8, n_layers=n_layers
+        )
+
+        # Decoder (mirroring encoder)
+        self.decoder3 = BasicBlock(
+            dim=dim * 8,
+            num_heads=num_heads[3],
+            window_size=window_size,
+            noise_dim=noise_dim,
+            input_resolution=(
+                input_h // 8,
+                input_w // 8,
+            ),
+            num_blocks=6,
+        )
+
+        # Upsample layers
+        self.upsample2 = PatchExpand(
+            dim=dim * 8,
+            input_resolution=(
+                input_h // 8,
+                input_w // 8,
+            ),
+        )
+
+        self.decoder2 = BasicBlock(
+            dim=dim * 4,
+            num_heads=num_heads[4],
+            window_size=window_size,
+            noise_dim=noise_dim,
+            input_resolution=(
+                input_h // 4,
+                input_w // 4,
+            ),
+            num_blocks=2,
         )
 
         # Upsample layers
         self.upsample1 = PatchExpand(
             dim=dim * 4,
             input_resolution=(
-                input_resolution[0] // 4,
-                input_resolution[1] // 4,
+                input_h // 4,
+                input_w // 4,
             ),
         )
 
-        self.decoder1 = SwinTransformerBlock(
+        self.decoder1 = BasicBlock(
             dim=dim * 2,
-            num_heads=num_heads[3],
+            num_heads=num_heads[5],
             window_size=window_size,
             noise_dim=noise_dim,
             input_resolution=(
-                input_resolution[0] // 2,
-                input_resolution[1] // 2,
+                input_h // 2,
+                input_w // 2,
             ),
+            num_blocks=2,
         )
 
         self.final_expand = FinalPatchExpand_X4(
             dim=dim * 2,
             dim_scale=2,
             input_resolution=(
-                input_resolution[0] // 2,
-                input_resolution[1] // 2,
+                input_h // 2,
+                input_w // 2,
             ),
         )
 
@@ -217,17 +251,22 @@ class cc2CRPS(nn.Module):
         # Add noise processing
         self.noise_dim = noise_dim
         self.noise_processor = NoiseProcessor(self.noise_dim)
-
         self.n_members = n_members
 
     def _forward(self, x, noise_embedding):
+        # Encoder
         x = self.encoder1(x, noise_embedding)
-        x = self.downsample1(x)
-        x = self.encoder2(x, noise_embedding)
+        x = self.encoder2(self.downsample1(x), noise_embedding)
+        x = self.encoder3(self.downsample2(x), noise_embedding)
+
+        # Bridge
         x = self.bridge(x)
-        x = self.decoder2(x, noise_embedding)
-        x = self.upsample1(x)
-        x = self.decoder1(x, noise_embedding)
+
+        # Decoder
+        x = self.decoder3(x, noise_embedding)
+        x = self.decoder2(self.upsample2(x), noise_embedding)
+        x = self.decoder1(self.upsample1(x), noise_embedding)
+
         x = self.final_expand(x)
         x = self.prediction_head(x)
         return x
@@ -260,6 +299,10 @@ class cc2CRPS(nn.Module):
 
         # Stack all deltas
         deltas = torch.stack(deltas, dim=1)  # Shape: [batch, n_members, C, H, W]
+
+        max_allowed_delta = 1.0 - last_state  # How much room to increase
+        min_allowed_delta = 0.0 - last_state  # How much room to decrease
+        deltas = torch.clamp(deltas, min_allowed_delta, max_allowed_delta)
 
         predictions = last_state + deltas  # Add current state to all deltas
 
