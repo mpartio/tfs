@@ -12,28 +12,29 @@ from cc2CRPS_data import cc2DataModule, cc2ZarrModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
 from cc2util import roll_forecast
 from lightning.pytorch.callbacks import ModelSummary, ModelCheckpoint
+from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
 
 
-def convert_delta(dlt: timedelta) -> str:
-    minutes, seconds = divmod(int(dlt.total_seconds()), 60)
-    return f"{minutes}:{seconds:02}"
+# def convert_delta(dlt: timedelta) -> str:
+#    minutes, seconds = divmod(int(dlt.total_seconds()), 60)
+#    return f"{minutes}:{seconds:02}"
 
 
-def get_lr_schedule(optimizer, warmup_iterations, total_iterations):
-    def lr_lambda(current_iteration):
-        # Warmup phase
-        if current_iteration < warmup_iterations:
-            return current_iteration / warmup_iterations
-
-        # Linear decay phase
-        else:
-            progress = (current_iteration - warmup_iterations) / (
-                total_iterations - warmup_iterations
-            )
-            # Decay from 1.0 to 0.1
-            return max(0.1, 1.0 - 0.9 * progress)
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+# def get_lr_schedule(optimizer, warmup_iterations, total_iterations):
+#    def lr_lambda(current_iteration):
+#        # Warmup phase
+#        if current_iteration < warmup_iterations:
+#            return current_iteration / warmup_iterations
+#
+#        # Linear decay phase
+#        else:
+#            progress = (current_iteration - warmup_iterations) / (
+#                total_iterations - warmup_iterations
+#            )
+#            # Decay from 1.0 to 0.1
+#            return max(0.1, 1.0 - 0.9 * progress)
+#
+#    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def analyze_gradients(model):
@@ -108,11 +109,27 @@ class cc2CRPSModel(L.LightningModule):
             self.model.parameters(), lr=1e-3, betas=(0.9, 0.95), weight_decay=0.05
         )
 
-        scheduler = get_lr_schedule(
-            optimizer, warmup_iterations=1000, total_iterations=self.max_iterations
+        warmup_scheduler = LinearLR(
+            optimizer, start_factor=0.01, end_factor=1.0, total_iters=1000
         )
 
-        return [optimizer], [scheduler]
+        cosine_scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=self.max_iterations - 1000,  # Remaining steps after warmup
+            eta_min=0,
+        )
+        scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
+
+        # scheduler = get_lr_schedule(
+        #    optimizer, warmup_iterations=1000, total_iterations=self.max_iterations
+        # )
+
+        # return [optimizer], [scheduler]
 
 
 iterations = int(5e5)
