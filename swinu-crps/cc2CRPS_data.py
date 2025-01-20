@@ -8,7 +8,7 @@ import sys
 import lightning as L
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset, Subset
-from zarr_dataset import HourlyStreamZarrDataset, SplitWrapper
+from zarr_dataset import HourlyZarrDataset, HourlyStreamZarrDataset, SplitWrapper
 
 
 def smooth_data(data: torch.Tensor, kernel_size: int = 3, sigma: float = 1.0):
@@ -193,7 +193,10 @@ class cc2ZarrModule(L.LightningDataModule):
         self.setup(zarr_path)
 
     def setup(self, zarr_path):
-        ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
+        if "era5" in zarr_path:
+            ds = HourlyZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
+        else:
+            ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
         indices = np.arange(len(ds))
 
         rng = np.random.RandomState(0)
