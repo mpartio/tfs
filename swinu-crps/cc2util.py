@@ -97,7 +97,7 @@ def analyze_gradients(model):
                 gradient_stats["encoder"].append(grad_norm)
             elif "decoder" in name:
                 gradient_stats["decoder"].append(grad_norm)
-            elif "attn" in name:
+            elif "bridge" in name:
                 gradient_stats["attention"].append(grad_norm)
             elif "norm" in name:
                 gradient_stats["norms"].append(grad_norm)
