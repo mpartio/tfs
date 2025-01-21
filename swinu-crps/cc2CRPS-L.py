@@ -96,13 +96,16 @@ cc2Data = cc2ZarrModule(
     zarr_path="../data/nwcsaf-128x128.zarr", batch_size=18, n_x=2, n_y=1
 )
 
+train_loader = cc2Data.train_dataloader()
+val_loader = cc2Data.val_dataloader()
+
 trainer = L.Trainer(
     max_steps=iterations,
     precision="16-mixed",
     accelerator="cuda",
     devices=1,
     callbacks=[
-        TrainDataPlotterCallback(),
+        TrainDataPlotterCallback(train_loader),
         DiagnosticCallback(),
         ModelSummary(max_depth=-1),
         ModelCheckpoint(monitor="val_loss", dirpath="models"),
@@ -111,6 +114,6 @@ trainer = L.Trainer(
 
 torch.set_float32_matmul_precision("high")
 
-trainer.fit(model, cc2Data.train_dataloader(), cc2Data.val_dataloader())
+trainer.fit(model, train_loader, val_loader)
 
 print("Done at {}".format(datetime.now()))
