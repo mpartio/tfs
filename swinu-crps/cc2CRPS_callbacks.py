@@ -69,7 +69,7 @@ class TrainDataPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, freq=100):
+    def __init__(self, freq=50):
         (
             self.train_loss,
             self.val_loss,
@@ -84,7 +84,7 @@ class DiagnosticCallback(L.Callback):
             "norms": [],
             "prediction": [],
         }
-        self.x, self.y, self.predictions, self.tendencies = None, None, None, None
+
         self.freq = freq
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -92,16 +92,15 @@ class DiagnosticCallback(L.Callback):
         if not trainer.is_global_zero:
             return
 
+        # a) train loss
+        self.train_loss.append(outputs["loss"].detach().cpu().item())
+        pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
+
+        # b) learning rate
+        assert len(trainer.optimizers) > 0, "No optimizer found"
+        self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
+
         if trainer.global_step % self.freq == 0:
-
-            # a) train loss
-            self.train_loss.append(outputs["loss"].detach().cpu().item())
-            pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
-
-            # b) learning rate
-            assert len(trainer.optimizers) > 0, "No optimizer found"
-            self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
-
             # c) gradients
             grads = analyze_gradients(pl_module)
 
@@ -116,11 +115,12 @@ class DiagnosticCallback(L.Callback):
         if not trainer.is_global_zero:
             return
 
-        if trainer.global_step % self.freq == 0:
-            # a) Validation loss
-            self.val_loss.append(outputs["loss"].detach().cpu().item())
+        # a) Validation loss
+        self.val_loss.append(outputs["loss"].detach().cpu().item())
+        pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
 
-            pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
+        if trainer.global_step % self.freq == 0:
+            self.val_loss.append(outputs["loss"].detach().cpu().item())
 
             # b) signal to noise ratio
             tendencies = outputs["tendencies"]
@@ -149,23 +149,31 @@ class DiagnosticCallback(L.Callback):
         if not trainer.is_global_zero:
             return
 
-        if self.x is None:
-            return
+        # Get a single batch from the dataloader
+        x, y = next(iter(trainer.val_dataloaders))
+        x = x[0].unsqueeze(0).to(pl_module.device)
+        y = y[0].unsqueeze(0).to(pl_module.device)
+
+        # Perform a prediction
+        with torch.no_grad():
+            _, tendencies, predictions = roll_forecast(
+                pl_module.model, x, y, 1, loss_fn=None
+            )
 
         self.plot(
-            self.x,
-            self.y,
-            self.predictions,
-            self.tendencies,
+            x.cpu().squeeze().detach(),
+            y.cpu().squeeze().detach(),
+            predictions[0].cpu().squeeze().detach(),
+            tendencies[0].cpu().squeeze().detach(),
             trainer.current_epoch,
         )
 
-    def plot(self, input_field, truth, pred, tendencies, iteration):
+    def plot(self, input_field, truth, pred, tendencies, epoch):
         plt.figure(figsize=(24, 12))
         plt.suptitle(
-            "{} at iteration {} (host={}, time={})".format(
+            "{} at epoch {} (host={}, time={})".format(
                 sys.argv[0],
-                iteration,
+                epoch,
                 platform.node(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
@@ -196,7 +204,7 @@ class DiagnosticCallback(L.Callback):
         norm = mcolors.TwoSlopeNorm(
             vmin=tendencies.min(), vcenter=0, vmax=tendencies.max()
         )
-        plt.imshow(tendencies, cmap=cmap, norm=norm)
+        plt.imshow(tendencies[0], cmap=cmap, norm=norm)
         plt.title("Tendencies")
         plt.colorbar()
 
@@ -283,8 +291,6 @@ class DiagnosticCallback(L.Callback):
 
         plt.legend()
         plt.tight_layout()
-        plt.savefig(
-            "figures/{}_epoch_{:03d}_val.png".format(platform.node(), iteration)
-        )
+        plt.savefig("figures/{}_epoch_{:03d}_val.png".format(platform.node(), epoch))
 
         plt.close()
