@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import platform
@@ -10,47 +11,61 @@ from cc2util import roll_forecast, moving_average, analyze_gradients
 from util import calculate_wavelet_snr
 from datetime import datetime
 
+matplotlib.use("Agg")
+
 
 class TrainDataPlotterCallback(L.Callback):
-    def __init__(self, freq=500):
-        self.freq = freq
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if not trainer.is_global_zero:
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
             return
 
-        if trainer.global_step > 0 and trainer.global_step % self.freq == 0:
-            x, y = batch
-            # Take first batch member
-            input_field = x[0].detach().cpu().squeeze()
-            truth = (
-                y[0].detach().cpu().squeeze()
-            )  # By squeezeing we remove the time dim
-            predictions = outputs["predictions"]
-            predictions = predictions[0].detach().cpu().squeeze()
+        pl_module.eval()
 
-            rows = 2
-            cols = int(np.ceil((3 + predictions.shape[0]) / 2))
-            fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
-            ax[0, 0].imshow(input_field[0])
-            ax[0, 0].set_title("T-1")
-            ax[0, 0].set_axis_off()
-            ax[0, 1].imshow(input_field[1])
-            ax[0, 1].set_title("T")
-            ax[0, 1].set_axis_off()
-            ax[0, 2].imshow(truth)
-            ax[0, 2].set_title("Truth")
-            ax[0, 2].set_axis_off()
+        # Get a single batch from the dataloader
+        x, y = next(iter(self.dataloader))
 
-            for i in range(predictions.shape[0]):
-                ax[1, i].imshow(predictions[i, ...])
-                ax[1, i].set_title(f"Pred {i}")
-                ax[1, i].set_axis_off()
+        x = x.to(pl_module.device)
 
-            plt.savefig(
-                f"figures/{platform.node()}_train-{trainer.global_step:05d}-predictions.png"
-            )
-            plt.close()
+        # Perform a prediction
+        with torch.no_grad():
+            _, _, predictions = roll_forecast(pl_module, x, y, 1, None)
+
+        self.plot(
+            x.cpu().detach(), y, predictions.cpu().detach(), trainer.current_epoch
+        )
+
+        # Restore model to training mode
+        pl_module.train()
+
+    def plot(self, x, y, predictions, epoch):
+        # Take first batch member
+        input_field = x[0].squeeze()
+        truth = y[0].squeeze()  # By squeezing we remove the time dim
+        predictions = predictions[0].squeeze()
+
+        rows = 2
+        cols = int(np.ceil((3 + predictions.shape[0]) / 2))
+        fig, ax = plt.subplots(rows, cols, figsize=(9, 6))
+        ax[0, 0].imshow(input_field[0])
+        ax[0, 0].set_title("T-1")
+        ax[0, 0].set_axis_off()
+        ax[0, 1].imshow(input_field[1])
+        ax[0, 1].set_title("T")
+        ax[0, 1].set_axis_off()
+        ax[0, 2].imshow(truth)
+        ax[0, 2].set_title("Truth")
+        ax[0, 2].set_axis_off()
+
+        for i in range(predictions.shape[0]):
+            ax[1, i].imshow(predictions[i, ...])
+            ax[1, i].set_title(f"Pred {i}")
+            ax[1, i].set_axis_off()
+
+        plt.savefig("figures/{}_epoch_{:03d}_train.png".format(platform.node(), epoch))
+        plt.close()
 
 
 class DiagnosticCallback(L.Callback):
@@ -269,7 +284,7 @@ class DiagnosticCallback(L.Callback):
         plt.legend()
         plt.tight_layout()
         plt.savefig(
-            "figures/{}_epoch_{:03d}.png".format(platform.node(), iteration)
+            "figures/{}_epoch_{:03d}_val.png".format(platform.node(), iteration)
         )
 
         plt.close()
