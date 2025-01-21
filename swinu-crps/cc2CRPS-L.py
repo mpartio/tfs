@@ -89,11 +89,12 @@ class cc2CRPSModel(L.LightningModule):
 
 
 iterations = int(5e5)
+num_devices = 1
 
 model = cc2CRPSModel(iterations)
 # cc2Data = cc2DataModule(batch_size=24, n_x=2, n_y=1)
 cc2Data = cc2ZarrModule(
-    zarr_path="../data/nwcsaf-128x128.zarr", batch_size=18, n_x=2, n_y=1
+    zarr_path="../data/nwcsaf-128x128.zarr", batch_size=18 * num_devices, n_x=2, n_y=1
 )
 
 train_loader = cc2Data.train_dataloader()
@@ -103,7 +104,7 @@ trainer = L.Trainer(
     max_steps=iterations,
     precision="16-mixed",
     accelerator="cuda",
-    devices=1,
+    devices=num_devices,
     callbacks=[
         TrainDataPlotterCallback(train_loader),
         DiagnosticCallback(),
