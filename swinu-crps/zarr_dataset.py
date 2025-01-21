@@ -5,14 +5,16 @@ from torch.utils.data import Dataset
 
 
 class HourlyZarrDataset(Dataset):
-    def __init__(self, zarr_path, group_size, shuffle=True):
+    def __init__(self, zarr_path, group_size):
         # Open the zarr array without loading data
         self.data = zarr.open(zarr_path, mode="r")
         self.group_size = group_size
         self.time_steps, _, _, _ = self.data.shape
 
+        assert self.time_steps >= group_size
+
     def __len__(self):
-        return self.time_steps
+        return self.time_steps - self.group_size - 1
 
     def __getitem__(self, idx):
         # Get consecutive samples
@@ -69,7 +71,7 @@ class SplitWrapper:
         # Split into x and y
         x = samples[: self.n_x]  # shape: [Tx, H, W, C]
         y = samples[self.n_x :]  # shape: [Ty, H, W, C]
-        x = x.squeeze(-1)  # shape: [H, W, C]
+        x = x.squeeze(-1)  # shape: [Tx, H, W]
 
         # Reshape y: move C after T
         y = y.permute(0, 3, 1, 2)  # shape: [Ty, C, H, W]
