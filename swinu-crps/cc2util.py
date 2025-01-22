@@ -43,9 +43,6 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
     assert y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
 
     for step in range(n_steps):
-        #        if x.ndim == 5:
-        #            x = x.squeeze(1)  # Remove "time" -> B, C, H, W
-
         y_true = y[:, step, :, :, :]
 
         # X dim: B, C=2, H, W
