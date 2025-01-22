@@ -160,7 +160,7 @@ class DiagnosticCallback(L.Callback):
                 pl_module.model, x, y, 1, loss_fn=None
             )
 
-        self.plot(
+        self.plot_visual(
             x.cpu().squeeze().detach(),
             y.cpu().squeeze().detach(),
             predictions[0].cpu().squeeze().detach(),
@@ -168,7 +168,9 @@ class DiagnosticCallback(L.Callback):
             trainer.current_epoch,
         )
 
-    def plot(self, input_field, truth, pred, tendencies, epoch):
+        self.plot_history(trainer.current_epoch)
+
+    def plot_visual(self, input_field, truth, pred, tendencies, epoch):
         plt.figure(figsize=(24, 12))
         plt.suptitle(
             "{} at epoch {} (host={}, time={})".format(
@@ -193,9 +195,8 @@ class DiagnosticCallback(L.Callback):
         plt.title("Truth")
         plt.colorbar()
 
-        pred = pred[0]  # Select first member
         plt.subplot(344)
-        plt.imshow(pred)
+        plt.imshow(pred[0])
         plt.title("Prediction")
         plt.colorbar()
 
@@ -209,7 +210,7 @@ class DiagnosticCallback(L.Callback):
         plt.colorbar()
 
         data = truth - input_field[-1]
-        cmap = plt.cm.coolwarm  # You can also try 'bwr' or other diverging colormaps
+        cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
 
         plt.subplot(346)
@@ -217,36 +218,118 @@ class DiagnosticCallback(L.Callback):
         plt.title("True Residual")
         plt.colorbar()
 
-        data = pred - input_field[-1]
+        data = pred[0] - input_field[-1]
         norm = mcolors.TwoSlopeNorm(vmin=data.min(), vcenter=0, vmax=data.max())
+
         plt.subplot(347)
         plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("Residual of Prediction/L1={:.4f}".format(F.l1_loss(pred, truth)))
+        plt.title("Residual of Prediction/L1={:.4f}".format(F.l1_loss(pred[0], truth)))
         plt.colorbar()
 
         plt.subplot(348)
-        plt.title("Losses")
+        plt.hist(truth.flatten(), bins=20)
+        plt.title("Truth histogram")
+
+        plt.subplot(349)
+        plt.hist(pred[0].flatten(), bins=20)
+        plt.title("Predicted histogram")
+
+        uncertainty = torch.var(pred, dim=0)
+        plt.subplot(3, 4, 10)  # Adjust subplot number as needed
+        plt.title("Prediction Uncertainty")
+        plt.imshow(uncertainty.cpu(), cmap="Reds")
+        plt.colorbar()
+
+        # Calculate mean prediction and error map
+        mean_pred = torch.mean(pred, dim=0)
+        error_map = torch.abs(mean_pred - truth)
+
+        plt.subplot(3, 4, 11)
+        plt.title("Spatial Error Distribution")
+        plt.imshow(error_map.cpu())
+        plt.colorbar()
+
+        # Calculate statistics
+        mean_error = error_map.mean().item()
+        max_error = error_map.max().item()
+        std_error = error_map.std().item()
+
+        # Add stats text box
+        stats_text = (
+            f"Mean Error: {mean_error:.3f}\n"
+            f"Max Error: {max_error:.3f}\n"
+            f"Std Error: {std_error:.3f}"
+        )
+
+        # Place text box in upper left corner with white background
+        plt.text(
+            0.05,
+            0.95,
+            stats_text,
+            transform=plt.gca().transAxes,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )
+
+        # Optional: Add percentile information
+        p90 = torch.quantile(error_map, 0.90).item()
+        p95 = torch.quantile(error_map, 0.95).item()
+        plt.axhline(
+            p90,
+            color="r",
+            linestyle="--",
+            alpha=0.3,
+            label=f"90th percentile: {p90:.3f}",
+        )
+        plt.axhline(
+            p95,
+            color="r",
+            linestyle=":",
+            alpha=0.3,
+            label=f"95th percentile: {p95:.3f}",
+        )
+
+        plt.tight_layout()
+        plt.savefig("figures/{}_epoch_{:03d}_val.png".format(platform.node(), epoch))
+
+        plt.close()
+
+    def plot_history(self, epoch):
+        plt.figure(figsize=(12, 8))
+        plt.suptitle(
+            "{} at epoch {} (host={}, time={})".format(
+                sys.argv[0],
+                epoch,
+                platform.node(),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+
+        plt.subplot(221)
+        plt.title("Training loss")
         plt.plot(self.train_loss, label="Train Loss", color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.train_loss), 50),
-            label="Train Loss MA",
+            label="Moving average",
             color="blue",
         )
-        plt.plot(self.val_loss, label="Val Loss", color="orange", alpha=0.3)
-        plt.plot(
-            moving_average(torch.tensor(self.val_loss), 50),
-            label="Val Loss MA",
-            color="orange",
-        )
 
-        plt.legend(loc="upper left")
         ax2 = plt.gca().twinx()
         ax2.plot(torch.tensor(self.lr) * 1e6, label="LRx1M", color="green")
         ax2.legend(loc="upper right")
 
-        snr_db = np.array(self.snr_db).T
+        plt.subplot(222)
+        plt.plot(self.val_loss, label="Val Loss", color="orange", alpha=0.3)
+        plt.plot(
+            moving_average(torch.tensor(self.val_loss), 50),
+            label="Moving average",
+            color="orange",
+        )
+        plt.title("Validation loss")
+        plt.legend(loc="upper left")
 
-        plt.subplot(349)
+        plt.subplot(223)
+        snr_db = np.array(self.snr_db).T
         snr_real = torch.tensor(snr_db[0])
         snr_pred = torch.tensor(snr_db[1])
         plt.plot(snr_real, label="Real", color="blue", alpha=0.3)
@@ -270,15 +353,7 @@ class DiagnosticCallback(L.Callback):
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
-        plt.subplot(3, 4, 10)
-        plt.hist(truth.flatten(), bins=20)
-        plt.title("Truth histogram")
-
-        plt.subplot(3, 4, 11)
-        plt.hist(pred.flatten(), bins=20)
-        plt.title("Predicted histogram")
-
-        plt.subplot(3, 4, 12)
+        plt.subplot(224)
         plt.yscale("log")
         plt.title("Gradients")
         colors = ["blue", "orange", "green", "red", "black", "purple"]
@@ -287,10 +362,12 @@ class DiagnosticCallback(L.Callback):
             data = torch.tensor(data)
             color = colors.pop(0)
             plt.plot(data, label=section, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 50), color=color)
-
+            plt.plot(moving_average(data, 20), color=color)  # , label=f"{section} MA")
         plt.legend()
+
         plt.tight_layout()
-        plt.savefig("figures/{}_epoch_{:03d}_val.png".format(platform.node(), epoch))
+        plt.savefig(
+            "figures/{}_epoch_{:03d}_history.png".format(platform.node(), epoch)
+        )
 
         plt.close()
