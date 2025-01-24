@@ -77,6 +77,8 @@ class TrainDataPlotterCallback(L.Callback):
         cols = num_members + 2 + 1 # +2 for input fields, +1 for truth
 
         fig, ax = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+        ax = np.atleast_2d(ax)
+
         for i in range(num_truth):  # times
             if i == 0:
                 input_field = x[0].squeeze()
