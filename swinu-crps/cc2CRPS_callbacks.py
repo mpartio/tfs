@@ -205,10 +205,10 @@ class DiagnosticCallback(L.Callback):
             )
 
         self.plot_visual(
-            x.cpu().squeeze().detach(),
-            y.cpu().squeeze().detach(),
-            predictions[0].cpu().squeeze().detach(),
-            tendencies[0].cpu().squeeze().detach(),
+            x[0].cpu().detach(),
+            y[0].cpu().detach(),
+            predictions[0].cpu().detach(),
+            tendencies[0].cpu().detach(),
             trainer.current_epoch,
         )
 
@@ -224,6 +224,16 @@ class DiagnosticCallback(L.Callback):
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
         )
+
+        truth = truth.squeeze(1) # remove channel dim
+        pred = pred.squeeze(2)
+        tendencies = tendencies.squeeze(2)
+
+        # input_field T, H, W
+        # truth T, H, W
+        # pred T, M, H, W
+        # tend T, M, H, W
+
         plt.subplot(341)
         plt.imshow(input_field[0])
         plt.title("Input time=T-1")
