@@ -192,6 +192,8 @@ trainer = L.Trainer(
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,
+    num_nodes=config.num_nodes,
+    strategy=config.strategy,
     callbacks=[
         TrainDataPlotterCallback(train_loader, config),
         DiagnosticCallback(config),

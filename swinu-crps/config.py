@@ -30,7 +30,9 @@ class TrainingConfig:
     precision: str = "16-mixed"
 
     # Compute environment
+    num_nodes: int = 1
     num_devices: int = 1
+    strategy: str = "auto"
 
     # Current training state
     current_iteration: int = 0
@@ -82,6 +84,8 @@ def get_args():
 
     # Compute environment
     parser.add_argument("--num_devices", type=int)
+    parser.add_argument("--num_nodes", type=int)
+    parser.add_argument("--strategy", type=str)
 
     parser.add_argument("--run_name", type=str)
     parser.add_argument("--data_path", type=str)
