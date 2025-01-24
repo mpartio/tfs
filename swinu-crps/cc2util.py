@@ -89,8 +89,12 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
         total_loss = torch.stack(total_loss)
         total_loss *= weights
 
-    tendencies = torch.stack(total_tendencies).permute(1, 0, 2, 3, 4, 5) # B, T, M, C, H, W
-    predictions = torch.stack(total_predictions).permute(1, 0, 2, 3, 4, 5) # B, T, M, C, H, W
+    tendencies = torch.stack(total_tendencies).permute(
+        1, 0, 2, 3, 4, 5
+    )  # B, T, M, C, H, W
+    predictions = torch.stack(total_predictions).permute(
+        1, 0, 2, 3, 4, 5
+    )  # B, T, M, C, H, W
 
     return total_loss, tendencies, predictions
 
@@ -135,15 +139,33 @@ def analyze_gradients(model):
 
 
 def get_next_run_number(base_dir):
-    if not os.path.exists(base_dir):
-        return 1
+    rank = int(os.environ.get("SLURM_PROCID", 0))
+    next_run_file = f"next_run.txt"
 
-    subdirs = [
-        d
-        for d in os.listdir(base_dir)
-        if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
-    ]
-    return max([int(d) for d in subdirs], default=0) + 1
+    if rank == 0:
+        # Only rank 0 determines the next run number
+        if not os.path.exists(base_dir):
+            next_num = 1
+        else:
+            subdirs = [
+                d
+                for d in os.listdir(base_dir)
+                if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
+            ]
+            next_num = max([int(d) for d in subdirs], default=0) + 1
+
+        # Write for other ranks to read
+        os.makedirs(base_dir, exist_ok=True)
+        with open(f"next_run.txt", "w") as f:
+            f.write(str(next_num))
+
+    # All ranks wait for the file
+    while not os.path.exists(f"next_run.txt"):
+        time.sleep(0.1)
+
+    # All ranks read the same number
+    with open(f"next_run.txt", "r") as f:
+        return int(f.read().strip())
 
 
 def get_latest_run_dir(base_dir):

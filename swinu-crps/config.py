@@ -3,6 +3,7 @@ import json
 import os
 import randomname
 import sys
+import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -43,16 +44,33 @@ class TrainingConfig:
 
     data_path: str = "../data/nwcsaf-128x128.zarr"
 
+    def _initialize_run(self):
+        if not hasattr(self, '_run_name'):
+            run_name_file = "current_run_name.txt"
+
+            if int(os.environ.get("SLURM_PROCID", 0)) == 0:
+                self._run_name = randomname.get_name()
+                with open(run_name_file, 'w') as f:
+                    f.write(self._run_name)
+            else:
+                while not os.path.exists(run_name_file):
+                    time.sleep(0.1)
+                with open(run_name_file, 'r') as f:
+                    self._run_name = f.read().strip()
+
+    @property
+    def run_name(self) -> str:
+        self._initialize_run()
+        return self._run_name
+
+    run_dir: str = None
+
+
     def save(self):
         path = f"{self.run_dir}/train-config.json"
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump(asdict(self), f, indent=2)
-
-#    @classmethod
-#    def load(cls, path: str):
-#        with open(path, "r") as f:
-#            return cls(**json.load(f))
 
     def apply_args(self, args: argparse.Namespace):
         for k, v in vars(args).items():
