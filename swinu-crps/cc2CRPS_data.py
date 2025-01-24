@@ -127,8 +127,9 @@ def shuffle_to_hourly_streams(data):
 
 
 def read_data(stage, dataset_size, n_x, n_y):
-
     filename = f"../data/{stage}-{dataset_size}.npz"
+    print("Reading data from {}".format(filename))
+
     data = np.load(filename)["arr_0"]
 
     if dataset_size != "era5":
@@ -138,6 +139,8 @@ def read_data(stage, dataset_size, n_x, n_y):
 
     if y_data.ndim == 4:
         y_data = y_data.unsqueeze(1)
+
+    y_data = y_data.permute(0, 2, 1, 3, 4)
 
     assert x_data.ndim == 4, "invalid dimensions for x: {}".x_data.shape
     assert y_data.ndim == 5, "invalid dimensions for y: {}".y_data.shape
@@ -190,6 +193,7 @@ class cc2ZarrModule(L.LightningDataModule):
         self.cc2_val = None
         self.cc2_test = None
 
+        print("Reading data from {}".format(zarr_path))
         self.setup(zarr_path)
 
     def setup(self, zarr_path):
