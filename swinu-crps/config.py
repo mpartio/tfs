@@ -39,9 +39,6 @@ class TrainingConfig:
     current_iteration: int = 0
     current_loss: Optional[float] = None
 
-    run_name: str = randomname.get_name()
-    run_dir: str = f"runs/{run_name}"
-
     data_path: str = "../data/nwcsaf-128x128.zarr"
 
     def _initialize_run(self):
