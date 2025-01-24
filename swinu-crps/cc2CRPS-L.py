@@ -200,6 +200,7 @@ trainer = L.Trainer(
         ModelCheckpoint(monitor="val_loss", dirpath=f"{config.run_dir}/models"),
     ],
     logger=CSVLogger(f"{config.run_dir}/logs"),
+    gradient_clip_val=1.0,
 )
 
 torch.set_float32_matmul_precision("high")
