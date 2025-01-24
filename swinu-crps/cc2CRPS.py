@@ -9,6 +9,7 @@ from swinu_l_cond import (
     FinalPatchExpand_X4,
 )
 import lightning as L
+import config
 
 
 class NoiseProcessor(nn.Module):
@@ -104,27 +105,25 @@ class MultiHeadAttentionBridge(nn.Module):
 class cc2CRPS(nn.Module):
     def __init__(
         self,
-        dim,
-        n_members=3,
-        n_layers=4,
-        input_resolution=(128, 128),
+        config,
         noise_dim=128,
-        window_size=8,
         num_heads=[8, 8, 8, 8, 8, 8],
     ):
         super(cc2CRPS, self).__init__()
+
+        dim = config.hidden_dim
 
         self.patch_embed = PatchEmbedding(
             in_channels=2, dim=dim, patch_size=2, stride=2
         )
 
-        input_h, input_w = input_resolution
+        input_h, input_w = config.input_resolution
 
         # Encoder
         self.encoder1 = BasicBlock(
             dim=dim,
             num_heads=num_heads[0],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 2,
@@ -144,7 +143,7 @@ class cc2CRPS(nn.Module):
         self.encoder2 = BasicBlock(
             dim=dim * 2,
             num_heads=num_heads[1],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 4,
@@ -164,31 +163,31 @@ class cc2CRPS(nn.Module):
         self.encoder3 = BasicBlock(
             dim=dim * 4,
             num_heads=num_heads[2],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
             ),
-            num_blocks=6,
+            num_blocks=2,
         )
 
         # Attention Bridge (like AIFS-CRPS)
         self.bridge = MultiHeadAttentionBridge(
-            in_dim=dim * 4, bridge_dim=dim * 8, n_layers=n_layers
+            in_dim=dim * 4, bridge_dim=dim * 8, n_layers=config.num_layers
         )
 
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
             dim=dim * 8,
             num_heads=num_heads[3],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
             ),
-            num_blocks=6,
+            num_blocks=2,
         )
 
         # Upsample layers
@@ -203,7 +202,7 @@ class cc2CRPS(nn.Module):
         self.decoder2 = BasicBlock(
             dim=dim * 4,
             num_heads=num_heads[4],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 4,
@@ -224,7 +223,7 @@ class cc2CRPS(nn.Module):
         self.decoder1 = BasicBlock(
             dim=dim * 2,
             num_heads=num_heads[5],
-            window_size=window_size,
+            window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 2,
@@ -251,7 +250,7 @@ class cc2CRPS(nn.Module):
         # Add noise processing
         self.noise_dim = noise_dim
         self.noise_processor = NoiseProcessor(self.noise_dim)
-        self.n_members = n_members
+        self.n_members = config.num_members
 
     def _forward(self, x, noise_embedding):
         # Encoder

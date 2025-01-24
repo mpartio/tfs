@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import os
 
 
 def moving_average(arr, window_size):
@@ -35,18 +36,23 @@ def moving_average(arr, window_size):
 
 
 def roll_forecast(model, x, y, n_steps, loss_fn):
-    assert y.shape[1] == n_steps
-
     total_loss = []
+    total_tendencies = []
+    total_predictions = []
 
     assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
     assert y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
+
+    weights = torch.ones(n_steps).to(x.device)
 
     for step in range(n_steps):
         y_true = y[:, step, :, :, :]
 
         # X dim: B, C=2, H, W
         # Y dim: B, C=1, H, W
+        assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
+        assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
+
         assert (
             x.shape[-2:] == y_true.shape[-2:]
         ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
@@ -67,12 +73,25 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
 
             total_loss.append(loss)
 
-        assert n_steps == 1
-    #        if n_steps > 1:
-    #            x = predictions
+        total_tendencies.append(tendencies)
+        total_predictions.append(predictions)
+
+        if n_steps > 1:
+            n_members = tendencies.shape[1]
+            chosen_member = torch.randint(n_members, (1,)).item()
+
+            last_x = x[:, -1:, :, :]
+            chosen_prediction = predictions[:, chosen_member, :, :, :]
+
+            x = torch.cat((last_x, chosen_prediction), dim=1)
 
     if len(total_loss) > 0:
         total_loss = torch.stack(total_loss)
+        total_loss *= weights
+
+    tendencies = torch.stack(total_tendencies).permute(1, 0, 2, 3, 4, 5) # B, T, M, C, H, W
+    predictions = torch.stack(total_predictions).permute(1, 0, 2, 3, 4, 5) # B, T, M, C, H, W
+
     return total_loss, tendencies, predictions
 
 
@@ -113,3 +132,30 @@ def analyze_gradients(model):
             }
 
     return stats
+
+
+def get_next_run_number(base_dir):
+    if not os.path.exists(base_dir):
+        return 1
+
+    subdirs = [
+        d
+        for d in os.listdir(base_dir)
+        if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
+    ]
+    return max([int(d) for d in subdirs], default=0) + 1
+
+
+def get_latest_run_dir(base_dir):
+    if not os.path.exists(base_dir):
+        return None
+
+    subdirs = [
+        d
+        for d in os.listdir(base_dir)
+        if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
+    ]
+    if not subdirs:
+        return None
+    latest = max([int(d) for d in subdirs])
+    return os.path.join(base_dir, str(latest))
