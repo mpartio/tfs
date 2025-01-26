@@ -270,15 +270,15 @@ class DiagnosticCallback(L.Callback):
 
         plt.subplot(346)
         plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("True Residual")
+        plt.title("True Tendencies")
         plt.colorbar()
 
-        data = pred[-1][0] - input_field[-1]
+        data = pred[-1][0] - truth[-1]
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
         plt.subplot(347)
         plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("Residual of Prediction")
+        plt.title("Prediction Bias")
         plt.colorbar()
 
         plt.subplot(348)
