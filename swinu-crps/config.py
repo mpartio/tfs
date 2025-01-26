@@ -61,7 +61,7 @@ class TrainingConfig:
         return self._run_name
 
     run_dir: str = None
-
+    run_number: int = None
 
     def save(self):
         path = f"{self.run_dir}/train-config.json"

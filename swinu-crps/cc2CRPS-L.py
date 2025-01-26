@@ -161,6 +161,7 @@ else:
 new_run_number = get_next_run_number(f"runs/{config.run_name}")
 
 config.run_dir = f"runs/{config.run_name}/{new_run_number}"
+config.run_number = new_run_number
 
 print("Starting run at {}".format(datetime.now()))
 print("Run directory: ", config.run_dir)

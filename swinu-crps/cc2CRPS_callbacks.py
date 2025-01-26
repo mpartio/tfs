@@ -109,8 +109,12 @@ class TrainDataPlotterCallback(L.Callback):
             ax[i, j + 3].set_axis_off()
 
         plt.savefig(
-            "{}/figures/{}_epoch_{:03d}_train.png".format(
-                self.config.run_dir, platform.node(), epoch
+            "{}/figures/{}_{}_{}_epoch_{:03d}_train.png".format(
+                self.config.run_dir,
+                platform.node(),
+                self.config.run_name,
+                self.config.run_number,
+                epoch,
             )
         )
         plt.close()
@@ -222,8 +226,9 @@ class DiagnosticCallback(L.Callback):
     def plot_visual(self, input_field, truth, pred, tendencies, epoch):
         plt.figure(figsize=(24, 12))
         plt.suptitle(
-            "{} at epoch {} (host={}, time={})".format(
-                sys.argv[0],
+            "{} num={} at epoch {} (host={}, time={})".format(
+                self.config.run_name,
+                self.config.run_number,
                 epoch,
                 platform.node(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -330,8 +335,12 @@ class DiagnosticCallback(L.Callback):
 
         plt.tight_layout()
         plt.savefig(
-            "{}/figures/{}_epoch_{:03d}_val.png".format(
-                self.config.run_dir, platform.node(), epoch
+            "{}/figures/{}_{}_{}_epoch_{:03d}_val.png".format(
+                self.config.run_dir,
+                platform.node(),
+                self.config.run_name,
+                self.config.run_number,
+                epoch,
             )
         )
 
@@ -410,8 +419,12 @@ class DiagnosticCallback(L.Callback):
 
         plt.tight_layout()
         plt.savefig(
-            "{}/figures/{}_epoch_{:03d}_history.png".format(
-                self.config.run_dir, platform.node(), epoch
+            "{}/figures/{}_{}_{}_epoch_{:03d}_history.png".format(
+                self.config.run_dir,
+                platform.node(),
+                self.config.run_name,
+                self.config.run_number,
+                epoch,
             )
         )
 
