@@ -173,8 +173,6 @@ class DiagnosticCallback(L.Callback):
         pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
 
         if trainer.global_step % self.freq == 0:
-            self.val_loss.append(outputs["loss"].detach().cpu().item())
-
             # b) signal to noise ratio
             tendencies = outputs["tendencies"]  # B, T, M, C, H, W
             predictions = outputs["predictions"]
@@ -189,11 +187,6 @@ class DiagnosticCallback(L.Callback):
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
             self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
-
-            self.x = x[0].cpu().squeeze()
-            self.y = y[0].cpu().squeeze()
-            self.predictions = pred
-            self.tendencies = tendencies[0][0].cpu().squeeze()
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
