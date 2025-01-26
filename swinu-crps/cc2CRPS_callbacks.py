@@ -171,15 +171,15 @@ class DiagnosticCallback(L.Callback):
         self.val_loss.append(outputs["loss"].detach().cpu().item())
         pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
 
-        if trainer.global_step % self.freq == 0:
+        if batch_idx % self.freq == 0:
             # b) signal to noise ratio
-            tendencies = outputs["tendencies"]  # B, T, M, C, H, W
             predictions = outputs["predictions"]
 
-            x, y = batch
+            _, y = batch
 
             # Select first of batch and last of time
             truth = y[0][-1].cpu().squeeze()
+
             # ... and first of members
             pred = predictions[0][-1][0].cpu().squeeze()
 
