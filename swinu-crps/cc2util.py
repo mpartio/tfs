@@ -104,7 +104,6 @@ def analyze_gradients(model):
     gradient_stats = {
         "encoder": [],  # Encoder blocks
         "attention": [],  # Attention blocks
-        "norms": [],  # Layer norms
         "decoder": [],  # Decoder blocks
         "prediction": [],  # Final head
     }
@@ -119,8 +118,6 @@ def analyze_gradients(model):
                 gradient_stats["decoder"].append(grad_norm)
             elif "bridge" in name:
                 gradient_stats["attention"].append(grad_norm)
-            elif "norm" in name:
-                gradient_stats["norms"].append(grad_norm)
             elif "prediction_head" in name:
                 gradient_stats["prediction"].append(grad_norm)
 

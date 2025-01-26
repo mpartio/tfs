@@ -133,7 +133,6 @@ class DiagnosticCallback(L.Callback):
             "encoder": [],
             "decoder": [],
             "attention": [],
-            "norms": [],
             "prediction": [],
         }
 
