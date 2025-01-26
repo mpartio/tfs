@@ -218,6 +218,7 @@ class cc2ZarrModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=6,
             pin_memory=True,
+            persistent_workers=True,
             shuffle=shuffle,
             prefetch_factor=3,
         )
