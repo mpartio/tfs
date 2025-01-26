@@ -12,6 +12,7 @@ from cc2util import roll_forecast, moving_average, analyze_gradients
 from util import calculate_wavelet_snr
 from datetime import datetime
 from dataclasses import asdict
+
 matplotlib.use("Agg")
 
 
@@ -74,7 +75,7 @@ class TrainDataPlotterCallback(L.Callback):
         num_members = predictions.shape[1]
 
         rows = num_truth
-        cols = num_members + 2 + 1 # +2 for input fields, +1 for truth
+        cols = num_members + 2 + 1  # +2 for input fields, +1 for truth
 
         fig, ax = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
         ax = np.atleast_2d(ax)
@@ -83,9 +84,13 @@ class TrainDataPlotterCallback(L.Callback):
             if i == 0:
                 input_field = x[0].squeeze()
             elif i == 1:
-                input_field = torch.stack([x[0, 1].squeeze(), predictions[0][0].squeeze()])
+                input_field = torch.stack(
+                    [x[0, 1].squeeze(), predictions[0][0].squeeze()]
+                )
             elif i > 1:
-                input_field = torch.stack([predictions[i - 2, 0].squeeze(), predictions[i - 1, 0].squeeze()])
+                input_field = torch.stack(
+                    [predictions[i - 2, 0].squeeze(), predictions[i - 1, 0].squeeze()]
+                )
 
             ax[i, 0].imshow(input_field[0])
             ax[i, 0].set_title("Time T-1")
@@ -93,7 +98,7 @@ class TrainDataPlotterCallback(L.Callback):
             ax[i, 1].imshow(input_field[1])
             ax[i, 1].set_title("Time T")
             ax[i, 1].set_axis_off()
- 
+
             for j in range(num_members):  # members
                 ax[i, j + 2].imshow(predictions[i, j, ...].squeeze())
                 ax[i, j + 2].set_title(f"Time T+{i+1} member {j}")
@@ -225,7 +230,7 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        truth = truth.squeeze(1) # remove channel dim
+        truth = truth.squeeze(1)  # remove channel dim
         pred = pred.squeeze(2)
         tendencies = tendencies.squeeze(2)
 
