@@ -173,12 +173,12 @@ class cc2CRPS(nn.Module):
 
         # Attention Bridge (like AIFS-CRPS)
         self.bridge = MultiHeadAttentionBridge(
-            in_dim=dim * 4, bridge_dim=dim * 8, n_layers=config.num_layers
+            in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
         )
 
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
-            dim=dim * 8,
+            dim=dim * 4,
             num_heads=config.num_heads[3],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -191,7 +191,7 @@ class cc2CRPS(nn.Module):
 
         # Upsample layers
         self.upsample2 = PatchExpand(
-            dim=dim * 8,
+            dim=dim * 4,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
@@ -199,7 +199,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.decoder2 = BasicBlock(
-            dim=dim * 4,
+            dim=dim * 2,
             num_heads=config.num_heads[4],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -212,7 +212,7 @@ class cc2CRPS(nn.Module):
 
         # Upsample layers
         self.upsample1 = PatchExpand(
-            dim=dim * 4,
+            dim=dim * 2,
             input_resolution=(
                 input_h // 4,
                 input_w // 4,
@@ -220,7 +220,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.decoder1 = BasicBlock(
-            dim=dim * 2,
+            dim=dim,
             num_heads=config.num_heads[5],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -232,7 +232,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.final_expand = FinalPatchExpand_X4(
-            dim=dim * 2,
+            dim=dim,
             dim_scale=2,
             input_resolution=(
                 input_h // 2,
@@ -242,7 +242,9 @@ class cc2CRPS(nn.Module):
 
         self.prediction_head = nn.Sequential(
             # Tanh for delta prediction
-            nn.Conv2d(dim, 1, kernel_size=1),
+            nn.Conv2d(dim//2, dim // 2, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(dim // 2, 1, kernel_size=1),
             nn.Tanh(),
         )
 
