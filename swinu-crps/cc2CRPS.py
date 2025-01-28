@@ -107,7 +107,6 @@ class cc2CRPS(nn.Module):
         self,
         config,
         noise_dim=128,
-        num_heads=[8, 8, 8, 8, 8, 8],
     ):
         super(cc2CRPS, self).__init__()
 
@@ -122,14 +121,14 @@ class cc2CRPS(nn.Module):
         # Encoder
         self.encoder1 = BasicBlock(
             dim=dim,
-            num_heads=num_heads[0],
+            num_heads=config.num_heads[0],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 2,
                 input_w // 2,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[0],
         )
 
         self.downsample1 = PatchMerging(
@@ -142,14 +141,14 @@ class cc2CRPS(nn.Module):
 
         self.encoder2 = BasicBlock(
             dim=dim * 2,
-            num_heads=num_heads[1],
+            num_heads=config.num_heads[1],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 4,
                 input_w // 4,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[1],
         )
 
         self.downsample2 = PatchMerging(
@@ -162,14 +161,14 @@ class cc2CRPS(nn.Module):
 
         self.encoder3 = BasicBlock(
             dim=dim * 4,
-            num_heads=num_heads[2],
+            num_heads=config.num_heads[2],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[2],
         )
 
         # Attention Bridge (like AIFS-CRPS)
@@ -180,14 +179,14 @@ class cc2CRPS(nn.Module):
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
             dim=dim * 8,
-            num_heads=num_heads[3],
+            num_heads=config.num_heads[3],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[3],
         )
 
         # Upsample layers
@@ -201,14 +200,14 @@ class cc2CRPS(nn.Module):
 
         self.decoder2 = BasicBlock(
             dim=dim * 4,
-            num_heads=num_heads[4],
+            num_heads=config.num_heads[4],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 4,
                 input_w // 4,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[4],
         )
 
         # Upsample layers
@@ -222,14 +221,14 @@ class cc2CRPS(nn.Module):
 
         self.decoder1 = BasicBlock(
             dim=dim * 2,
-            num_heads=num_heads[5],
+            num_heads=config.num_heads[5],
             window_size=config.window_size,
             noise_dim=noise_dim,
             input_resolution=(
                 input_h // 2,
                 input_w // 2,
             ),
-            num_blocks=2,
+            num_blocks=config.num_blocks[5],
         )
 
         self.final_expand = FinalPatchExpand_X4(

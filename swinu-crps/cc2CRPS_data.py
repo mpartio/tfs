@@ -11,44 +11,6 @@ from torch.utils.data import DataLoader, TensorDataset, Subset
 from zarr_dataset import HourlyZarrDataset, HourlyStreamZarrDataset, SplitWrapper
 
 
-def smooth_data(data: torch.Tensor, kernel_size: int = 3, sigma: float = 1.0):
-    """
-    Smooths 2D data using Gaussian blur
-
-    Args:
-        data: Input tensor of shape (B, C, H, W) or (C, H, W)
-        kernel_size: Size of the Gaussian kernel
-        sigma: Standard deviation of the Gaussian kernel
-    """
-    # Add batch dimension if needed
-    if data.dim() == 3:
-        data = data.unsqueeze(0)
-
-    # Create Gaussian kernel
-    channels = data.size(1)
-    kernel = torch.zeros((channels, 1, kernel_size, kernel_size))
-
-    # Fill kernel with Gaussian values
-    center = kernel_size // 2
-    for x in range(kernel_size):
-        for y in range(kernel_size):
-            dx = x - center
-            dy = y - center
-            kernel[0, 0, x, y] = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
-
-    # Normalize kernel
-    kernel = kernel / kernel.sum()
-
-    # Apply to all channels
-    kernel = kernel.to(data.device)
-    smoothed = F.conv2d(data, kernel, padding=center, groups=channels)
-
-    # Ensure output stays in [0,1]
-    smoothed = torch.clamp(smoothed, 0, 1)
-
-    return smoothed.squeeze(0) if data.dim() == 3 else smoothed
-
-
 def augment_data(x, y):
     xshape, yshape = x.shape, y.shape
     if torch.rand(1).item() > 0.6:

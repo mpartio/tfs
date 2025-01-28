@@ -12,28 +12,17 @@ from crps import AlmostFairCRPSLoss
 from util import calculate_wavelet_snr
 from cc2CRPS_data import cc2DataModule, cc2ZarrModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
-from cc2util import roll_forecast, get_latest_run_dir, get_next_run_number
+from cc2util import (
+    roll_forecast,
+    get_latest_run_dir,
+    get_next_run_number,
+    gaussian_smooth,
+)
 from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
 from dataclasses import asdict
 from config import get_config, get_args, TrainingConfig
 from pytorch_lightning.loggers import CSVLogger
-
-# def get_lr_schedule(optimizer, warmup_iterations, total_iterations):
-#    def lr_lambda(current_iteration):
-#        # Warmup phase
-#        if current_iteration < warmup_iterations:
-#            return current_iteration / warmup_iterations
-#
-#        # Linear decay phase
-#        else:
-#            progress = (current_iteration - warmup_iterations) / (
-#                total_iterations - warmup_iterations
-#            )
-#            # Decay from 1.0 to 0.1
-#            return max(0.1, 1.0 - 0.9 * progress)
-#
-#    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def read_checkpoint(file_path):
@@ -82,9 +71,12 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
         self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
         self.config = config
 
-
     def training_step(self, batch, batch_idx):
         x, y = batch
+
+        if config.apply_smoothing:
+            x = gaussian_smooth(x)
+
         loss, tendencies, predictions = roll_forecast(
             self, x, y, config.rollout_length, loss_fn=self.crps_loss
         )

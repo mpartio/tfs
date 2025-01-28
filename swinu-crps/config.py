@@ -4,8 +4,8 @@ import os
 import randomname
 import sys
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import dataclass, asdict, field
+from typing import Optional, List
 
 
 @dataclass
@@ -19,8 +19,9 @@ class TrainingConfig:
 
     # Model architecture
     hidden_dim: int = 96
-    num_heads: int = 4
+    num_heads: List[int] = field(default_factory=lambda: [4, 4, 4, 4, 4, 4])
     num_layers: int = 8
+    num_blocks: List[int] = field(default_factory=lambda: [2, 2, 2, 2, 2, 2])
     window_size: int = 8
 
     # Training params
@@ -42,17 +43,17 @@ class TrainingConfig:
     data_path: str = "../data/nwcsaf-128x128.zarr"
 
     def _initialize_run(self):
-        if not hasattr(self, '_run_name'):
+        if not hasattr(self, "_run_name"):
             run_name_file = "current_run_name.txt"
 
             if int(os.environ.get("SLURM_PROCID", 0)) == 0:
                 self._run_name = randomname.get_name()
-                with open(run_name_file, 'w') as f:
+                with open(run_name_file, "w") as f:
                     f.write(self._run_name)
             else:
                 while not os.path.exists(run_name_file):
                     time.sleep(0.1)
-                with open(run_name_file, 'r') as f:
+                with open(run_name_file, "r") as f:
                     self._run_name = f.read().strip()
 
     @property
@@ -62,6 +63,8 @@ class TrainingConfig:
 
     run_dir: str = None
     run_number: int = None
+
+    apply_smoothing: bool = False
 
     def save(self):
         path = f"{self.run_dir}/train-config.json"
@@ -90,15 +93,17 @@ def get_args():
 
     # Model params
     parser.add_argument("--hidden_dim", type=int)
-    parser.add_argument("--num_heads", type=int)
+    parser.add_argument("--num_heads", type=int, nargs="+")
     parser.add_argument("--num_layers", type=int)
-    parser.add_argument("--window_size", type=int)
+    parser.add_argument("--num_blocks", type=int, nargs="+")
+    parser.add_argument("--window_size", type=int, nargs="+")
 
     # Training params
     parser.add_argument("--batch_size", type=int)
     parser.add_argument("--learning_rate", type=float)
     parser.add_argument("--num_iterations", type=int)
     parser.add_argument("--warmup_iterations", type=int)
+    parser.add_argument("--precision", type=str)
 
     # Compute environment
     parser.add_argument("--num_devices", type=int)
@@ -107,6 +112,8 @@ def get_args():
 
     parser.add_argument("--run_name", type=str)
     parser.add_argument("--data_path", type=str)
+
+    parser.add_argument("--apply_smoothing", action="store_true")
 
     args = parser.parse_args()
 
@@ -128,3 +135,8 @@ def get_config():
             setattr(config, k, v)
 
     return config
+
+
+if __name__ == "__main__":
+    c = get_config()
+    print(c)
