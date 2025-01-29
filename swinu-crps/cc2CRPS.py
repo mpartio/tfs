@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l_cond import (
     SwinTransformerBlock,
-    PatchEmbedding,
     PatchMerging,
     PatchExpand,
     FinalPatchExpand_X4,
 )
+from layers import PatchEmbedding
 import lightning as L
 import config
 
@@ -271,9 +271,12 @@ class cc2CRPS(nn.Module):
         x = self.prediction_head(x)
         return x
 
-    def forward(self, x):
+    def forward(self, x, timestep):
         assert x.ndim == 4  # B, C, H, W
+        assert type(timestep) == int and timestep >= 1, f"timestep must be integer larger than zero, got: {timestep}"
         B, C, H, W = x.shape
+
+        timestep = 1 if timestep == 1 else 2
 
         deltas = []
 
@@ -281,7 +284,7 @@ class cc2CRPS(nn.Module):
             torch.clone(x[:, -1, :, :]).detach().unsqueeze(1).unsqueeze(1)
         )  # B, 1, 1, H, W
 
-        x = self.patch_embed(x)
+        x = self.patch_embed(x, timestep)
 
         # generate predictions
         for _ in range(self.n_members):
@@ -319,14 +322,7 @@ class cc2CRPS(nn.Module):
 
 
 if __name__ == "__main__":
-    model = cc2CRPS(
-        dim=128,
-        n_members=3,
-        n_layers=4,
-        input_resolution=(128, 128),
-        noise_dim=128,
-        window_size=4,
-    )
+    model = cc2CRPS(config.get_config())
     print(model)
     print(
         "Number of trainable parameters: {:,}".format(
@@ -335,7 +331,7 @@ if __name__ == "__main__":
     )
 
     x = torch.randn(1, 2, 128, 128)
-    deltas, predictions = model(x)
+    deltas, predictions = model(x, 1)
 
     print("tendencies:", deltas.shape)
     print("predictions:", predictions.shape)

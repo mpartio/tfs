@@ -107,9 +107,7 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
         )
         # Forward pass
 
-        tendencies, predictions = model(x)
-
-        assert torch.isnan(x).sum() == 0, "NaNs in predictions"
+        tendencies, predictions = model(x, step + 1)
 
         if loss_fn is not None:
             loss = loss_fn(predictions, y_true)
