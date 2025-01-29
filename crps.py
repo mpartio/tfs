@@ -202,7 +202,19 @@ class AlmostFairCRPSLoss(nn.Module):
         loss = (first_term - 0.5 * second_term).mean(dim=[1, 2, 3])
 
         loss = loss.mean()
-        assert loss == loss, "NaN in loss"
+        assert (
+            loss == loss
+        ), "NaN in loss, predictions min/mean/max/nans: {:.3f}/{:.3f}/{:.3f}/{}, target min/mean/max/nans: {:.3f}/{:.3f}/{:.3f}/{}".format(
+            torch.min(predictions),
+            torch.mean(predictions),
+            torch.max(predictions),
+            torch.isnan(predictions).sum(),
+            torch.min(target),
+            torch.mean(target),
+            torch.max(target),
+            torch.isnan(target).sum(),
+        )
+
         return loss
 
 
