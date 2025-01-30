@@ -88,23 +88,25 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
 
     weights = torch.ones(n_steps).to(x.device)
 
+
     for step in range(n_steps):
         y_true = y[:, step, :, :, :]
 
+        if x.ndim == 4:
+            B, C, H, W  = x.shape
+            # Must add member dimension
+            n_members = 3
+            x = x.unsqueeze(1).expand(B, n_members, C, H, W)
+
         # X dim: B, C=2, H, W
         # Y dim: B, C=1, H, W
-        assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
+        assert x.ndim == 5, "invalid dimensions for x: {}".format(x.shape)
         assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
 
         assert (
             x.shape[-2:] == y_true.shape[-2:]
         ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
 
-        assert (
-            x.ndim == y_true.ndim
-        ), "x and y need to have equal number of dimensions: {} vs {}".format(
-            x.shape, y_true.shape
-        )
         # Forward pass
 
         tendencies, predictions = model(x, step + 1)
@@ -118,13 +120,8 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
         total_predictions.append(predictions)
 
         if n_steps > 1:
-            n_members = tendencies.shape[1]
-            chosen_member = torch.randint(n_members, (1,)).item()
-
-            last_x = x[:, -1:, :, :]
-            chosen_prediction = predictions[:, chosen_member, :, :, :]
-
-            x = torch.cat((last_x, chosen_prediction), dim=1)
+            last_x = x[:, :, -1, ...]  # B, M, C, H, W
+            x = torch.cat((last_x, predictions), dim=2)
 
     if len(total_loss) > 0:
         total_loss = torch.stack(total_loss)

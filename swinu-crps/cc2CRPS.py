@@ -242,7 +242,7 @@ class cc2CRPS(nn.Module):
 
         self.prediction_head = nn.Sequential(
             # Tanh for delta prediction
-            nn.Conv2d(dim//2, dim // 2, kernel_size=1),
+            nn.Conv2d(dim // 2, dim // 2, kernel_size=1),
             nn.ReLU(),
             nn.Conv2d(dim // 2, 1, kernel_size=1),
             nn.Tanh(),
@@ -272,43 +272,50 @@ class cc2CRPS(nn.Module):
         return x
 
     def forward(self, x, timestep):
-        assert x.ndim == 4  # B, C, H, W
-        assert type(timestep) == int and timestep >= 1, f"timestep must be integer larger than zero, got: {timestep}"
-        B, C, H, W = x.shape
+
+        assert (
+            type(timestep) == int and timestep >= 1
+        ), f"timestep must be integer larger than zero, got: {timestep}"
+
+        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(x.shape)
+
+        B, M, C, H, W = x.shape
 
         timestep = 1 if timestep == 1 else 2
 
+        assert M == self.n_members
+
         deltas = []
 
-        last_state = (
-            torch.clone(x[:, -1, :, :]).detach().unsqueeze(1).unsqueeze(1)
-        )  # B, 1, 1, H, W
+        for m in range(self.n_members):
+            xm = x[:, m, ...]  # B, C, H, W
 
-        x = self.patch_embed(x, timestep)
+            last_state = (
+                torch.clone(xm[:, -1, :, :]).detach().unsqueeze(1)
+            )  # B, 1, H, W
 
-        # generate predictions
-        for _ in range(self.n_members):
+            xm = self.patch_embed(xm, timestep)
 
-            features = torch.clone(x).detach()
+            features = torch.clone(xm).detach()
             # Generate and process noise
             noise = torch.randn(B, self.noise_dim, device=x.device)
             noise_embed = self.noise_processor(noise)
 
-            # Get prediction
+            # Get tendencies
             tendency = self._forward(features, noise_embed)
 
-            # tendency = self.prediction_head(features)
-            deltas.append(tendency)
+            max_allowed_delta = 1.0 - last_state  # How much room to increase
+            min_allowed_delta = 0.0 - last_state  # How much room to decrease
+
+            # B, C, H, W
+            delta = torch.clamp(tendency, min_allowed_delta, max_allowed_delta)
+
+            deltas.append(delta)
 
         # Stack all deltas
         deltas = torch.stack(deltas, dim=1)  # Shape: [batch, n_members, C, H, W]
 
-        max_allowed_delta = 1.0 - last_state  # How much room to increase
-        min_allowed_delta = 0.0 - last_state  # How much room to decrease
-        deltas = torch.clamp(deltas, min_allowed_delta, max_allowed_delta)
-
-        predictions = last_state + deltas  # Add current state to all deltas
-
+        predictions = x[:, :, -1, ...].unsqueeze(2) + deltas
         predictions = torch.clamp(predictions, 0, 1)
 
         assert predictions.shape == (
