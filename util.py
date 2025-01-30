@@ -379,7 +379,7 @@ def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
 
     # Calculate local SNR map to identify problematic regions
     local_noise_power = medfilt2d(_noise_field**2, kernel_size=5)
-    local_snr = 10 * np.log10(smooth_pred**2 / (local_noise_power + 1e-9))
+    local_snr = 10 * np.log10(1e-9 + smooth_pred**2 / (local_noise_power + 1e-9))
     return {
         "snr_db": snr_db,
         "noise_field": _noise_field,
