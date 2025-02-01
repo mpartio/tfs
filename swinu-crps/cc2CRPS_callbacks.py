@@ -354,7 +354,6 @@ class DiagnosticCallback(L.Callback):
         plt.plot(self.train_loss, label="Train Loss", color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.train_loss), 50),
-            label="Moving average",
             color="blue",
         )
 
@@ -366,7 +365,6 @@ class DiagnosticCallback(L.Callback):
         plt.plot(self.val_loss, label="Val Loss", color="orange", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_loss), 50),
-            label="Moving average",
             color="orange",
         )
         plt.title("Validation loss")
@@ -379,14 +377,12 @@ class DiagnosticCallback(L.Callback):
         plt.plot(snr_real, label="Real", color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 10),
-            label="Moving Average",
             color="blue",
         )
         plt.plot(snr_pred, label="Pred", color="orange", alpha=0.3)
         plt.plot(
             moving_average(snr_pred, 10),
             color="orange",
-            label="Moving average",
         )
         plt.legend(loc="center right")
 
@@ -406,7 +402,7 @@ class DiagnosticCallback(L.Callback):
             data = torch.tensor(data)
             color = colors.pop(0)
             plt.plot(data, label=section, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 20), color=color)  # , label=f"{section} MA")
+            plt.plot(moving_average(data, 20), color=color)
         plt.legend()
 
         plt.tight_layout()
