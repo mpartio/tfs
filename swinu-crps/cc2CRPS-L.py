@@ -78,7 +78,12 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             x = gaussian_smooth(x)
 
         loss, tendencies, predictions = roll_forecast(
-            self, x, y, config.rollout_length, loss_fn=self.crps_loss
+            self,
+            x,
+            y,
+            config.rollout_length,
+            loss_fn=self.crps_loss,
+            num_members=self.config.num_members,
         )
         loss = loss.mean()
         self.log("train_loss", loss)
@@ -87,7 +92,12 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         loss, tendencies, predictions = roll_forecast(
-            self, x, y, config.rollout_length, loss_fn=self.crps_loss
+            self,
+            x,
+            y,
+            config.rollout_length,
+            loss_fn=self.crps_loss,
+            num_members=self.config.num_members,
         )
         loss = loss.mean()
         self.log("val_loss", loss)
@@ -168,6 +178,7 @@ if data_path.endswith(".zarr"):
         batch_size=config.batch_size * config.num_devices,
         n_x=config.history_length,
         n_y=config.rollout_length,
+        limit_to=config.limit_data_to,
     )
 else:
     cc2Data = cc2DataModule(

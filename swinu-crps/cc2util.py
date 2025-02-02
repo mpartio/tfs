@@ -78,7 +78,7 @@ def moving_average(arr, window_size):
     return result
 
 
-def roll_forecast(model, x, y, n_steps, loss_fn):
+def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
     total_loss = []
     total_tendencies = []
     total_predictions = []
@@ -95,8 +95,7 @@ def roll_forecast(model, x, y, n_steps, loss_fn):
         if x.ndim == 4:
             B, C, H, W  = x.shape
             # Must add member dimension
-            n_members = 3
-            x = x.unsqueeze(1).expand(B, n_members, C, H, W)
+            x = x.unsqueeze(1).expand(B, num_members, C, H, W)
 
         # X dim: B, C=2, H, W
         # Y dim: B, C=1, H, W

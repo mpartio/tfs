@@ -41,6 +41,7 @@ class TrainingConfig:
     current_loss: Optional[float] = None
 
     data_path: str = "../data/nwcsaf-128x128.zarr"
+    limit_data_to: int = None
 
     def _initialize_run(self):
         if not hasattr(self, "_run_name"):
@@ -114,6 +115,7 @@ def get_args():
     parser.add_argument("--data_path", type=str)
 
     parser.add_argument("--apply_smoothing", action="store_true")
+    parser.add_argument("--limit_data_to", type=int)
 
     args = parser.parse_args()
 
@@ -133,7 +135,7 @@ def get_config():
     for k, v in vars(args).items():
         if v is not None and k != "config":
             setattr(config, k, v)
-
+            print(k,"to",v)
     return config
 
 

@@ -145,7 +145,7 @@ class cc2DataModule(L.LightningDataModule):
 
 
 class cc2ZarrModule(L.LightningDataModule):
-    def __init__(self, zarr_path: str, batch_size: int, n_x: int = 1, n_y: int = 1):
+    def __init__(self, zarr_path: str, batch_size: int, n_x: int = 1, n_y: int = 1, limit_to: int = None):
         self.batch_size = batch_size
         self.n_x = n_x
         self.n_y = n_y
@@ -154,6 +154,7 @@ class cc2ZarrModule(L.LightningDataModule):
         self.cc2_train = None
         self.cc2_val = None
         self.cc2_test = None
+        self.limit_to = limit_to
 
         print("Reading data from {}".format(zarr_path))
         self.setup(zarr_path)
@@ -165,10 +166,12 @@ class cc2ZarrModule(L.LightningDataModule):
             ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
         indices = np.arange(len(ds))
 
+        if self.limit_to is not None:
+            indices = indices[:self.limit_to]
         rng = np.random.RandomState(0)
         rng.shuffle(indices)
 
-        val_size = int(self.val_split * len(ds))
+        val_size = int(self.val_split * len(indices))
         train_indices, val_indices = indices[val_size:], indices[:val_size]
 
         self.cc2_train = Subset(ds, train_indices)
