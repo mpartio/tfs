@@ -2,57 +2,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l_cond import (
-    SwinTransformerBlock,
     PatchExpand,
     FinalPatchExpand_X4,
     ConditionalLayerNorm,
 )
-from layers import PatchEmbedding, PatchMerging, NoisySkipConnection
+from layers import (
+    PatchEmbedding,
+    PatchMerging,
+    NoisySkipConnection,
+    NoiseProcessor,
+    BasicBlock,
+)
 import lightning as L
 import config
-
-
-class NoiseProcessor(nn.Module):
-    def __init__(self, noise_dim, hidden_dim=None):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = noise_dim * 2
-
-        self.mlp = nn.Sequential(
-            nn.Linear(noise_dim, hidden_dim),
-            nn.GELU(),  # AIFS-CRPS uses GELU
-            nn.Linear(hidden_dim, noise_dim),
-        )
-        self.norm = nn.LayerNorm(noise_dim)
-
-    def forward(self, noise):
-        processed = self.mlp(noise)
-        return self.norm(processed)
-
-
-class BasicBlock(nn.Module):
-    def __init__(
-        self, dim, num_blocks, num_heads, window_size, noise_dim, input_resolution
-    ):
-        super(BasicBlock, self).__init__()
-
-        self.layers = nn.ModuleList()
-        for i in range(num_blocks):
-            self.layers.append(
-                SwinTransformerBlock(
-                    dim=dim,
-                    num_heads=num_heads,
-                    window_size=window_size,
-                    noise_dim=noise_dim,
-                    input_resolution=input_resolution,
-                    shift_size=0 if i % 2 == 0 else window_size // 2,
-                )
-            )
-
-    def forward(self, x, noise_embedding):
-        for layer in self.layers:
-            x = layer(x, noise_embedding)
-        return x
 
 
 class MultiHeadAttentionBridge(nn.Module):
