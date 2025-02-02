@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from swinu_l_cond import SwinTransformerBlock
+from swinu_l_cond import SwinTransformerBlock, ConditionalLayerNorm
 
 class PatchMerging(nn.Module):
     r"""Patch Merging Layer.
@@ -67,6 +67,42 @@ class PatchEmbedding(nn.Module):
         x = self.proj(x)
         x = x.flatten(2).transpose(1, 2)  # B H*W C
         x = self.norm(x)
+        return x
+
+
+class PatchExpand(nn.Module):
+    def __init__(self, input_resolution, dim, dim_scale=2):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.expand = (
+            nn.Linear(dim, 2 * dim, bias=False) if dim_scale == 2 else nn.Identity()
+        )
+        self.norm = ConditionalLayerNorm(dim // dim_scale)
+        self.refinement = nn.Conv2d(
+            dim // dim_scale, dim // dim_scale, kernel_size=3, padding=1, stride=1
+        )
+
+    def forward(self, x, noise_embedding):
+        """
+        x: B, H*W, C
+        """
+        H, W = self.input_resolution
+        x = self.expand(x)
+        B, L, C = x.shape
+        assert L == H * W, "input feature has wrong size"
+
+        x = x.view(B, H, W, C)
+        x = rearrange(x, "b h w (p1 p2 c)-> b (h p1) (w p2) c", p1=2, p2=2, c=C // 4)
+
+        # Reshape for convolution
+        x = x.permute(0, 3, 1, 2)  # Convert to (B, C, H, W) for Conv2d
+        x = self.refinement(x)  # Refinement step
+        x = x.permute(0, 2, 3, 1)  # Convert back to (B, H, W, C)
+
+        x = x.view(B, -1, C // 4)
+        x = self.norm(x, noise_embedding)
+
         return x
 
 
