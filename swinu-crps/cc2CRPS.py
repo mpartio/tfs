@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l_cond import (
     SwinTransformerBlock,
-    PatchMerging,
     PatchExpand,
     FinalPatchExpand_X4,
+    ConditionalLayerNorm,
 )
-from layers import PatchEmbedding
+from layers import PatchEmbedding, PatchMerging, NoisySkipConnection
 import lightning as L
 import config
 
@@ -56,9 +56,13 @@ class BasicBlock(nn.Module):
 
 
 class MultiHeadAttentionBridge(nn.Module):
-    def __init__(self, in_dim, bridge_dim, n_layers=1):
+    def __init__(self, in_dim, bridge_dim, noise_dim=128, n_layers=1):
         super().__init__()
+        self.input_norm = ConditionalLayerNorm(in_dim, noise_dim)
         self.input_proj = nn.Linear(in_dim, bridge_dim)
+
+        # Add noise processing
+        self.noise_proj = nn.Linear(noise_dim, bridge_dim)
 
         self.layers = nn.ModuleList()
 
@@ -67,39 +71,58 @@ class MultiHeadAttentionBridge(nn.Module):
                 nn.ModuleDict(
                     {
                         "mha": nn.MultiheadAttention(
-                            bridge_dim, num_heads=8, dropout=0.05, batch_first=True
+                            bridge_dim, num_heads=8, dropout=0.1, batch_first=True
                         ),
-                        "norm1": nn.LayerNorm(bridge_dim),
-                        "norm2": nn.LayerNorm(bridge_dim),
+                        "norm1": ConditionalLayerNorm(bridge_dim, noise_dim),
+                        "norm2": ConditionalLayerNorm(bridge_dim, noise_dim),
                         "ff": nn.Sequential(
-                            nn.Linear(bridge_dim, bridge_dim),
+                            nn.Linear(bridge_dim, bridge_dim * 2),
                             nn.GELU(),
-                            nn.Linear(bridge_dim, bridge_dim),
+                            nn.Dropout(0.1),
+                            nn.Linear(bridge_dim * 2, bridge_dim),
                         ),
                     }
                 )
             )
 
-    def forward(self, x):
+        self.output_norm = ConditionalLayerNorm(bridge_dim, noise_dim)
+
+    def forward(self, x, noise_embedding):
         # x shape: [B, N_patches, C]
         B, N, C = x.shape
-        # Project features
 
+        # Project features
+        x = self.input_norm(x, noise_embedding)
         x = self.input_proj(x)
 
+        # Process noise and expand to match sequence length
+        noise = self.noise_proj(noise_embedding)  # [B, bridge_dim]
+        noise = noise.unsqueeze(1).expand(
+            -1, x.shape[1], -1
+        )  # [B, N_patches, bridge_dim]
+
+        # Add noise to input features
+        x = x + noise
+
+        # Main identity for deep residual
+        main_identity = x
+
         # Prevent NaNs
-        x = F.layer_norm(x, (x.shape[-1],))
+        #        x = F.layer_norm(x, (x.shape[-1],))
 
         for layer in self.layers:
             # Attention
-            attn_out, _ = layer["mha"](x, x, x)
-            x = layer["norm1"](x + attn_out)
+            normed_x = layer["norm1"](x, noise_embedding)
+            attn_out, _ = layer["mha"](normed_x, normed_x, normed_x)
+            x = x + attn_out
 
             # FFN
-            ffn_out = layer["ff"](x)
-            x = layer["norm2"](x + ffn_out)
+            ffn_out = layer["ff"](layer["norm2"](x, noise_embedding))
+            x = x + ffn_out
 
-        return x
+        x = x + main_identity
+
+        return self.output_norm(x, noise_embedding)
 
 
 class cc2CRPS(nn.Module):
@@ -131,6 +154,8 @@ class cc2CRPS(nn.Module):
             num_blocks=config.num_blocks[0],
         )
 
+        self.skip1 = NoisySkipConnection(dim)
+
         self.downsample1 = PatchMerging(
             dim=dim,
             input_resolution=(
@@ -150,6 +175,8 @@ class cc2CRPS(nn.Module):
             ),
             num_blocks=config.num_blocks[1],
         )
+
+        self.skip2 = NoisySkipConnection(dim * 2)
 
         self.downsample2 = PatchMerging(
             dim=dim * 2,
@@ -171,7 +198,9 @@ class cc2CRPS(nn.Module):
             num_blocks=config.num_blocks[2],
         )
 
-        # Attention Bridge (like AIFS-CRPS)
+        self.skip3 = NoisySkipConnection(dim * 4)
+
+        # Attention Bridge
         self.bridge = MultiHeadAttentionBridge(
             in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
         )
@@ -255,77 +284,72 @@ class cc2CRPS(nn.Module):
 
     def _forward(self, x, noise_embedding):
         # Encoder
-        x = self.encoder1(x, noise_embedding)
-        x = self.encoder2(self.downsample1(x), noise_embedding)
-        x = self.encoder3(self.downsample2(x), noise_embedding)
+        x1 = self.encoder1(x, noise_embedding)
+
+        x2 = self.encoder2(self.downsample1(x1), noise_embedding)
+        x3 = self.encoder3(self.downsample2(x2), noise_embedding)
 
         # Bridge
-        x = self.bridge(x)
+        x = self.bridge(x3, noise_embedding)
 
         # Decoder
         x = self.decoder3(x, noise_embedding)
+        x = self.skip3(x3, x, noise_embedding)
         x = self.decoder2(self.upsample2(x), noise_embedding)
+        x = self.skip2(x2, x, noise_embedding)
         x = self.decoder1(self.upsample1(x), noise_embedding)
+        x = self.skip1(x1, x, noise_embedding)
 
         x = self.final_expand(x)
         x = self.prediction_head(x)
         return x
 
     def forward(self, x, timestep):
+        def soft_clamp(x, min_val, max_val, T=5):
+            return min_val + (max_val - min_val) * torch.sigmoid(T * x)
 
         assert (
             type(timestep) == int and timestep >= 1
         ), f"timestep must be integer larger than zero, got: {timestep}"
-
-        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(x.shape)
+        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(
+            x.shape
+        )
 
         B, M, C, H, W = x.shape
-
         timestep = 1 if timestep == 1 else 2
+        assert (
+            M == self.n_members
+        ), "input members does not match configuration: {} vs {}".format(
+            M, self.n_members
+        )
 
-        assert M == self.n_members
+        # Reshape to treat batch and members as one batch dimension
+        xm = x.reshape(B * M, C, H, W)
 
-        deltas = []
+        last_state = torch.clone(xm[:, -1:, :, :]).detach()  # B*M, 1, H, W
 
-        for m in range(self.n_members):
-            xm = x[:, m, ...]  # B, C, H, W
+        xm = self.patch_embed(xm, timestep)
+        features = torch.clone(xm).detach()
 
-            last_state = (
-                torch.clone(xm[:, -1, :, :]).detach().unsqueeze(1)
-            )  # B, 1, H, W
+        # Generate noise for all members at once
+        noise = torch.randn(B * M, self.noise_dim, device=x.device)
+        noise_embed = self.noise_processor(noise)
 
-            xm = self.patch_embed(xm, timestep)
+        # Get tendencies for all members at once
+        tendency = self._forward(features, noise_embed)
 
-            features = torch.clone(xm).detach()
-            # Generate and process noise
-            noise = torch.randn(B, self.noise_dim, device=x.device)
-            noise_embed = self.noise_processor(noise)
+        # Calculate allowed deltas for all members
+        max_allowed_delta = 1.0 - last_state
+        min_allowed_delta = 0.0 - last_state
+        delta = soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
 
-            # Get tendencies
-            tendency = self._forward(features, noise_embed)
+        # Reshape back to separate batch and member dimensions
+        delta = delta.view(B, M, 1, H, W)
 
-            max_allowed_delta = 1.0 - last_state  # How much room to increase
-            min_allowed_delta = 0.0 - last_state  # How much room to decrease
+        predictions = x[:, :, -1:, ...] + delta
+        #        predictions = torch.clamp(predictions, 0, 1)
 
-            # B, C, H, W
-            delta = torch.clamp(tendency, min_allowed_delta, max_allowed_delta)
-
-            deltas.append(delta)
-
-        # Stack all deltas
-        deltas = torch.stack(deltas, dim=1)  # Shape: [batch, n_members, C, H, W]
-
-        predictions = x[:, :, -1, ...].unsqueeze(2) + deltas
-        predictions = torch.clamp(predictions, 0, 1)
-
-        assert predictions.shape == (
-            B,
-            self.n_members,
-            1,
-            H,
-            W,
-        ), "predictions shape invalid: {}".format(predictions.shape)
-        return deltas, predictions
+        return delta, predictions
 
 
 if __name__ == "__main__":
