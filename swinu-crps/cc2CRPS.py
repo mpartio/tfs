@@ -361,7 +361,7 @@ if __name__ == "__main__":
         )
     )
 
-    x = torch.randn(1, 2, 128, 128)
+    x = torch.randn(1, 3, 2, 128, 128)
     deltas, predictions = model(x, 1)
 
     print("tendencies:", deltas.shape)
