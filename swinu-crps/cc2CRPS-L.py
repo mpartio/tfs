@@ -86,7 +86,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             num_members=self.config.num_members,
         )
         loss = loss.mean()
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, sync_dist=True)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def validation_step(self, batch, batch_idx):
@@ -100,7 +100,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             num_members=self.config.num_members,
         )
         loss = loss.mean()
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, sync_dist=True)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def on_save_checkpoint(self, checkpoint):
