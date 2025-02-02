@@ -127,12 +127,14 @@ class TrainDataPlotterCallback(L.Callback):
 
 class DiagnosticCallback(L.Callback):
     def __init__(self, config, freq=50):
-        (
-            self.train_loss,
-            self.val_loss,
-            self.lr,
-            self.snr_db,
-        ) = ([], [], [], [])
+        (self.train_loss, self.val_loss, self.lr, self.snr_db, self.mae, self.var) = (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
 
         self.gradients = {
             "encoder": [],
@@ -191,6 +193,14 @@ class DiagnosticCallback(L.Callback):
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
             self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
+
+            variance = torch.var(
+                predictions[:, -1, ...], dim=1, unbiased=False
+            )  # Shape (B, C, H, W)
+            self.var.append(variance.mean().cpu().numpy().item())
+
+            mean_pred = torch.mean(predictions, dim=1)
+            self.mae.append(torch.mean(torch.abs(y - mean_pred)).cpu().numpy().item())
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
@@ -313,27 +323,12 @@ class DiagnosticCallback(L.Callback):
         plt.imshow(error_map.cpu())
         plt.colorbar()
 
-        # Calculate statistics
-        mean_error = error_map.mean().item()
-        max_error = error_map.max().item()
-        std_error = error_map.std().item()
+        variance = torch.var(pred[-1], dim=0, unbiased=True)  # Shape (B, H, W)
 
-        # Add stats text box
-        stats_text = (
-            f"Mean Error: {mean_error:.3f}\n"
-            f"Max Error: {max_error:.3f}\n"
-            f"Std Error: {std_error:.3f}"
-        )
-
-        # Place text box in upper left corner with white background
-        plt.text(
-            0.05,
-            0.95,
-            stats_text,
-            transform=plt.gca().transAxes,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
-        )
+        plt.subplot(3, 4, 12)
+        plt.title("Member Variance Distribution")
+        plt.imshow(variance.cpu().numpy())
+        plt.colorbar()
 
         plt.tight_layout()
         plt.savefig(
@@ -364,7 +359,7 @@ class DiagnosticCallback(L.Callback):
             # Remove first 100 after we have enough data, as they often
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
-        plt.subplot(221)
+        plt.subplot(231)
         plt.title("Training loss")
         plt.plot(train_loss, label="Train Loss", color="blue", alpha=0.3)
         plt.plot(
@@ -381,7 +376,7 @@ class DiagnosticCallback(L.Callback):
         if len(val_loss) > 500:
             val_loss = val_loss[20:]
 
-        plt.subplot(222)
+        plt.subplot(232)
         plt.plot(val_loss, label="Val Loss", color="orange", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_loss), 50),
@@ -390,7 +385,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("Validation loss")
         plt.legend(loc="upper left")
 
-        plt.subplot(223)
+        plt.subplot(233)
         snr_db = np.array(self.snr_db).T
         snr_real = torch.tensor(snr_db[0])
         snr_pred = torch.tensor(snr_db[1])
@@ -413,7 +408,7 @@ class DiagnosticCallback(L.Callback):
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
-        plt.subplot(224)
+        plt.subplot(234)
         plt.yscale("log")
         plt.title("Gradients")
         colors = ["blue", "orange", "green", "red", "black", "purple"]
@@ -424,6 +419,20 @@ class DiagnosticCallback(L.Callback):
             plt.plot(data, label=section, color=color, alpha=0.3)
             plt.plot(moving_average(data, 20), color=color)
         plt.legend()
+
+        plt.subplot(235)
+        plt.plot(self.var, label="Variance", color="blue", alpha=0.3)
+        plt.plot(
+            moving_average(torch.tensor(self.var), 10),
+            color="blue",
+        )
+        plt.legend(loc="upper left")
+
+        ax2 = plt.gca().twinx()
+        ax2.plot(self.mae, label="MAE", color="orange", alpha=0.3)
+        ax2.plot(moving_average(torch.tensor(self.mae), 10), color="orange")
+        ax2.legend(loc="upper right")
+        plt.title("Variance vs MAE")
 
         plt.tight_layout()
         plt.savefig(
