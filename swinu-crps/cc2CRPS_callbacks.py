@@ -35,7 +35,12 @@ class TrainDataPlotterCallback(L.Callback):
         # Perform a prediction
         with torch.no_grad():
             _, _, predictions = roll_forecast(
-                pl_module, x, y, self.config.rollout_length, None
+                pl_module,
+                x,
+                y,
+                self.config.rollout_length,
+                None,
+                num_members=self.config.num_members,
             )
 
         self.plot(
@@ -202,7 +207,12 @@ class DiagnosticCallback(L.Callback):
         # Perform a prediction
         with torch.no_grad():
             _, tendencies, predictions = roll_forecast(
-                pl_module, x, y, self.config.rollout_length, loss_fn=None
+                pl_module,
+                x,
+                y,
+                self.config.rollout_length,
+                loss_fn=None,
+                num_members=self.config.num_members,
             )
 
         self.plot_visual(
@@ -349,20 +359,30 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
+        train_loss = self.train_loss
+        if len(train_loss) > 2000:
+            # Remove first 100 after we have enough data, as they often
+            # they contain data messes up the y-axis
+            train_loss = train_loss[100:]
         plt.subplot(221)
         plt.title("Training loss")
-        plt.plot(self.train_loss, label="Train Loss", color="blue", alpha=0.3)
+        plt.plot(train_loss, label="Train Loss", color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.train_loss), 50),
             color="blue",
         )
+        plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
         ax2.plot(torch.tensor(self.lr) * 1e6, label="LRx1M", color="green")
         ax2.legend(loc="upper right")
 
+        val_loss = self.val_loss
+        if len(val_loss) > 500:
+            val_loss = val_loss[20:]
+
         plt.subplot(222)
-        plt.plot(self.val_loss, label="Val Loss", color="orange", alpha=0.3)
+        plt.plot(val_loss, label="Val Loss", color="orange", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_loss), 50),
             color="orange",
