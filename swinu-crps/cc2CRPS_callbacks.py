@@ -12,6 +12,7 @@ from cc2util import roll_forecast, moving_average, analyze_gradients
 from util import calculate_wavelet_snr
 from datetime import datetime
 from dataclasses import asdict
+from matplotlib.ticker import ScalarFormatter
 
 matplotlib.use("Agg")
 
@@ -359,17 +360,22 @@ class DiagnosticCallback(L.Callback):
             # Remove first 100 after we have enough data, as they often
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
+
         plt.subplot(231)
         plt.title("Training loss")
-        plt.plot(train_loss, label="Train Loss", color="blue", alpha=0.3)
+        plt.plot(train_loss, color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.train_loss), 50),
             color="blue",
+            label="Train Loss",
         )
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
-        ax2.plot(torch.tensor(self.lr) * 1e6, label="LRx1M", color="green")
+        ax2.plot(torch.tensor(self.lr) * 1e6, label="LR", color="green")
+        ax2.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+        ax2.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+
         ax2.legend(loc="upper right")
 
         val_loss = self.val_loss
@@ -377,10 +383,11 @@ class DiagnosticCallback(L.Callback):
             val_loss = val_loss[20:]
 
         plt.subplot(232)
-        plt.plot(val_loss, label="Val Loss", color="orange", alpha=0.3)
+        plt.plot(val_loss, color="orange", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_loss), 50),
             color="orange",
+            label="Val Loss",
         )
         plt.title("Validation loss")
         plt.legend(loc="upper left")
@@ -389,22 +396,21 @@ class DiagnosticCallback(L.Callback):
         snr_db = np.array(self.snr_db).T
         snr_real = torch.tensor(snr_db[0])
         snr_pred = torch.tensor(snr_db[1])
-        plt.plot(snr_real, label="Real", color="blue", alpha=0.3)
+        plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 10),
             color="blue",
+            label="Real",
         )
-        plt.plot(snr_pred, label="Pred", color="orange", alpha=0.3)
-        plt.plot(
-            moving_average(snr_pred, 10),
-            color="orange",
-        )
-        plt.legend(loc="center right")
+        plt.plot(snr_pred, color="orange", alpha=0.3)
+        plt.plot(moving_average(snr_pred, 10), color="orange", label="Predicted")
+        plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
-        ax2.plot(
-            moving_average(snr_real - snr_pred, 20), label="Residual", color="green"
-        )
+        residual = snr_real - snr_pred
+
+        ax2.plot(residual, color="green", alpha=0.3)
+        ax2.plot(moving_average(residual, 10), label="Residual", color="green")
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
@@ -416,21 +422,22 @@ class DiagnosticCallback(L.Callback):
             data = self.gradients[section]
             data = torch.tensor(data)
             color = colors.pop(0)
-            plt.plot(data, label=section, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 20), color=color)
+            plt.plot(data, color=color, alpha=0.3)
+            plt.plot(moving_average(data, 10), color=color, label=section)
         plt.legend()
 
         plt.subplot(235)
-        plt.plot(self.var, label="Variance", color="blue", alpha=0.3)
+        plt.plot(self.var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.var), 10),
-            color="blue",
+            moving_average(torch.tensor(self.var), 10), color="blue", label="Variance"
         )
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
-        ax2.plot(self.mae, label="MAE", color="orange", alpha=0.3)
-        ax2.plot(moving_average(torch.tensor(self.mae), 10), color="orange")
+        ax2.plot(self.mae, color="orange", alpha=0.3)
+        ax2.plot(
+            moving_average(torch.tensor(self.mae), 10), color="orange", label="MAE"
+        )
         ax2.legend(loc="upper right")
         plt.title("Variance vs MAE")
 
