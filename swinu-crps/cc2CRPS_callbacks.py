@@ -372,7 +372,7 @@ class DiagnosticCallback(L.Callback):
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
-        ax2.plot(torch.tensor(self.lr) * 1e6, label="LR", color="green")
+        ax2.plot(torch.tensor(self.lr), label="LR", color="green")
         ax2.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
         ax2.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
