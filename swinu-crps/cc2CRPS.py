@@ -2,16 +2,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l_cond import (
-    PatchExpand,
-    FinalPatchExpand_X4,
     ConditionalLayerNorm,
 )
 from layers import (
     PatchEmbedding,
     PatchMerging,
+    PatchExpand,
     NoisySkipConnection,
     NoiseProcessor,
     BasicBlock,
+    FinalPatchExpand_X4,
 )
 import lightning as L
 import config
@@ -124,6 +124,7 @@ class cc2CRPS(nn.Module):
                 input_h // 2,
                 input_w // 2,
             ),
+            noise_dim=noise_dim,
         )
 
         self.encoder2 = BasicBlock(
@@ -146,6 +147,7 @@ class cc2CRPS(nn.Module):
                 input_h // 4,
                 input_w // 4,
             ),
+            noise_dim=noise_dim,
         )
 
         self.encoder3 = BasicBlock(
@@ -187,6 +189,7 @@ class cc2CRPS(nn.Module):
                 input_h // 8,
                 input_w // 8,
             ),
+            noise_dim=noise_dim,
         )
 
         self.decoder2 = BasicBlock(
@@ -208,6 +211,7 @@ class cc2CRPS(nn.Module):
                 input_h // 4,
                 input_w // 4,
             ),
+            noise_dim=noise_dim,
         )
 
         self.decoder1 = BasicBlock(
@@ -229,6 +233,7 @@ class cc2CRPS(nn.Module):
                 input_h // 2,
                 input_w // 2,
             ),
+            noise_dim=noise_dim,
         )
 
         self.prediction_head = nn.Sequential(
@@ -248,8 +253,8 @@ class cc2CRPS(nn.Module):
         # Encoder
         x1 = self.encoder1(x, noise_embedding)
 
-        x2 = self.encoder2(self.downsample1(x1), noise_embedding)
-        x3 = self.encoder3(self.downsample2(x2), noise_embedding)
+        x2 = self.encoder2(self.downsample1(x1, noise_embedding), noise_embedding)
+        x3 = self.encoder3(self.downsample2(x2, noise_embedding), noise_embedding)
 
         # Bridge
         x = self.bridge(x3, noise_embedding)
@@ -257,12 +262,12 @@ class cc2CRPS(nn.Module):
         # Decoder
         x = self.decoder3(x, noise_embedding)
         x = self.skip3(x3, x, noise_embedding)
-        x = self.decoder2(self.upsample2(x), noise_embedding)
+        x = self.decoder2(self.upsample2(x, noise_embedding), noise_embedding)
         x = self.skip2(x2, x, noise_embedding)
-        x = self.decoder1(self.upsample1(x), noise_embedding)
+        x = self.decoder1(self.upsample1(x, noise_embedding), noise_embedding)
         x = self.skip1(x1, x, noise_embedding)
 
-        x = self.final_expand(x)
+        x = self.final_expand(x, noise_embedding)
         x = self.prediction_head(x)
         return x
 

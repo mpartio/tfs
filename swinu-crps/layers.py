@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from swinu_l_cond import SwinTransformerBlock, ConditionalLayerNorm
+from einops import rearrange
+
 
 class PatchMerging(nn.Module):
     r"""Patch Merging Layer.
@@ -12,14 +14,14 @@ class PatchMerging(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
-    def __init__(self, input_resolution, dim, norm_layer=nn.LayerNorm):
+    def __init__(self, input_resolution, dim, noise_dim=128):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        self.norm = nn.LayerNorm(4 * dim)
+        self.norm = ConditionalLayerNorm(4 * dim, noise_dim)
 
-    def forward(self, x):
+    def forward(self, x, noise_embedding):
         """
         x: B, H*W, C
         """
@@ -38,7 +40,7 @@ class PatchMerging(nn.Module):
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
-        x = self.norm(x)
+        x = self.norm(x, noise_embedding)
         x = self.reduction(x)
 
         return x
@@ -71,14 +73,14 @@ class PatchEmbedding(nn.Module):
 
 
 class PatchExpand(nn.Module):
-    def __init__(self, input_resolution, dim, dim_scale=2):
+    def __init__(self, input_resolution, dim, dim_scale=2, noise_dim=128):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
         self.expand = (
             nn.Linear(dim, 2 * dim, bias=False) if dim_scale == 2 else nn.Identity()
         )
-        self.norm = ConditionalLayerNorm(dim // dim_scale)
+        self.norm = ConditionalLayerNorm(dim // dim_scale, noise_dim)
         self.refinement = nn.Conv2d(
             dim // dim_scale, dim // dim_scale, kernel_size=3, padding=1, stride=1
         )
@@ -102,6 +104,51 @@ class PatchExpand(nn.Module):
 
         x = x.view(B, -1, C // 4)
         x = self.norm(x, noise_embedding)
+
+        return x
+
+
+class FinalPatchExpand_X4(nn.Module):
+    def __init__(self, input_resolution, dim, dim_scale=4, noise_dim=128):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.dim_scale = dim_scale
+        self.expand = nn.Linear(dim, dim * dim_scale, bias=False)
+        self.output_dim = dim // dim_scale
+        self.norm = ConditionalLayerNorm(self.output_dim, noise_dim)
+        self.refinement = nn.Conv2d(
+            in_channels=self.output_dim,  # Match expanded output channels
+            out_channels=self.output_dim,
+            kernel_size=3,
+            padding=1,
+        )
+
+    def forward(self, x, noise_embedding):
+        """
+        x: B, H*W, C
+        """
+        H, W = self.input_resolution
+
+        x = self.expand(x)
+        B, L, C = x.shape
+
+        assert L == H * W, "input feature has wrong size"
+
+        x = x.view(B, H, W, C)
+
+        x = rearrange(
+            x,
+            "b h w (p1 p2 c)-> b (h p1) (w p2) c",
+            p1=self.dim_scale,
+            p2=self.dim_scale,
+            c=C // (self.dim_scale**2),
+        )
+
+        x = x.view(B, -1, self.output_dim)
+        x = self.norm(x, noise_embedding)
+        x = x.reshape(B, H * 2, W * 2, C // 4).permute(0, 3, 1, 2)
+        x = self.refinement(x)
 
         return x
 
