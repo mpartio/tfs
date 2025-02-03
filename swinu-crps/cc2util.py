@@ -88,12 +88,11 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
 
     weights = torch.ones(n_steps).to(x.device)
 
-
     for step in range(n_steps):
         y_true = y[:, step, :, :, :]
 
         if x.ndim == 4:
-            B, C, H, W  = x.shape
+            B, C, H, W = x.shape
             # Must add member dimension
             x = x.unsqueeze(1).expand(B, num_members, C, H, W)
 
@@ -119,7 +118,7 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
         total_predictions.append(predictions)
 
         if n_steps > 1:
-            last_x = x[:, :, -1, ...]  # B, M, C, H, W
+            last_x = x[:, :, -1, ...].unsqueeze(2)  # B, M, C, H, W
             x = torch.cat((last_x, predictions), dim=2)
 
     if len(total_loss) > 0:

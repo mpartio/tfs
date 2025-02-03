@@ -197,11 +197,12 @@ class DiagnosticCallback(L.Callback):
 
             variance = torch.var(
                 predictions[:, -1, ...], dim=1, unbiased=False
-            )  # Shape (B, C, H, W)
+            )
             self.var.append(variance.mean().cpu().numpy().item())
 
-            mean_pred = torch.mean(predictions, dim=1)
-            self.mae.append(torch.mean(torch.abs(y - mean_pred)).cpu().numpy().item())
+            mean_pred = torch.mean(predictions[:, -1, ...], dim=1)
+            y_true = y[:, -1, ...]
+            self.mae.append(torch.mean(torch.abs(y_true - mean_pred)).cpu().numpy().item())
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
@@ -345,7 +346,7 @@ class DiagnosticCallback(L.Callback):
         plt.close()
 
     def plot_history(self, epoch):
-        plt.figure(figsize=(12, 8))
+        plt.figure(figsize=(16, 8))
         plt.suptitle(
             "{} at epoch {} (host={}, time={})".format(
                 sys.argv[0],
