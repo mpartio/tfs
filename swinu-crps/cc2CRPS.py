@@ -17,6 +17,29 @@ import lightning as L
 import config
 
 
+class NoiseAwareMultiheadAttention(nn.Module):
+    def __init__(self, bridge_dim, noise_dim, num_heads, dropout):
+        super().__init__()
+        self.q_proj = nn.Linear(bridge_dim + noise_dim, bridge_dim)
+        self.k_proj = nn.Linear(bridge_dim + noise_dim, bridge_dim)
+        self.v_proj = nn.Linear(bridge_dim + noise_dim, bridge_dim)
+        self.mha = nn.MultiheadAttention(
+            bridge_dim, num_heads=num_heads, dropout=dropout, batch_first=True
+        )
+
+    def forward(self, x, noise):
+        # Expand noise
+        noise = noise.unsqueeze(1).expand(
+            -1, x.shape[1], -1
+        )  # [B, N_patches, noise_dim]
+        x = torch.cat([x, noise], dim=-1)  # Concatenate noise to Q, K, V
+
+        # Compute attention
+        q, k, v = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        attn_out, _ = self.mha(q, k, v)
+        return attn_out
+
+
 class MultiHeadAttentionBridge(nn.Module):
     def __init__(self, in_dim, bridge_dim, noise_dim=128, n_layers=1):
         super().__init__()
@@ -32,8 +55,8 @@ class MultiHeadAttentionBridge(nn.Module):
             self.layers.append(
                 nn.ModuleDict(
                     {
-                        "mha": nn.MultiheadAttention(
-                            bridge_dim, num_heads=8, dropout=0.1, batch_first=True
+                        "mha": NoiseAwareMultiheadAttention(
+                            bridge_dim, noise_dim, num_heads=8, dropout=0.1
                         ),
                         "norm1": ConditionalLayerNorm(bridge_dim, noise_dim),
                         "norm2": ConditionalLayerNorm(bridge_dim, noise_dim),
@@ -48,6 +71,7 @@ class MultiHeadAttentionBridge(nn.Module):
             )
 
         self.output_norm = ConditionalLayerNorm(bridge_dim, noise_dim)
+        self.gate_param = nn.Parameter(torch.tensor(0.5))
 
     def forward(self, x, noise_embedding):
         # x shape: [B, N_patches, C]
@@ -75,14 +99,15 @@ class MultiHeadAttentionBridge(nn.Module):
         for layer in self.layers:
             # Attention
             normed_x = layer["norm1"](x, noise_embedding)
-            attn_out, _ = layer["mha"](normed_x, normed_x, normed_x)
+            attn_out = layer["mha"](normed_x, noise_embedding)
             x = x + attn_out
 
             # FFN
             ffn_out = layer["ff"](layer["norm2"](x, noise_embedding))
             x = x + ffn_out
 
-        x = x + main_identity
+        gate = torch.sigmoid(self.gate_param)
+        x = x + gate * main_identity
 
         return self.output_norm(x, noise_embedding)
 
