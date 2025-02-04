@@ -474,7 +474,7 @@ class DiagnosticCallback(L.Callback):
             moving_average(torch.tensor(self.val_mae), 10), color="orange", label="MAE"
         )
         ax2.legend(loc="upper right")
-        plt.title("Train Variance vs MAE")
+        plt.title("Val Variance vs MAE")
 
         plt.tight_layout()
         plt.savefig(
