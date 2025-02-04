@@ -454,3 +454,22 @@ class DiagnosticCallback(L.Callback):
         )
 
         plt.close()
+
+    def on_fit_end(self, trainer, pl_module):
+        # Convert any tensors/numpy arrays to Python types
+        def convert_to_serializable(obj):
+            if hasattr(obj, "tolist"):  # Handle tensors/numpy arrays
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(i) for i in obj]
+            else:
+                return obj
+
+        D = {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+
+        filename = f"{self.config.run_dir}/statistics.json"
+
+        with open(filename, "w") as f:
+            json.dump(D, f, indent=4)
