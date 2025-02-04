@@ -17,6 +17,18 @@ from matplotlib.ticker import ScalarFormatter
 matplotlib.use("Agg")
 
 
+def var_and_mae(predictions, y):
+    variance = torch.var(predictions[:, -1, ...], dim=1, unbiased=False)
+    variance = variance.detach().mean().cpu().numpy().item()
+
+    mean_pred = torch.mean(predictions[:, -1, ...], dim=1)
+    y_true = y[:, -1, ...]
+
+    mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
+
+    return variance, mae
+
+
 class TrainDataPlotterCallback(L.Callback):
     def __init__(self, dataloader, config):
         self.dataloader = dataloader
@@ -127,15 +139,17 @@ class TrainDataPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, config, freq=50):
-        (self.train_loss, self.val_loss, self.lr, self.snr_db, self.mae, self.var) = (
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-        )
+    def __init__(self, config, freq=25):
+        (
+            self.train_loss,
+            self.train_mae,
+            self.train_var,
+            self.val_loss,
+            self.lr,
+            self.val_snr,
+            self.val_mae,
+            self.val_var,
+        ) = ([], [], [], [], [], [], [], [])
 
         self.gradients = {
             "encoder": [],
@@ -160,7 +174,7 @@ class DiagnosticCallback(L.Callback):
         assert len(trainer.optimizers) > 0, "No optimizer found"
         self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
 
-        if trainer.global_step % self.freq == 0:
+        if batch_idx % self.freq == 0:
             # c) gradients
             grads = analyze_gradients(pl_module)
 
@@ -169,6 +183,16 @@ class DiagnosticCallback(L.Callback):
                     self.gradients[k].append(grads[k]["mean"].item())
                 except KeyError as e:
                     pass
+
+            # d) variance and l1
+
+            predictions = outputs["predictions"]
+
+            _, y = batch
+
+            var, mae = var_and_mae(predictions, y)
+            self.train_var.append(var)
+            self.train_mae.append(mae)
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
@@ -193,16 +217,12 @@ class DiagnosticCallback(L.Callback):
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
-            self.snr_db.append((snr_real["snr_db"], snr_pred["snr_db"]))
+            self.val_snr.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
-            variance = torch.var(
-                predictions[:, -1, ...], dim=1, unbiased=False
-            )
-            self.var.append(variance.mean().cpu().numpy().item())
-
-            mean_pred = torch.mean(predictions[:, -1, ...], dim=1)
-            y_true = y[:, -1, ...]
-            self.mae.append(torch.mean(torch.abs(y_true - mean_pred)).cpu().numpy().item())
+            # d) variance and l1
+            var, mae = var_and_mae(predictions, y)
+            self.val_var.append(var)
+            self.val_mae.append(mae)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
@@ -312,7 +332,7 @@ class DiagnosticCallback(L.Callback):
 
         uncertainty = torch.var(pred[-1], dim=0)
         plt.subplot(3, 4, 10)  # Adjust subplot number as needed
-        plt.title("Prediction Uncertainty")
+        plt.title("Member Variance")
         plt.imshow(uncertainty.cpu(), cmap="Reds")
         plt.colorbar()
 
@@ -321,15 +341,8 @@ class DiagnosticCallback(L.Callback):
         error_map = torch.abs(mean_pred - truth[-1])
 
         plt.subplot(3, 4, 11)
-        plt.title("Spatial Error Distribution")
+        plt.title("Spatial MAE")
         plt.imshow(error_map.cpu())
-        plt.colorbar()
-
-        variance = torch.var(pred[-1], dim=0, unbiased=True)  # Shape (B, H, W)
-
-        plt.subplot(3, 4, 12)
-        plt.title("Member Variance Distribution")
-        plt.imshow(variance.cpu().numpy())
         plt.colorbar()
 
         plt.tight_layout()
@@ -394,9 +407,9 @@ class DiagnosticCallback(L.Callback):
         plt.legend(loc="upper left")
 
         plt.subplot(233)
-        snr_db = np.array(self.snr_db).T
-        snr_real = torch.tensor(snr_db[0])
-        snr_pred = torch.tensor(snr_db[1])
+        val_snr = np.array(self.val_snr).T
+        snr_real = torch.tensor(val_snr[0])
+        snr_pred = torch.tensor(val_snr[1])
         plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 10),
@@ -428,19 +441,40 @@ class DiagnosticCallback(L.Callback):
         plt.legend()
 
         plt.subplot(235)
-        plt.plot(self.var, color="blue", alpha=0.3)
+        plt.plot(self.train_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.var), 10), color="blue", label="Variance"
+            moving_average(torch.tensor(self.train_var), 10),
+            color="blue",
+            label="Variance",
         )
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
-        ax2.plot(self.mae, color="orange", alpha=0.3)
+        ax2.plot(self.train_mae, color="orange", alpha=0.3)
         ax2.plot(
-            moving_average(torch.tensor(self.mae), 10), color="orange", label="MAE"
+            moving_average(torch.tensor(self.train_mae), 10),
+            color="orange",
+            label="MAE",
         )
         ax2.legend(loc="upper right")
-        plt.title("Variance vs MAE")
+        plt.title("Train Variance vs MAE")
+
+        plt.subplot(236)
+        plt.plot(self.val_var, color="blue", alpha=0.3)
+        plt.plot(
+            moving_average(torch.tensor(self.val_var), 10),
+            color="blue",
+            label="Variance",
+        )
+        plt.legend(loc="upper left")
+
+        ax2 = plt.gca().twinx()
+        ax2.plot(self.val_mae, color="orange", alpha=0.3)
+        ax2.plot(
+            moving_average(torch.tensor(self.val_mae), 10), color="orange", label="MAE"
+        )
+        ax2.legend(loc="upper right")
+        plt.title("Train Variance vs MAE")
 
         plt.tight_layout()
         plt.savefig(
