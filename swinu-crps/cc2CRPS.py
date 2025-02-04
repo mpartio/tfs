@@ -190,9 +190,13 @@ class cc2CRPS(nn.Module):
         self.skip3 = NoisySkipConnection(dim * 4)
 
         # Attention Bridge
-        self.bridge = MultiHeadAttentionBridge(
-            in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
-        )
+
+        if config.num_layers:
+            self.bridge = MultiHeadAttentionBridge(
+                in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
+            )
+        else:
+            self.bridge = nn.Identity()
 
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
