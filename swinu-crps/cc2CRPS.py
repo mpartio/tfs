@@ -93,9 +93,6 @@ class MultiHeadAttentionBridge(nn.Module):
         # Main identity for deep residual
         main_identity = x
 
-        # Prevent NaNs
-        #        x = F.layer_norm(x, (x.shape[-1],))
-
         for layer in self.layers:
             # Attention
             normed_x = layer["norm1"](x, noise_embedding)
@@ -281,7 +278,6 @@ class cc2CRPS(nn.Module):
     def _forward(self, x, noise_embedding):
         # Encoder
         x1 = self.encoder1(x, noise_embedding)
-
         x2 = self.encoder2(self.downsample1(x1, noise_embedding), noise_embedding)
         x3 = self.encoder3(self.downsample2(x2, noise_embedding), noise_embedding)
 
@@ -343,7 +339,6 @@ class cc2CRPS(nn.Module):
         delta = delta.view(B, M, 1, H, W)
 
         predictions = x[:, :, -1:, ...] + delta
-        #        predictions = torch.clamp(predictions, 0, 1)
 
         return delta, predictions
 
