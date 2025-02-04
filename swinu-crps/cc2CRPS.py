@@ -193,7 +193,7 @@ class cc2CRPS(nn.Module):
                 in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
             )
         else:
-            self.bridge = nn.Identity()
+            self.bridge = lambda x, y: x
 
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
