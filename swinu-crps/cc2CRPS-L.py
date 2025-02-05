@@ -76,6 +76,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
 
         if config.apply_smoothing:
             x = gaussian_smooth(x)
+            y = gaussian_smooth(y)
 
         loss, tendencies, predictions = roll_forecast(
             self,
@@ -91,6 +92,11 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
+
+        if config.apply_smoothing:
+            x = gaussian_smooth(x)
+            y = gaussian_smooth(y)
+
         loss, tendencies, predictions = roll_forecast(
             self,
             x,
