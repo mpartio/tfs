@@ -379,7 +379,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("Training loss")
         plt.plot(train_loss, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.train_loss), 50),
+            moving_average(torch.tensor(self.train_loss), 60),
             color="blue",
             label="Train Loss",
         )
@@ -399,7 +399,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(232)
         plt.plot(val_loss, color="orange", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.val_loss), 50),
+            moving_average(torch.tensor(self.val_loss), 60),
             color="orange",
             label="Val Loss",
         )
@@ -412,19 +412,19 @@ class DiagnosticCallback(L.Callback):
         snr_pred = torch.tensor(val_snr[1])
         plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(snr_real, 10),
+            moving_average(snr_real, 30),
             color="blue",
             label="Real",
         )
         plt.plot(snr_pred, color="orange", alpha=0.3)
-        plt.plot(moving_average(snr_pred, 10), color="orange", label="Predicted")
+        plt.plot(moving_average(snr_pred, 30), color="orange", label="Predicted")
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
         residual = snr_real - snr_pred
 
         ax2.plot(residual, color="green", alpha=0.3)
-        ax2.plot(moving_average(residual, 10), label="Residual", color="green")
+        ax2.plot(moving_average(residual, 30), label="Residual", color="green")
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
@@ -437,13 +437,13 @@ class DiagnosticCallback(L.Callback):
             data = torch.tensor(data)
             color = colors.pop(0)
             plt.plot(data, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 10), color=color, label=section)
+            plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
 
         plt.subplot(235)
         plt.plot(self.train_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.train_var), 10),
+            moving_average(torch.tensor(self.train_var), 30),
             color="blue",
             label="Variance",
         )
@@ -452,7 +452,7 @@ class DiagnosticCallback(L.Callback):
         ax2 = plt.gca().twinx()
         ax2.plot(self.train_mae, color="orange", alpha=0.3)
         ax2.plot(
-            moving_average(torch.tensor(self.train_mae), 10),
+            moving_average(torch.tensor(self.train_mae), 30),
             color="orange",
             label="MAE",
         )
@@ -462,7 +462,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(236)
         plt.plot(self.val_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.val_var), 10),
+            moving_average(torch.tensor(self.val_var), 30),
             color="blue",
             label="Variance",
         )
@@ -471,7 +471,7 @@ class DiagnosticCallback(L.Callback):
         ax2 = plt.gca().twinx()
         ax2.plot(self.val_mae, color="orange", alpha=0.3)
         ax2.plot(
-            moving_average(torch.tensor(self.val_mae), 10), color="orange", label="MAE"
+            moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
         )
         ax2.legend(loc="upper right")
         plt.title("Val Variance vs MAE")
