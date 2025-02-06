@@ -7,8 +7,8 @@ import os
 import sys
 import lightning as L
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset, Subset
-from zarr_dataset import HourlyZarrDataset, HourlyStreamZarrDataset, SplitWrapper
+import zarr
+from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 
 
 def augment_data(x, y):
@@ -39,113 +39,148 @@ def augment_data(x, y):
     return x, y
 
 
-def partition(tensor, n_x, n_y):
+def gaussian_smooth(x, sigma=0.8, kernel_size=5):
+    if kernel_size % 2 == 0:
+        kernel_size = kernel_size + 1
 
-    if tensor.ndim == 5:
-        S, T, H, W, C = tensor.shape
+    # Create 1D Gaussian kernel
+    gauss = torch.arange(-(kernel_size // 2), kernel_size // 2 + 1, dtype=torch.float32)
+    gauss = torch.exp(-(gauss**2) / (2 * sigma**2))
+    gauss = gauss / gauss.sum()
+
+    # Create 2D kernel by outer product
+    kernel = gauss[:, None] @ gauss[None, :]
+    kernel = kernel / kernel.sum()
+
+    # Reshape kernel for PyTorch conv2d
+    kernel = kernel[None, None, :, :]
+
+    orig_shape = x.shape
+
+    # Add batch dimension if needed
+    if len(x.shape) == 3:
+        x = x.unsqueeze(0)
+        B, C, H, W = x.shape
+    elif len(x.shape) == 5:
+        B, T, C, H, W = x.shape
+        x = x.reshape(B * T, C, H, W)
     else:
-        # era5 data
-        T, H, W, C = tensor.shape
+        B, C, H, W = x.shape
 
-    group_size = n_x + n_y
+    assert x.ndim == 4, "data needs to have 4 dimensions, got: {}".format(x.shape)
 
-    # Reshape into groups of (n_x + n_y), with padding if necessary
-    num_groups = T // group_size
-    new_length = num_groups * group_size
+    # Move kernel to same device as input
+    kernel = kernel.to(x.device)
 
-    if tensor.ndim == 5:
-        padded_tensor = tensor[:, :new_length]
+    # Apply smoothing channel by channel
+    pad = kernel_size // 2
+    smoothed = []
+    for c in range(C):
+        channel = x[:, c : c + 1, ...]
+        channel = F.pad(channel, (pad, pad, pad, pad), mode="reflect")
+        channel = F.conv2d(channel, kernel)
+        smoothed.append(channel)
 
-        # Reshape into groups
-        reshaped = padded_tensor.reshape(S, -1, group_size, H, W)
+    x = torch.cat(smoothed, dim=1)
+    x = torch.clamp(x, 0, 1)
 
-        # Merge streams into one dim
-        reshaped = reshaped.reshape(
-            S * reshaped.shape[1], group_size, H, W
-        )  # N, G, H, W
-    else:
-        padded_tensor = tensor[:new_length]
-
-        # Reshape into groups
-        reshaped = padded_tensor.reshape(-1, group_size, H, W)
-
-    # Extract single elements and blocks
-    x = reshaped[:, :n_x]
-    y = reshaped[:, n_x:]
-
-    assert x.shape[0] > 0, "Not enough elements"
-
-    return x, y
+    x = x.reshape(orig_shape)
+    return x
 
 
-def shuffle_to_hourly_streams(data):
-    T, H, W, C = data.shape
-    N = (T // 4) * 4
-    data = data[:N, ...]
+class HourlyZarrDataset(Dataset):
+    def __init__(self, zarr_path, group_size):
+        # Open the zarr array without loading data
+        self.data = zarr.open(zarr_path, mode="r")
+        self.group_size = group_size
+        self.time_steps, _, _, _ = self.data.shape
 
-    data = data.reshape(-1, 4, H, W, C).transpose(1, 0, 2, 3, 4)
+        assert self.time_steps >= group_size
 
-    return data
+    def __len__(self):
+        return self.time_steps - self.group_size - 1
+
+    def __getitem__(self, idx):
+        # Get consecutive samples
+        samples = self.data[idx : idx + self.group_size]
+
+        # Convert to tensor
+        samples = torch.from_numpy(samples)
+
+        return samples
 
 
-def read_data(stage, dataset_size, n_x, n_y):
-    filename = f"../data/{stage}-{dataset_size}.npz"
-    print("Reading data from {}".format(filename))
+class HourlyStreamZarrDataset(Dataset):
+    def __init__(self, zarr_path, group_size):
+        # Open the zarr array without loading data
+        self.data = zarr.open(zarr_path, mode="r")
+        self.num_streams, self.time_steps, _, _, _ = self.data.shape
 
-    data = np.load(filename)["arr_0"]
+        assert self.num_streams == 4, "Only 4 streams are supported"
 
-    if dataset_size != "era5":
-        data = shuffle_to_hourly_streams(data)
-    data = torch.tensor(data)
-    x_data, y_data = partition(data, n_x, n_y)
+        self.group_size = group_size
 
-    if y_data.ndim == 4:
-        y_data = y_data.unsqueeze(1)
+        self.valid_starts = self._get_valid_starts()
 
-    y_data = y_data.permute(0, 2, 1, 3, 4)
+    def _get_valid_starts(self):
+        # We need enough room for group_size consecutive samples
+        max_start = self.time_steps - self.group_size + 1
+        return np.arange(0, max_start)
 
-    assert x_data.ndim == 4, "invalid dimensions for x: {}".x_data.shape
-    assert y_data.ndim == 5, "invalid dimensions for y: {}".y_data.shape
+    def __len__(self):
+        return len(self.valid_starts) * self.num_streams
 
-    return TensorDataset(x_data, y_data)
+    def __getitem__(self, idx):
+        # Convert flat index to (stream_idx, start_idx)
+        stream_idx = idx % self.num_streams
+        start_pos = self.valid_starts[idx // self.num_streams]
+
+        # Get consecutive samples for this stream
+        samples = self.data[stream_idx, start_pos : start_pos + self.group_size]
+
+        # Convert to tensor
+        samples = torch.from_numpy(samples)
+
+        return samples
+
+
+class SplitWrapper:
+    def __init__(self, dataset, n_x, apply_smoothing=False):
+        self.dataset = dataset
+        self.n_x = n_x
+        self.apply_smoothing = apply_smoothing
+
+    def __getitem__(self, idx):
+        samples = self.dataset[idx]  # shape is T, H, W, C
+
+        # Split into x and y
+        x = samples[: self.n_x]  # shape: [Tx, H, W, C]
+        y = samples[self.n_x :]  # shape: [Ty, H, W, C]
+        x = x.squeeze(-1)  # shape: [Tx, H, W]
+
+        # Reshape y: move C after T
+        y = y.permute(0, 3, 1, 2)  # shape: [Ty, C, H, W]
+
+        if self.apply_smoothing:
+            x = gaussian_smooth(x)
+            y = gaussian_smooth(y)
+
+        return x, y
+
+    def __len__(self):
+        return len(self.dataset)
 
 
 class cc2DataModule(L.LightningDataModule):
-    def __init__(self, batch_size, n_x=1, n_y=1, dataset_size="150k"):
-        self.batch_size = batch_size
-        self.n_x = n_x
-        self.n_y = n_y
-
-        self.cc2_train = None
-        self.cc2_val = None
-        self.cc2_test = None
-
-        self.setup(dataset_size, n_x, n_y)
-
-    def setup(self, dataset_size, n_x, n_y):
-        self.cc2_val = read_data("val", dataset_size, n_x, n_y)
-        self.cc2_train = read_data("train", dataset_size, n_x, n_y)
-
-        try:
-            self.cc2_test = read_data("test", dataset_size, n_x, n_y)
-        except FileNotFoundError as e:
-            print("Test data not found for dataset {}".format(dataset_size))
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.cc2_train, batch_size=self.batch_size, shuffle=True, num_workers=2
-        )
-
-    def val_dataloader(self):
-        return DataLoader(self.cc2_val, batch_size=self.batch_size, num_workers=2)
-
-    def test_dataloader(self):
-        if self.cc2_test is not None:
-            return DataLoader(self.cc2_test, batch_size=self.batch_size)
-
-
-class cc2ZarrModule(L.LightningDataModule):
-    def __init__(self, zarr_path: str, batch_size: int, n_x: int = 1, n_y: int = 1, limit_to: int = None):
+    def __init__(
+        self,
+        zarr_path: str,
+        batch_size: int,
+        n_x: int = 1,
+        n_y: int = 1,
+        limit_to: int = None,
+        apply_smoothing: bool = False,
+    ):
         self.batch_size = batch_size
         self.n_x = n_x
         self.n_y = n_y
@@ -155,6 +190,7 @@ class cc2ZarrModule(L.LightningDataModule):
         self.cc2_val = None
         self.cc2_test = None
         self.limit_to = limit_to
+        self.apply_smoothing = apply_smoothing
 
         print("Reading data from {}".format(zarr_path))
         self.setup(zarr_path)
@@ -167,7 +203,7 @@ class cc2ZarrModule(L.LightningDataModule):
         indices = np.arange(len(ds))
 
         if self.limit_to is not None:
-            indices = indices[:self.limit_to]
+            indices = indices[: self.limit_to]
         rng = np.random.RandomState(0)
         rng.shuffle(indices)
 

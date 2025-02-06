@@ -10,13 +10,12 @@ from datetime import datetime, timedelta
 from cc2CRPS import cc2CRPS
 from crps import AlmostFairCRPSLoss
 from util import calculate_wavelet_snr
-from cc2CRPS_data import cc2DataModule, cc2ZarrModule
+from cc2CRPS_data import cc2DataModule
 from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
 from cc2util import (
     roll_forecast,
     get_latest_run_dir,
     get_next_run_number,
-    gaussian_smooth,
 )
 from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
@@ -74,10 +73,6 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
 
-        if config.apply_smoothing:
-            x = gaussian_smooth(x)
-            y = gaussian_smooth(y)
-
         loss, tendencies, predictions = roll_forecast(
             self,
             x,
@@ -92,10 +87,6 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-
-        if config.apply_smoothing:
-            x = gaussian_smooth(x)
-            y = gaussian_smooth(y)
 
         loss, tendencies, predictions = roll_forecast(
             self,
@@ -176,23 +167,14 @@ print("Run directory: ", config.run_dir)
 
 create_directory_structure(config.run_dir)
 
-data_path = config.data_path
-
-if data_path.endswith(".zarr"):
-    cc2Data = cc2ZarrModule(
-        zarr_path=data_path,
-        batch_size=config.batch_size * config.num_devices,
-        n_x=config.history_length,
-        n_y=config.rollout_length,
-        limit_to=config.limit_data_to,
-    )
-else:
-    cc2Data = cc2DataModule(
-        batch_size=config.batch_size * config.num_devices,
-        n_x=config.history_length,
-        n_y=config.rollout_length,
-        dataset_size=config.data_path,
-    )
+cc2Data = cc2DataModule(
+    zarr_path=config.data_path,
+    batch_size=config.batch_size * config.num_devices,
+    n_x=config.history_length,
+    n_y=config.rollout_length,
+    limit_to=config.limit_data_to,
+    apply_smoothing=config.apply_smoothing,
+)
 
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()

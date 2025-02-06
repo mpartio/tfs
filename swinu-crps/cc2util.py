@@ -5,47 +5,6 @@ import os
 import time
 
 
-def gaussian_smooth(x, sigma=0.8, kernel_size=5):
-    if kernel_size % 2 == 0:
-        kernel_size = kernel_size + 1
-
-    # Create 1D Gaussian kernel
-    gauss = torch.arange(-(kernel_size // 2), kernel_size // 2 + 1, dtype=torch.float32)
-    gauss = torch.exp(-(gauss**2) / (2 * sigma**2))
-    gauss = gauss / gauss.sum()
-
-    # Create 2D kernel by outer product
-    kernel = gauss[:, None] @ gauss[None, :]
-    kernel = kernel / kernel.sum()
-
-    # Reshape kernel for PyTorch conv2d
-    kernel = kernel[None, None, :, :]
-
-    # Add batch dimension if needed
-    if len(x.shape) == 3:
-        x = x.unsqueeze(0)
-        squeeze_back = True
-    else:
-        squeeze_back = False
-
-    # Move kernel to same device as input
-    kernel = kernel.to(x.device)
-
-    # Apply smoothing channel by channel
-    pad = kernel_size // 2
-    smoothed = []
-    for c in range(x.shape[1]):
-        channel = x[:, c : c + 1]
-        channel = F.pad(channel, (pad, pad, pad, pad), mode="reflect")
-        channel = F.conv2d(channel, kernel)
-        smoothed.append(channel)
-
-    x = torch.cat(smoothed, dim=1)
-    x = torch.clamp(x, 0, 1)
-
-    return x.squeeze(0) if squeeze_back else x
-
-
 def moving_average(arr, window_size):
     """
     Calculate the running mean of a 1D array using a sliding window.
