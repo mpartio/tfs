@@ -11,17 +11,20 @@ from cc2CRPS import cc2CRPS
 from crps import AlmostFairCRPSLoss
 from util import calculate_wavelet_snr
 from cc2CRPS_data import cc2DataModule
-from cc2CRPS_callbacks import TrainDataPlotterCallback, DiagnosticCallback
+from cc2CRPS_callbacks import (
+    TrainDataPlotterCallback,
+    DiagnosticCallback,
+    LazyLoggerCallback,
+)
 from cc2util import (
     roll_forecast,
     get_latest_run_dir,
     get_next_run_number,
 )
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
 from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
 from dataclasses import asdict
 from config import get_config, get_args, TrainingConfig
-from pytorch_lightning.loggers import CSVLogger
 
 
 def read_checkpoint(file_path):
@@ -165,8 +168,6 @@ config.run_number = new_run_number
 print("Starting run at {}".format(datetime.now()))
 print("Run directory: ", config.run_dir)
 
-create_directory_structure(config.run_dir)
-
 cc2Data = cc2DataModule(
     zarr_path=config.data_path,
     batch_size=config.batch_size * config.num_devices,
@@ -190,8 +191,13 @@ trainer = L.Trainer(
         TrainDataPlotterCallback(train_loader, config),
         DiagnosticCallback(config),
         ModelCheckpoint(monitor="val_loss", dirpath=f"{config.run_dir}/models"),
+        LambdaCallback(
+            on_sanity_check_end=lambda trainer, pl_module: create_directory_structure(
+                config.run_dir
+            )
+        ),
+        LazyLoggerCallback(config),
     ],
-    logger=CSVLogger(f"{config.run_dir}/logs"),
     gradient_clip_val=1.0,
 )
 

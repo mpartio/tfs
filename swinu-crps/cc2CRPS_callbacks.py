@@ -13,6 +13,7 @@ from util import calculate_wavelet_snr
 from datetime import datetime
 from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
+from pytorch_lightning.loggers import CSVLogger
 
 matplotlib.use("Agg")
 
@@ -507,3 +508,17 @@ class DiagnosticCallback(L.Callback):
 
         with open(filename, "w") as f:
             json.dump(D, f, indent=4)
+
+
+class LazyLoggerCallback(L.Callback):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.logger_created = False
+
+    def on_train_start(self, trainer, pl_module):
+        """This runs after the sanity check is successful."""
+        if not self.logger_created:
+            trainer.logger = CSVLogger(f"{self.config.run_dir}/logs")
+            self.logger_created = True  # Prevent multiple reassignments
+            print(f"Logger initialized at {self.config.run_dir}/logs")

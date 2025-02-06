@@ -147,7 +147,6 @@ def get_next_run_number(base_dir):
             next_num = max([int(d) for d in subdirs], default=0) + 1
 
         # Write for other ranks to read
-        os.makedirs(base_dir, exist_ok=True)
         with open(f"next_run.txt", "w") as f:
             f.write(str(next_num))
 
