@@ -97,10 +97,11 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
 def analyze_gradients(model):
     # Group gradients by network section
     gradient_stats = {
-        "encoder": [],  # Encoder blocks
-        "attention": [],  # Attention blocks
-        "decoder": [],  # Decoder blocks
-        "prediction": [],  # Final head
+        "encoder": [],
+        "attention": [],
+        "decoder": [],
+        "prediction": [],
+        "skip": [],
     }
 
     for name, param in model.named_parameters():
@@ -115,6 +116,8 @@ def analyze_gradients(model):
                 gradient_stats["attention"].append(grad_norm)
             elif "prediction_head" in name:
                 gradient_stats["prediction"].append(grad_norm)
+            elif "skip" in name:
+                gradient_stats["skip"].append(grad_norm)
 
     # Compute statistics for each section
     stats = {}

@@ -8,6 +8,7 @@ import platform
 import lightning as L
 import sys
 import config
+import json
 from cc2util import roll_forecast, moving_average, analyze_gradients
 from util import calculate_wavelet_snr
 from datetime import datetime
@@ -152,11 +153,19 @@ class DiagnosticCallback(L.Callback):
             self.val_var,
         ) = ([], [], [], [], [], [], [], [])
 
-        self.gradients = {
+        self.gradients_mean = {
             "encoder": [],
             "decoder": [],
             "attention": [],
             "prediction": [],
+            "skip": [],
+        }
+        self.gradients_std = {
+            "encoder": [],
+            "decoder": [],
+            "attention": [],
+            "prediction": [],
+            "skip": [],
         }
 
         self.freq = freq
@@ -179,9 +188,10 @@ class DiagnosticCallback(L.Callback):
             # c) gradients
             grads = analyze_gradients(pl_module)
 
-            for k in self.gradients.keys():
+            for k in self.gradients_mean.keys():
                 try:
-                    self.gradients[k].append(grads[k]["mean"].item())
+                    self.gradients_mean[k].append(grads[k]["mean"].item())
+                    self.gradients_std[k].append(grads[k]["std"].item())
                 except KeyError as e:
                     pass
 
@@ -360,7 +370,7 @@ class DiagnosticCallback(L.Callback):
         plt.close()
 
     def plot_history(self, epoch):
-        plt.figure(figsize=(16, 8))
+        plt.figure(figsize=(20, 8))
         plt.suptitle(
             "{} at epoch {} (host={}, time={})".format(
                 sys.argv[0],
@@ -376,7 +386,7 @@ class DiagnosticCallback(L.Callback):
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
 
-        plt.subplot(231)
+        plt.subplot(241)
         plt.title("Training loss")
         plt.plot(train_loss, color="blue", alpha=0.3)
         plt.plot(
@@ -397,7 +407,7 @@ class DiagnosticCallback(L.Callback):
         if len(val_loss) > 500:
             val_loss = val_loss[20:]
 
-        plt.subplot(232)
+        plt.subplot(242)
         plt.plot(val_loss, color="orange", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_loss), 60),
@@ -407,7 +417,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("Validation loss")
         plt.legend(loc="upper left")
 
-        plt.subplot(233)
+        plt.subplot(243)
         val_snr = np.array(self.val_snr).T
         snr_real = torch.tensor(val_snr[0])
         snr_pred = torch.tensor(val_snr[1])
@@ -429,19 +439,35 @@ class DiagnosticCallback(L.Callback):
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
-        plt.subplot(234)
+        plt.subplot(244)
         plt.yscale("log")
-        plt.title("Gradients")
+        plt.title("Gradients (mean)")
         colors = ["blue", "orange", "green", "red", "black", "purple"]
-        for section in self.gradients.keys():
-            data = self.gradients[section]
+        for section in self.gradients_mean.keys():
+            if section == "attention":
+                continue
+            data = self.gradients_mean[section]
             data = torch.tensor(data)
             color = colors.pop(0)
             plt.plot(data, color=color, alpha=0.3)
             plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
 
-        plt.subplot(235)
+        plt.subplot(245)
+        plt.yscale("log")
+        plt.title("Gradients (std)")
+        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        for section in self.gradients_std.keys():
+            if section == "attention":
+                continue
+            data = self.gradients_std[section]
+            data = torch.tensor(data)
+            color = colors.pop(0)
+            plt.plot(data, color=color, alpha=0.3)
+            plt.plot(moving_average(data, 30), color=color, label=section)
+        plt.legend()
+
+        plt.subplot(246)
         plt.plot(self.train_var, color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.train_var), 30),
@@ -460,7 +486,7 @@ class DiagnosticCallback(L.Callback):
         ax2.legend(loc="upper right")
         plt.title("Train Variance vs MAE")
 
-        plt.subplot(236)
+        plt.subplot(247)
         plt.plot(self.val_var, color="blue", alpha=0.3)
         plt.plot(
             moving_average(torch.tensor(self.val_var), 30),
