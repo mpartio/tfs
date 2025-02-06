@@ -278,6 +278,9 @@ class cc2CRPS(nn.Module):
 
         self.member_for = bool(os.environ.get("CC2_MEMBER_FOR", False))
 
+        if self.member_for:
+            print("Using manual 'for' for member processing")
+
     def _forward(self, x, noise_embedding):
         # Encoder
         x1 = self.encoder1(x, noise_embedding)
@@ -303,10 +306,10 @@ class cc2CRPS(nn.Module):
         return min_val + (max_val - min_val) * torch.sigmoid(T * x)
 
     def members_for(self, x, timestep):
-        predictions = []
-        deltas = []
+        B, M, _, H, W = x.shape
 
-        B, M, C, H, W = x.shape
+        deltas = torch.empty(B, M, 1, H, W, device=x.device)
+        predictions = torch.empty(B, M, 1, H, W, device=x.device)
 
         for m in range(M):
             # Process each member separately across the batch
@@ -315,29 +318,40 @@ class cc2CRPS(nn.Module):
             last_state = torch.clone(xm[:, -1:, :, :]).detach()  # Shape: (B, 1, H, W)
 
             xm = self.patch_embed(xm, timestep)  # Process patch embedding
-            features = torch.clone(xm).detach()
+            # features = torch.clone(xm).detach()
 
-            # Generate noise for this member across the batch
-            noise = torch.randn(B, self.noise_dim, device=x.device)
-            noise_embed = self.noise_processor(noise)
+            with torch.no_grad():
+                # Generate noise for this member across the batch
+                noise = torch.randn(B, self.noise_dim, device=x.device)
+                noise_embed = self.noise_processor(noise)
 
             # Get tendencies for this member
-            tendency = self._forward(features, noise_embed)
+            #            tendency = self._forward(features, noise_embed)
+            tendency = self._forward(xm, noise_embed)
 
             # Calculate allowed deltas
             max_allowed_delta = 1.0 - last_state
             min_allowed_delta = 0.0 - last_state
             delta = self.soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
 
-            deltas.append(delta)
-            predictions.append(last_state + delta)
+            deltas[:, m] = delta
+            predictions[:, m] = last_state + delta
 
-        deltas = torch.stack(deltas)
-        predictions = torch.stack(predictions)
+        assert list(predictions.shape) == [
+            B,
+            M,
+            1,
+            H,
+            W,
+        ], "invalid shape for predictions: {}, should be: {}".format(
+            predictions.shape, [B, M, 1, H, W]
+        )
 
         return deltas, predictions
 
     def members_vec(self, x, timestep):
+        B, M, C, H, W = x.shape
+
         # Reshape to treat batch and members as one batch dimension
         xm = x.reshape(B * M, C, H, W)
 
