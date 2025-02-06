@@ -77,32 +77,32 @@ class PatchExpand(nn.Module):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.expand = (
-            nn.Linear(dim, 2 * dim, bias=False) if dim_scale == 2 else nn.Identity()
-        )
+        self.expand = nn.Conv2d(dim, dim * 4, kernel_size=3, padding=1)
+        self.pixel_shuffle = nn.PixelShuffle(2)  # Upscale by factor of 2
         self.norm = ConditionalLayerNorm(dim // dim_scale, noise_dim)
-        self.refinement = nn.Conv2d(
-            dim // dim_scale, dim // dim_scale, kernel_size=3, padding=1, stride=1
+        self.channel_reduction = nn.Conv2d(
+            dim, dim // dim_scale, kernel_size=1, stride=1, bias=False
         )
 
     def forward(self, x, noise_embedding):
-        """
-        x: B, H*W, C
-        """
         H, W = self.input_resolution
-        x = self.expand(x)
         B, L, C = x.shape
         assert L == H * W, "input feature has wrong size"
 
-        x = x.view(B, H, W, C)
-        x = rearrange(x, "b h w (p1 p2 c)-> b (h p1) (w p2) c", p1=2, p2=2, c=C // 4)
+        # Reshape for Conv2D processing
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2)
 
-        # Reshape for convolution
-        x = x.permute(0, 3, 1, 2)  # Convert to (B, C, H, W) for Conv2d
-        x = self.refinement(x)  # Refinement step
-        x = x.permute(0, 2, 3, 1)  # Convert back to (B, H, W, C)
+        # Apply PixelShuffle upsampling
+        x = self.expand(x)
+        x = self.pixel_shuffle(x)
 
-        x = x.view(B, -1, C // 4)
+        x = self.channel_reduction(x)
+
+        # Reshape back to (B, L, C) for LayerNorm
+        B, C, H, W = x.shape
+        x = x.permute(0, 2, 3, 1).view(B, -1, C)
+
+        # Apply normalization
         x = self.norm(x, noise_embedding)
 
         return x
@@ -113,42 +113,41 @@ class FinalPatchExpand_X4(nn.Module):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.dim_scale = dim_scale
-        self.expand = nn.Linear(dim, dim * dim_scale, bias=False)
-        self.output_dim = dim // dim_scale
+
+        self.expand = nn.Conv2d(dim, dim * dim_scale, kernel_size=3, padding=1)
+        self.pixel_shuffle = nn.PixelShuffle(2)
+        self.output_dim = dim // 2  # Output channel count after shuffle
         self.norm = ConditionalLayerNorm(self.output_dim, noise_dim)
         self.refinement = nn.Conv2d(
-            in_channels=self.output_dim,  # Match expanded output channels
+            in_channels=self.output_dim,
             out_channels=self.output_dim,
             kernel_size=3,
             padding=1,
         )
 
     def forward(self, x, noise_embedding):
-        """
-        x: B, H*W, C
-        """
         H, W = self.input_resolution
-
-        x = self.expand(x)
         B, L, C = x.shape
 
         assert L == H * W, "input feature has wrong size"
 
-        x = x.view(B, H, W, C)
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2)
 
-        x = rearrange(
-            x,
-            "b h w (p1 p2 c)-> b (h p1) (w p2) c",
-            p1=self.dim_scale,
-            p2=self.dim_scale,
-            c=C // (self.dim_scale**2),
-        )
+        # Expand channels and apply PixelShuffle
+        x = self.expand(x)  # Increase feature channels
+        x = self.pixel_shuffle(x)  # Upscale resolution by 4x
 
-        x = x.view(B, -1, self.output_dim)
+        # Convert back to (B, L, C) for normalization
+        B, C, H, W = x.shape
+        x = x.permute(0, 2, 3, 1).view(B, -1, C)  # (B, L, C)
+
+        # Apply normalization
         x = self.norm(x, noise_embedding)
-        x = x.reshape(B, H * 2, W * 2, C // 4).permute(0, 3, 1, 2)
-        x = self.refinement(x)
+
+        # Reshape back for refinement
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        x = self.refinement(x)  # Final refinement step
+        #        x = self.final_projection(x)
 
         return x
 
@@ -198,7 +197,7 @@ class NoiseProcessor(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(noise_dim, hidden_dim),
-            nn.GELU(),  # AIFS-CRPS uses GELU
+            nn.GELU(),
             nn.Linear(hidden_dim, noise_dim),
         )
         self.norm = nn.LayerNorm(noise_dim)
