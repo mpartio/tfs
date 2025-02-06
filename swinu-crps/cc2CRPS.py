@@ -15,6 +15,7 @@ from layers import (
 )
 import lightning as L
 import config
+import os
 
 
 class NoiseAwareMultiheadAttention(nn.Module):
@@ -275,6 +276,8 @@ class cc2CRPS(nn.Module):
         self.noise_processor = NoiseProcessor(self.noise_dim)
         self.n_members = config.num_members
 
+        self.member_for = bool(os.environ.get("CC2_MEMBER_FOR", False))
+
     def _forward(self, x, noise_embedding):
         # Encoder
         x1 = self.encoder1(x, noise_embedding)
@@ -296,25 +299,45 @@ class cc2CRPS(nn.Module):
         x = self.prediction_head(x)
         return x
 
-    def forward(self, x, timestep):
-        def soft_clamp(x, min_val, max_val, T=5):
-            return min_val + (max_val - min_val) * torch.sigmoid(T * x)
+    def soft_clamp(self, x, min_val, max_val, T=5):
+        return min_val + (max_val - min_val) * torch.sigmoid(T * x)
 
-        assert (
-            type(timestep) == int and timestep >= 1
-        ), f"timestep must be integer larger than zero, got: {timestep}"
-        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(
-            x.shape
-        )
+    def members_for(self, x, timestep):
+        predictions = []
+        deltas = []
 
         B, M, C, H, W = x.shape
-        timestep = 1 if timestep == 1 else 2
-        assert (
-            M == self.n_members
-        ), "input members does not match configuration: {} vs {}".format(
-            M, self.n_members
-        )
 
+        for m in range(M):
+            # Process each member separately across the batch
+            xm = x[:, m]  # Shape: (B, C, H, W)
+
+            last_state = torch.clone(xm[:, -1:, :, :]).detach()  # Shape: (B, 1, H, W)
+
+            xm = self.patch_embed(xm, timestep)  # Process patch embedding
+            features = torch.clone(xm).detach()
+
+            # Generate noise for this member across the batch
+            noise = torch.randn(B, self.noise_dim, device=x.device)
+            noise_embed = self.noise_processor(noise)
+
+            # Get tendencies for this member
+            tendency = self._forward(features, noise_embed)
+
+            # Calculate allowed deltas
+            max_allowed_delta = 1.0 - last_state
+            min_allowed_delta = 0.0 - last_state
+            delta = self.soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
+
+            deltas.append(delta)
+            predictions.append(last_state + delta)
+
+        deltas = torch.stack(deltas)
+        predictions = torch.stack(predictions)
+
+        return deltas, predictions
+
+    def members_vec(self, x, timestep):
         # Reshape to treat batch and members as one batch dimension
         xm = x.reshape(B * M, C, H, W)
 
@@ -333,14 +356,34 @@ class cc2CRPS(nn.Module):
         # Calculate allowed deltas for all members
         max_allowed_delta = 1.0 - last_state
         min_allowed_delta = 0.0 - last_state
-        delta = soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
+        delta = self.soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
 
         # Reshape back to separate batch and member dimensions
         delta = delta.view(B, M, 1, H, W)
 
         predictions = x[:, :, -1:, ...] + delta
-
         return delta, predictions
+
+    def forward(self, x, timestep):
+        assert (
+            type(timestep) == int and timestep >= 1
+        ), f"timestep must be integer larger than zero, got: {timestep}"
+        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(
+            x.shape
+        )
+
+        B, M, C, H, W = x.shape
+        timestep = 1 if timestep == 1 else 2
+        assert (
+            M == self.n_members
+        ), "input members does not match configuration: {} vs {}".format(
+            M, self.n_members
+        )
+
+        if self.member_for:
+            return self.members_for(x, timestep)
+
+        return self.members_vec(x, timestep)
 
 
 if __name__ == "__main__":
