@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from swinu_l_cond import (
-    ConditionalLayerNorm,
-)
 from layers import (
     PatchEmbedding,
     PatchMerging,
@@ -13,6 +10,7 @@ from layers import (
     BasicBlock,
     FinalPatchExpand_X4,
 )
+from swin import ConditionalLayerNorm
 import lightning as L
 import config
 import os

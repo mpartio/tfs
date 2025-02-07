@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from swinu_l_cond import SwinTransformerBlock, ConditionalLayerNorm
+from swin import SwinTransformerBlock, ConditionalLayerNorm
 from einops import rearrange
 
 
