@@ -94,45 +94,6 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
     return total_loss, tendencies, predictions
 
 
-def analyze_gradients(model):
-    # Group gradients by network section
-    gradient_stats = {
-        "encoder": [],
-        "attention": [],
-        "decoder": [],
-        "prediction": [],
-        "skip": [],
-    }
-
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad_norm = param.grad.abs().mean().item()
-
-            if "encoder" in name:
-                gradient_stats["encoder"].append(grad_norm)
-            elif "decoder" in name:
-                gradient_stats["decoder"].append(grad_norm)
-            elif "bridge" in name:
-                gradient_stats["attention"].append(grad_norm)
-            elif "prediction_head" in name:
-                gradient_stats["prediction"].append(grad_norm)
-            elif "skip" in name:
-                gradient_stats["skip"].append(grad_norm)
-
-    # Compute statistics for each section
-    stats = {}
-    for section, grads in gradient_stats.items():
-        if grads:
-            stats[section] = {
-                "mean": np.mean(grads),
-                "std": np.std(grads),
-                "min": np.min(grads),
-                "max": np.max(grads),
-            }
-
-    return stats
-
-
 def get_next_run_number(base_dir):
     rank = int(os.environ.get("SLURM_PROCID", 0))
     next_run_file = f"next_run.txt"

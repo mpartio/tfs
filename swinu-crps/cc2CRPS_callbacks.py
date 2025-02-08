@@ -9,7 +9,7 @@ import lightning as L
 import sys
 import config
 import json
-from cc2util import roll_forecast, moving_average, analyze_gradients
+from cc2util import roll_forecast, moving_average
 from util import calculate_wavelet_snr
 from datetime import datetime
 from dataclasses import asdict
@@ -29,6 +29,48 @@ def var_and_mae(predictions, y):
     mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
 
     return variance, mae
+
+
+def analyze_gradients(model):
+    # Group gradients by network section
+    gradient_stats = {
+        "encoder": [],
+        "attention": [],
+        "decoder": [],
+        "prediction": [],
+        "skip": [],
+    }
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            for k in gradient_stats.keys():
+                if k in name:
+                    grad_norm = param.grad.abs().mean().item()
+                    gradient_stats[k].append(grad_norm)
+
+            #if "encoder" in name:
+            #    gradient_stats["encoder"].append(grad_norm)
+            #elif "decoder" in name:
+            #    gradient_stats["decoder"].append(grad_norm)
+            #elif "bridge" in name:
+            #    gradient_stats["attention"].append(grad_norm)
+            #elif "prediction_head" in name:
+            #    gradient_stats["prediction"].append(grad_norm)
+            #elif "skip" in name:
+            #    gradient_stats["skip"].append(grad_norm)
+
+    # Compute statistics for each section
+    stats = {}
+    for section, grads in gradient_stats.items():
+        if grads:
+            stats[section] = {
+                "mean": np.mean(grads).item(),
+                "std": np.std(grads).item(),
+                #"min": np.min(grads),
+                #"max": np.max(grads),
+            }
+
+    return stats
 
 
 class TrainDataPlotterCallback(L.Callback):
@@ -153,20 +195,8 @@ class DiagnosticCallback(L.Callback):
             self.val_var,
         ) = ([], [], [], [], [], [], [], [])
 
-        self.gradients_mean = {
-            "encoder": [],
-            "decoder": [],
-            "attention": [],
-            "prediction": [],
-            "skip": [],
-        }
-        self.gradients_std = {
-            "encoder": [],
-            "decoder": [],
-            "attention": [],
-            "prediction": [],
-            "skip": [],
-        }
+        self.gradients_mean = {}
+        self.gradients_std = {}
 
         self.freq = freq
         self.config = config
@@ -188,12 +218,14 @@ class DiagnosticCallback(L.Callback):
             # c) gradients
             grads = analyze_gradients(pl_module)
 
-            for k in self.gradients_mean.keys():
+            for k in grads.keys():
+                mean, std = grads[k]["mean"], grads[k]["std"]
                 try:
-                    self.gradients_mean[k].append(grads[k]["mean"].item())
-                    self.gradients_std[k].append(grads[k]["std"].item())
+                    self.gradients_mean[k].append(mean)
+                    self.gradients_std[k].append(std)
                 except KeyError as e:
-                    pass
+                    self.gradients_mean[k] = [mean]
+                    self.gradients_std[k] = [std]
 
             # d) variance and l1
 
@@ -530,10 +562,19 @@ class DiagnosticCallback(L.Callback):
 
         D = {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.float32):  # Convert float32 to float
+                return float(obj)
+            elif isinstance(obj, np.ndarray):  # Convert NumPy arrays to lists
+                return obj.tolist()
+            raise TypeError(
+                f"Object of type {type(obj).__name__} is not JSON serializable"
+            )
+
         filename = f"{self.config.run_dir}/statistics.json"
 
         with open(filename, "w") as f:
-            json.dump(D, f, indent=4)
+            json.dump(D, f, indent=4, default=convert_to_serializable)
 
 
 class LazyLoggerCallback(L.Callback):
