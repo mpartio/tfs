@@ -130,7 +130,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
             T_max=config.num_iterations - config.warmup_iterations,
-            eta_min=0,
+            eta_min=1e-7,
         )
         scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
 
