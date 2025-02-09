@@ -6,19 +6,12 @@ from einops import rearrange
 
 
 class PatchMerging(nn.Module):
-    r"""Patch Merging Layer.
-
-    Args:
-        input_resolution (tuple[int]): Resolution of input feature.
-        dim (int): Number of input channels.
-        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
-    """
-
-    def __init__(self, input_resolution, dim, noise_dim=128):
+    def __init__(self, input_resolution, dim, out_dim=None, noise_dim=128):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
+        self.out_dim = out_dim if out_dim else 2 * dim
+        self.reduction = nn.Linear(4 * dim, self.out_dim, bias=False)
         self.norm = ConditionalLayerNorm(4 * dim, noise_dim)
 
     def forward(self, x, noise_embedding):
@@ -73,15 +66,16 @@ class PatchEmbedding(nn.Module):
 
 
 class PatchExpand(nn.Module):
-    def __init__(self, input_resolution, dim, dim_scale=2, noise_dim=128):
+    def __init__(self, input_resolution, dim, out_dim=None, noise_dim=128):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
         self.expand = nn.Conv2d(dim, dim * 4, kernel_size=3, padding=1)
         self.pixel_shuffle = nn.PixelShuffle(2)  # Upscale by factor of 2
-        self.norm = ConditionalLayerNorm(dim // dim_scale, noise_dim)
+        self.out_dim = out_dim if out_dim else dim // 2
+        self.norm = ConditionalLayerNorm(self.out_dim, noise_dim)
         self.channel_reduction = nn.Conv2d(
-            dim, dim // dim_scale, kernel_size=1, stride=1, bias=False
+            dim, self.out_dim, kernel_size=1, stride=1, bias=False
         )
 
     def forward(self, x, noise_embedding):
@@ -114,9 +108,9 @@ class FinalPatchExpand_X4(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
 
-        self.expand = nn.Conv2d(dim, dim * dim_scale, kernel_size=3, padding=1)
+        self.expand = nn.Conv2d(dim, dim , kernel_size=3, padding=1)
         self.pixel_shuffle = nn.PixelShuffle(2)
-        self.output_dim = dim // 2  # Output channel count after shuffle
+        self.output_dim = dim // dim_scale
         self.norm = ConditionalLayerNorm(self.output_dim, noise_dim)
         self.refinement = nn.Conv2d(
             in_channels=self.output_dim,
@@ -130,7 +124,6 @@ class FinalPatchExpand_X4(nn.Module):
         B, L, C = x.shape
 
         assert L == H * W, "input feature has wrong size"
-
         x = x.view(B, H, W, C).permute(0, 3, 1, 2)
 
         # Expand channels and apply PixelShuffle
@@ -147,31 +140,46 @@ class FinalPatchExpand_X4(nn.Module):
         # Reshape back for refinement
         x = x.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
         x = self.refinement(x)  # Final refinement step
-        #        x = self.final_projection(x)
 
         return x
 
 
 class NoisySkipConnection(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim, out_dim=None):
         super().__init__()
+        self.out_dim = out_dim if out_dim else dim
+
         # Main feature transform
         self.transform = nn.Sequential(
-            nn.LayerNorm(dim), nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, dim)
+            nn.LayerNorm(self.out_dim),
+            nn.Linear(self.out_dim, self.out_dim),
+            nn.GELU(),
+            nn.Linear(self.out_dim, self.out_dim),
         )
 
         # Project noise embedding
-        self.noise_project = nn.Linear(128, dim)  # 128 is noise_dim
+        self.noise_project = nn.Linear(128, self.out_dim)  # 128 is noise_dim
 
         # Separate path to process noise
         self.noise_transform = nn.Sequential(
-            nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, dim)
+            nn.Linear(self.out_dim, self.out_dim),
+            nn.GELU(),
+            nn.Linear(self.out_dim, self.out_dim),
         )
+
+        self.dim = dim
+
+        if self.out_dim == dim:
+            self.proj = nn.Identity()
+        else:
+            self.proj = nn.Linear(dim, out_dim, bias=False)
 
     def forward(self, x_encoder, x_decoder, noise_embedding):
         # x_encoder: [B, L, C]
         # x_decoder: [B, L, C]
         # noise_embedding: [B, noise_dim]
+
+        x_encoder = self.proj(x_encoder)
 
         # Transform encoder features
         x_skip = self.transform(x_encoder)  # [B, L, C]

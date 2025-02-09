@@ -137,7 +137,7 @@ class cc2CRPS(nn.Module):
             num_blocks=config.num_blocks[0],
         )
 
-        self.skip1 = NoisySkipConnection(dim)
+        self.skip1 = NoisySkipConnection(dim, out_dim=dim*2)
 
         self.downsample1 = PatchMerging(
             dim=dim,
@@ -160,10 +160,11 @@ class cc2CRPS(nn.Module):
             num_blocks=config.num_blocks[1],
         )
 
-        self.skip2 = NoisySkipConnection(dim * 2)
+        self.skip2 = NoisySkipConnection(dim * 2,  dim * 4)
 
         self.downsample2 = PatchMerging(
             dim=dim * 2,
+            out_dim=dim * 6,
             input_resolution=(
                 input_h // 4,
                 input_w // 4,
@@ -172,7 +173,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.encoder3 = BasicBlock(
-            dim=dim * 4,
+            dim=dim * 6,
             num_heads=config.num_heads[2],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -183,20 +184,20 @@ class cc2CRPS(nn.Module):
             num_blocks=config.num_blocks[2],
         )
 
-        self.skip3 = NoisySkipConnection(dim * 4)
+        self.skip3 = NoisySkipConnection(dim * 6)
 
         # Attention Bridge
 
         if config.num_layers:
             self.bridge = MultiHeadAttentionBridge(
-                in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
+                in_dim=dim * 6, bridge_dim=dim * 6, n_layers=config.num_layers
             )
         else:
             self.bridge = lambda x, y: x
 
         # Decoder (mirroring encoder)
         self.decoder3 = BasicBlock(
-            dim=dim * 4,
+            dim=dim * 6,
             num_heads=config.num_heads[3],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -209,7 +210,8 @@ class cc2CRPS(nn.Module):
 
         # Upsample layers
         self.upsample2 = PatchExpand(
-            dim=dim * 4,
+            dim=dim * 6,
+            out_dim=dim * 4,
             input_resolution=(
                 input_h // 8,
                 input_w // 8,
@@ -218,7 +220,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.decoder2 = BasicBlock(
-            dim=dim * 2,
+            dim=dim * 4,
             num_heads=config.num_heads[4],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -231,7 +233,7 @@ class cc2CRPS(nn.Module):
 
         # Upsample layers
         self.upsample1 = PatchExpand(
-            dim=dim * 2,
+            dim=dim * 4,
             input_resolution=(
                 input_h // 4,
                 input_w // 4,
@@ -240,7 +242,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.decoder1 = BasicBlock(
-            dim=dim,
+            dim=dim * 2,
             num_heads=config.num_heads[5],
             window_size=config.window_size,
             noise_dim=noise_dim,
@@ -252,8 +254,8 @@ class cc2CRPS(nn.Module):
         )
 
         self.final_expand = FinalPatchExpand_X4(
-            dim=dim,
-            dim_scale=2,
+            dim=dim * 2,
+            dim_scale=4,
             input_resolution=(
                 input_h // 2,
                 input_w // 2,
@@ -400,7 +402,7 @@ class cc2CRPS(nn.Module):
 
 if __name__ == "__main__":
     model = cc2CRPS(config.get_config())
-    print(model)
+    #print(model)
     print(
         "Number of trainable parameters: {:,}".format(
             sum(p.numel() for p in model.parameters() if p.requires_grad)
