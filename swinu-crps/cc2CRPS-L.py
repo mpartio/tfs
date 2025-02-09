@@ -4,6 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import lightning as L
+import json
 import os
 from glob import glob
 from datetime import datetime, timedelta
@@ -22,12 +23,30 @@ from cc2util import (
     get_next_run_number,
 )
 from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
-from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import (
+    ChainedScheduler,
+    LinearLR,
+    CosineAnnealingLR,
+    LambdaLR,
+)
 from dataclasses import asdict
 from config import get_config, get_args, TrainingConfig
 
 
-def read_checkpoint(file_path):
+def read_config(file_path):
+    try:
+        with open(file_path) as f:
+            print(f"Loading config: {file_path}")
+            config = json.load(f)
+            config = config["config"]
+            config = TrainingConfig(**config)
+    except json.decoder.JSONDecodeError as e:
+        print("Failed to decode json at {}".format(file_path))
+        raise e
+    return config
+
+
+def read_checkpoint(file_path, config):
     try:
         # Find latest checkpoint
         checkpoints = glob(f"{file_path}/*.ckpt")
@@ -45,11 +64,10 @@ def read_checkpoint(file_path):
             new_k = k.replace("model.", "")
             new_state_dict[new_k] = v
 
-        config = TrainingConfig(**ckpt["config"])
         model = cc2CRPSModel(config)
         model.load_state_dict(new_state_dict)
 
-        return model, config
+        return model
 
     except ValueError as e:
         print("Model checkpoint file not found from path: ", file_path)
@@ -103,15 +121,6 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
         self.log("val_loss", loss, sync_dist=True)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
-    def on_save_checkpoint(self, checkpoint):
-        # Save config alongside model checkpoint
-        checkpoint["config"] = asdict(self.config)
-
-    def on_load_checkpoint(self, checkpoint):
-        # Load config when restoring checkpoint
-        if "config" in checkpoint:
-            self.config = TrainingConfig(**checkpoint["config"])
-
     def configure_optimizers(self):
         optimizer = optim.AdamW(
             self.parameters(),
@@ -120,30 +129,35 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             weight_decay=0.05,
         )
 
-        warmup_scheduler = LinearLR(
-            optimizer,
-            start_factor=0.01,
-            end_factor=1.0,
-            total_iters=config.warmup_iterations,
-        )
+        T_max = config.num_iterations - config.warmup_iterations
 
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
-            T_max=config.num_iterations - config.warmup_iterations,
+            T_max=T_max,
             eta_min=1e-7,
         )
-        scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
+
+        if config.current_iteration > 0:
+            steps_after_warmup = config.current_iteration - config.warmup_iterations
+
+            for _ in range(steps_after_warmup):
+                cosine_scheduler.step()
+
+            scheduler = cosine_scheduler
+        else:
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=0.01,
+                end_factor=1.0,
+                total_iters=config.warmup_iterations,
+            )
+
+            scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
 
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
-
-        # scheduler = get_lr_schedule(
-        #    optimizer, warmup_iterations=1000, total_iterations=self.max_iterations
-        # )
-
-        # return [optimizer], [scheduler]
 
 
 args = get_args()
@@ -153,8 +167,14 @@ if args.run_name is not None:
     if not latest_dir:
         raise ValueError(f"No existing runs found with name: {args.run_name}")
 
-    model, config = read_checkpoint(f"{latest_dir}/models")
-    config.apply_args(args)
+    config = read_config(f"{latest_dir}/run-info.json")
+    model = read_checkpoint(f"{latest_dir}/models", config)
+
+    if args.only_config is False:
+        config.apply_args(args)
+
+    if args.run_name is not None:
+        config._run_name = args.run_name
 
 else:
     config = get_config()
@@ -181,7 +201,7 @@ train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()
 
 trainer = L.Trainer(
-    max_steps=config.num_iterations,
+    max_steps=config.num_iterations - config.current_iteration,
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,

@@ -38,13 +38,14 @@ class TrainingConfig:
 
     # Current training state
     current_iteration: int = 0
-    current_loss: Optional[float] = None
 
     data_path: str = "../data/nwcsaf-128x128.zarr"
     limit_data_to: int = None
 
+    _run_name: str = None
+
     def _initialize_run(self):
-        if not hasattr(self, "_run_name"):
+        if not hasattr(self, "_run_name") or self._run_name is None:
             run_name_file = "current_run_name.txt"
 
             if int(os.environ.get("SLURM_PROCID", 0)) == 0:
@@ -66,12 +67,6 @@ class TrainingConfig:
     run_number: int = None
 
     apply_smoothing: bool = False
-
-    def save(self):
-        path = f"{self.run_dir}/train-config.json"
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
 
     def apply_args(self, args: argparse.Namespace):
         for k, v in vars(args).items():
@@ -116,6 +111,8 @@ def get_args():
 
     parser.add_argument("--apply_smoothing", action="store_true")
     parser.add_argument("--limit_data_to", type=int)
+
+    parser.add_argument("--only_config", action="store_true")
 
     args = parser.parse_args()
 
