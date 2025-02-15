@@ -48,7 +48,6 @@ def analyze_gradients(model):
                     grad_norm = param.grad.abs().mean().item()
                     gradient_stats[k].append(grad_norm)
 
-
     # Compute statistics for each section
     stats = {}
     for section, grads in gradient_stats.items():
@@ -176,14 +175,14 @@ class DiagnosticCallback(L.Callback):
     def __init__(self, config, freq=50):
         (
             self.train_loss,
-            self.train_mae,
-            self.train_var,
+            # self.train_mae,
+            # self.train_var,
             self.val_loss,
             self.lr,
             self.val_snr,
-            self.val_mae,
-            self.val_var,
-        ) = ([], [], [], [], [], [], [], [])
+            # self.val_mae,
+            # self.val_var,
+        ) = ([], [], [], [])
 
         self.gradients_mean = {}
         self.gradients_std = {}
@@ -219,13 +218,13 @@ class DiagnosticCallback(L.Callback):
 
             # d) variance and l1
 
-            predictions = outputs["predictions"]
+            # predictions = outputs["predictions"]
 
-            _, y = batch
+            # _, y = batch
 
-            var, mae = var_and_mae(predictions, y)
-            self.train_var.append(var)
-            self.train_mae.append(mae)
+            # var, mae = var_and_mae(predictions, y)
+            # self.train_var.append(var)
+            # self.train_mae.append(mae)
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
@@ -253,9 +252,9 @@ class DiagnosticCallback(L.Callback):
             self.val_snr.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
             # d) variance and l1
-            var, mae = var_and_mae(predictions, y)
-            self.val_var.append(var)
-            self.val_mae.append(mae)
+            # var, mae = var_and_mae(predictions, y)
+            # self.val_var.append(var)
+            # self.val_mae.append(mae)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
@@ -363,11 +362,11 @@ class DiagnosticCallback(L.Callback):
         plt.hist(pred[-1][0].flatten(), bins=20)
         plt.title("Predicted histogram")
 
-        uncertainty = torch.var(pred[-1], dim=0)
-        plt.subplot(3, 4, 10)  # Adjust subplot number as needed
-        plt.title("Member Variance")
-        plt.imshow(uncertainty.cpu(), cmap="Reds")
-        plt.colorbar()
+        # uncertainty = torch.var(pred[-1], dim=0)
+        # plt.subplot(3, 4, 10)  # Adjust subplot number as needed
+        # plt.title("Member Variance")
+        # plt.imshow(uncertainty.cpu(), cmap="Reds")
+        # plt.colorbar()
 
         # Calculate mean prediction and error map
         mean_pred = torch.mean(pred[-1], dim=0)
@@ -489,41 +488,41 @@ class DiagnosticCallback(L.Callback):
             plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
 
-        plt.subplot(246)
-        plt.plot(self.train_var, color="blue", alpha=0.3)
-        plt.plot(
-            moving_average(torch.tensor(self.train_var), 30),
-            color="blue",
-            label="Variance",
-        )
-        plt.legend(loc="upper left")
+        # plt.subplot(246)
+        # plt.plot(self.train_var, color="blue", alpha=0.3)
+        # plt.plot(
+        #    moving_average(torch.tensor(self.train_var), 30),
+        #    color="blue",
+        #    label="Variance",
+        # )
+        # plt.legend(loc="upper left")
 
-        ax2 = plt.gca().twinx()
-        ax2.plot(self.train_mae, color="orange", alpha=0.3)
-        ax2.plot(
-            moving_average(torch.tensor(self.train_mae), 30),
-            color="orange",
-            label="MAE",
-        )
-        ax2.legend(loc="upper right")
-        plt.title("Train Variance vs MAE")
+        # ax2 = plt.gca().twinx()
+        # ax2.plot(self.train_mae, color="orange", alpha=0.3)
+        # ax2.plot(
+        #    moving_average(torch.tensor(self.train_mae), 30),
+        #    color="orange",
+        #    label="MAE",
+        # )
+        # ax2.legend(loc="upper right")
+        # plt.title("Train Variance vs MAE")
 
-        plt.subplot(247)
-        plt.plot(self.val_var, color="blue", alpha=0.3)
-        plt.plot(
-            moving_average(torch.tensor(self.val_var), 30),
-            color="blue",
-            label="Variance",
-        )
-        plt.legend(loc="upper left")
+        # plt.subplot(247)
+        # plt.plot(self.val_var, color="blue", alpha=0.3)
+        # plt.plot(
+        #    moving_average(torch.tensor(self.val_var), 30),
+        #    color="blue",
+        #    label="Variance",
+        # )
+        # plt.legend(loc="upper left")
 
-        ax2 = plt.gca().twinx()
-        ax2.plot(self.val_mae, color="orange", alpha=0.3)
-        ax2.plot(
-            moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
-        )
-        ax2.legend(loc="upper right")
-        plt.title("Val Variance vs MAE")
+        # ax2 = plt.gca().twinx()
+        # ax2.plot(self.val_mae, color="orange", alpha=0.3)
+        # ax2.plot(
+        #    moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
+        # )
+        # ax2.legend(loc="upper right")
+        # plt.title("Val Variance vs MAE")
 
         plt.tight_layout()
         plt.savefig(
@@ -554,11 +553,11 @@ class DiagnosticCallback(L.Callback):
 
         saved_variables = [
             "train_loss",
-            "train_mae",
-            "train_var",
+            # "train_mae",
+            # "train_var",
             "val_loss",
-            "val_mae",
-            "val_var",
+            # "val_mae",
+            # "val_var",
             "val_snr",
             "lr",
             "gradients_mean",

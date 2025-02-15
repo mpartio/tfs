@@ -37,7 +37,7 @@ def moving_average(arr, window_size):
     return result
 
 
-def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
+def roll_forecast(model, x, y, n_steps, loss_fn, num_members=1):
     total_loss = []
     total_tendencies = []
     total_predictions = []
@@ -46,6 +46,8 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
     assert y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
 
     weights = torch.ones(n_steps).to(x.device)
+
+    assert num_members == 1
 
     for step in range(n_steps):
         y_true = y[:, step, :, :, :]
@@ -69,7 +71,7 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
         tendencies, predictions = model(x, step + 1)
 
         if loss_fn is not None:
-            loss = loss_fn(predictions, y_true)
+            loss = loss_fn(predictions.squeeze(1), y_true)
 
             total_loss.append(loss)
 

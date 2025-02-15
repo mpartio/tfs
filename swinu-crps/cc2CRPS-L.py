@@ -88,7 +88,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             self,
             config,
         )
-        self.crps_loss = AlmostFairCRPSLoss(alpha=0.95)
+        self.crps_loss = nn.MSELoss()
         self.config = config
 
     def training_step(self, batch, batch_idx):

@@ -50,7 +50,6 @@ class SwinTransformerBlock(nn.Module):
         drop=0.0,
         attn_drop=0.0,
         drop_path=0.0,
-        noise_dim=128,
     ):
         super().__init__()
         self.dim = dim
@@ -67,7 +66,7 @@ class SwinTransformerBlock(nn.Module):
             0 <= self.shift_size < self.window_size
         ), "shift_size must in 0-window_size"
 
-        self.norm1 = ConditionalLayerNorm(dim, noise_dim)
+        self.norm1 = nn.LayerNorm(dim)
         self.attn = WindowAttention(
             dim,
             window_size=to_2tuple(self.window_size),
@@ -79,7 +78,7 @@ class SwinTransformerBlock(nn.Module):
         )
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = ConditionalLayerNorm(dim, noise_dim)
+        self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
@@ -120,14 +119,14 @@ class SwinTransformerBlock(nn.Module):
 
         self.register_buffer("attn_mask", attn_mask)
 
-    def forward(self, x, noise_embedding):
+    def forward(self, x):
         H, W = self.input_resolution
         B, L, C = x.shape
 
         assert L == H * W, "input feature has wrong size: {} vs {}".format(L, H * W)
 
         shortcut = x
-        x = self.norm1(x, noise_embedding)
+        x = self.norm1(x)
         x = x.view(B, H, W, C)
 
         # cyclic shift
@@ -167,7 +166,7 @@ class SwinTransformerBlock(nn.Module):
 
         # FFN
         x = shortcut + self.drop_path(x)
-        x = x + self.drop_path(self.mlp(self.norm2(x, noise_embedding)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         return x
 

@@ -11,7 +11,7 @@ from typing import Optional, List
 @dataclass
 class TrainingConfig:
     input_resolution: tuple = (128, 128)
-    num_members: int = 3
+    num_members: int = 1
 
     # Rollout params
     rollout_length: int = 1
@@ -130,7 +130,7 @@ def get_config():
 
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k != "config":
+        if v is not None and k != "only_config":
             setattr(config, k, v)
             print(k,"to",v)
     return config
