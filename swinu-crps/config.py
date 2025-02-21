@@ -130,7 +130,7 @@ def get_config():
 
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k != "config":
+        if v is not None and k != "only_config":
             setattr(config, k, v)
             print(k,"to",v)
     return config
