@@ -5,6 +5,32 @@ from swin import SwinTransformerBlock, ConditionalLayerNorm
 from einops import rearrange
 
 
+class SqueezeExciteBlock(nn.Module):
+    def __init__(self, dim, reduction=16, noise_dim=128):
+        super(SqueezeExciteBlock, self).__init__()
+        self.fc1 = nn.Linear(dim, dim // reduction, bias=True)
+        self.fc2 = nn.Linear(dim // reduction, dim, bias=True)
+        self.noise_proj = nn.Linear(noise_dim, dim)
+
+    def forward(self, x, noise_embedding):
+        # x shape: (batch, channels, height, width)
+        B, C, H, W = x.size()
+
+        # Squeeze: global average pooling over spatial dimensions
+        y = x.view(B, C, -1).mean(dim=2)  # shape: (batch, channels)
+
+        y = y + self.noise_proj(noise_embedding)
+
+        # Excitation: two-layer MLP with a bottleneck
+        y = F.relu(self.fc1(y), inplace=True)  # shape: (batch, channels//reduction)
+        y = torch.sigmoid(self.fc2(y))  # shape: (batch, channels)
+
+        # Reshape to (batch, channels, 1, 1) for scaling
+        y = y.view(B, C, 1, 1)
+
+        return x * y
+
+
 class PatchMerging(nn.Module):
     r"""Patch Merging Layer.
 

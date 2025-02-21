@@ -188,9 +188,7 @@ class cc2CRPS(nn.Module):
         # Attention Bridge
 
         if config.num_layers:
-            self.bridge = MultiHeadAttentionBridge(
-                in_dim=dim * 4, bridge_dim=dim * 4, n_layers=config.num_layers
-            )
+            self.bridge = SqueezeExciteBlock(dim=dim * 4, noise_dim=noise_dim)
         else:
             self.bridge = lambda x, y: x
 
