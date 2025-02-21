@@ -137,7 +137,7 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
             eta_min=1e-7,
         )
 
-        if config.current_iteration > 0:
+        if args.only_config and config.current_iteration > 0:
             steps_after_warmup = config.current_iteration - config.warmup_iterations
 
             for _ in range(steps_after_warmup):
@@ -200,8 +200,13 @@ cc2Data = cc2DataModule(
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()
 
+max_steps = config.num_iterations
+
+if args.only_config:
+    max_steps -= config.current_iteration
+
 trainer = L.Trainer(
-    max_steps=config.num_iterations - config.current_iteration,
+    max_steps=max_steps,
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,
