@@ -9,6 +9,7 @@ from layers import (
     NoiseProcessor,
     BasicBlock,
     FinalPatchExpand_X4,
+    SqueezeExciteBlock,
 )
 from swin import ConditionalLayerNorm
 import lightning as L

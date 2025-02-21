@@ -13,20 +13,18 @@ class SqueezeExciteBlock(nn.Module):
         self.noise_proj = nn.Linear(noise_dim, dim)
 
     def forward(self, x, noise_embedding):
-        # x shape: (batch, channels, height, width)
-        B, C, H, W = x.size()
+        B, L, C = x.shape
 
         # Squeeze: global average pooling over spatial dimensions
-        y = x.view(B, C, -1).mean(dim=2)  # shape: (batch, channels)
-
+        y = x.mean(dim=1)
         y = y + self.noise_proj(noise_embedding)
 
         # Excitation: two-layer MLP with a bottleneck
         y = F.relu(self.fc1(y), inplace=True)  # shape: (batch, channels//reduction)
         y = torch.sigmoid(self.fc2(y))  # shape: (batch, channels)
 
-        # Reshape to (batch, channels, 1, 1) for scaling
-        y = y.view(B, C, 1, 1)
+        # Reshape to (batch, 1, C) to allow broadcasting along L dimension.
+        y = y.unsqueeze(1)  # shape: (batch, 1, C)
 
         return x * y
 
