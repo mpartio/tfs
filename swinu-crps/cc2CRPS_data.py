@@ -215,7 +215,7 @@ class cc2DataModule(L.LightningDataModule):
 
     def _get_dataloader(self, dataset, shuffle=False):
         return DataLoader(
-            SplitWrapper(dataset, n_x=self.n_x),
+            SplitWrapper(dataset, n_x=self.n_x, apply_smoothing=self.apply_smoothing),
             batch_size=self.batch_size,
             num_workers=6,
             pin_memory=True,
