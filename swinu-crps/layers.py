@@ -114,17 +114,17 @@ class PatchExpand(nn.Module):
         assert L == H * W, "input feature has wrong size"
 
         # Reshape for Conv2D processing
-        x = x.view(B, H, W, C).permute(0, 3, 1, 2)
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
         # Apply PixelShuffle upsampling
-        x = self.expand(x)
-        x = self.pixel_shuffle(x)
-
-        x = self.channel_reduction(x)
+        with torch.amp.autocast("cuda", enabled=False):
+            x = self.expand(x.float())
+            x = self.pixel_shuffle(x)
+            x = self.channel_reduction(x)
 
         # Reshape back to (B, L, C) for LayerNorm
         B, C, H, W = x.shape
-        x = x.permute(0, 2, 3, 1).view(B, -1, C)
+        x = x.permute(0, 2, 3, 1).view(B, -1, C).contiguous()
 
         # Apply normalization
         x = self.norm(x, noise_embedding)
@@ -155,23 +155,24 @@ class FinalPatchExpand_X4(nn.Module):
 
         assert L == H * W, "input feature has wrong size"
 
-        x = x.view(B, H, W, C).permute(0, 3, 1, 2)
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
         # Expand channels and apply PixelShuffle
-        x = self.expand(x)  # Increase feature channels
+        with torch.amp.autocast("cuda", enabled=False):
+            x = self.expand(x.float())
+
         x = self.pixel_shuffle(x)  # Upscale resolution by 4x
 
         # Convert back to (B, L, C) for normalization
         B, C, H, W = x.shape
-        x = x.permute(0, 2, 3, 1).view(B, -1, C)  # (B, L, C)
+        x = x.permute(0, 2, 3, 1).view(B, -1, C).contiguous()  # (B, L, C)
 
         # Apply normalization
         x = self.norm(x, noise_embedding)
 
         # Reshape back for refinement
-        x = x.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        x = x.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
         x = self.refinement(x)  # Final refinement step
-        #        x = self.final_projection(x)
 
         return x
 
