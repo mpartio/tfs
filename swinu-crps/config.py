@@ -6,8 +6,7 @@ import sys
 import time
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
-from cc2util import get_latest_run_dir
-
+from cc2util import get_latest_run_dir, get_rank
 
 @dataclass
 class TrainingConfig:

@@ -9,7 +9,7 @@ import lightning as L
 import sys
 import config
 import json
-from cc2util import roll_forecast, moving_average
+from cc2util import roll_forecast, moving_average, get_rank
 from util import calculate_wavelet_snr
 from datetime import datetime
 from dataclasses import asdict
@@ -588,7 +588,7 @@ class LazyLoggerCallback(L.Callback):
 
     def on_train_start(self, trainer, pl_module):
         """This runs after the sanity check is successful."""
-        if not self.logger_created:
+        if not self.logger_created and get_rank() == 0:
             trainer.logger = CSVLogger(f"{self.config.run_dir}/logs")
             self.logger_created = True  # Prevent multiple reassignments
             print(f"Logger initialized at {self.config.run_dir}/logs")
