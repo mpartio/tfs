@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
-
+from cc2util import get_rank
 
 @dataclass
 class TrainingConfig:
@@ -48,7 +48,7 @@ class TrainingConfig:
         if not hasattr(self, "_run_name") or self._run_name is None:
             run_name_file = "current_run_name.txt"
 
-            if int(os.environ.get("SLURM_PROCID", 0)) == 0:
+            if get_rank() == 0:
                 self._run_name = randomname.get_name()
                 with open(run_name_file, "w") as f:
                     f.write(self._run_name)
