@@ -3,6 +3,14 @@ import torch.nn.functional as F
 import numpy as np
 import os
 import time
+import torch.distributed as dist
+
+def get_rank():
+    # If distributed is initialized, use its rank
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    # Otherwise, try SLURM_PROCID first, then LOCAL_RANK, default to 0.
+    return int(os.environ.get("SLURM_PROCID", os.environ.get("LOCAL_RANK", 0)))
 
 
 def moving_average(arr, window_size):
@@ -95,7 +103,7 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
 
 
 def get_next_run_number(base_dir):
-    rank = int(os.environ.get("SLURM_PROCID", 0))
+    rank = get_rank()
     next_run_file = f"next_run.txt"
 
     if rank == 0:
