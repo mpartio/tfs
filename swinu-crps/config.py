@@ -6,7 +6,8 @@ import sys
 import time
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
-from cc2util import get_rank
+from cc2util import get_rank, get_latest_run_dir
+
 
 @dataclass
 class TrainingConfig:
@@ -77,6 +78,14 @@ class TrainingConfig:
                 print(f"Setting {k} to {v}")
                 setattr(self, k, v)
 
+    @classmethod
+    def load(cls, config_path):
+        import json
+
+        with open(config_path, "r") as f:
+            config_dict = json.load(f)
+            return cls(**config_dict["config"])
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -124,15 +133,18 @@ def get_config():
 
     # Load base config if specified
     if args.run_name:
-        config = TrainingConfig.load(f"{args.run_name}/runs/train-config.json")
+        run_dir = get_latest_run_dir(f"runs/{args.run_name}")
+        config = TrainingConfig.load(f"{run_dir}/run-info.json")
     else:
         config = TrainingConfig()
 
     # Override with command line arguments
     for k, v in vars(args).items():
         if v is not None and k != "only_config":
+            if k == "run_name":
+                k = "_run_name"
             setattr(config, k, v)
-            print(k,"to",v)
+            print(k, "to", v)
     return config
 
 
