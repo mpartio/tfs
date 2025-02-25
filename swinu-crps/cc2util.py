@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 import os
 import time
+from glob import glob
 
 
 def moving_average(arr, window_size):
@@ -138,3 +139,30 @@ def get_latest_run_dir(base_dir):
         return None
     latest = max([int(d) for d in subdirs])
     return os.path.join(base_dir, str(latest))
+
+def read_checkpoint(file_path, model):
+    try:
+        # Find latest checkpoint
+        checkpoints = glob(f"{file_path}/*.ckpt")
+        assert checkpoints, "No model checkpoints found in directory {}".format(
+            file_path
+        )
+        latest_ckpt = max(checkpoints, key=os.path.getctime)
+        print(f"Loading checkpoint: {latest_ckpt}")
+
+        ckpt = torch.load(latest_ckpt, weights_only=False)
+        new_state_dict = {}
+        state_dict = ckpt["state_dict"]
+
+        for k, v in state_dict.items():
+            new_k = k.replace("model.", "")
+            new_state_dict[new_k] = v
+
+        model.load_state_dict(new_state_dict)
+
+        return model
+
+    except ValueError as e:
+        print("Model checkpoint file not found from path: ", file_path)
+        raise e
+

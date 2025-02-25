@@ -6,7 +6,6 @@ import numpy as np
 import lightning as L
 import json
 import os
-from glob import glob
 from datetime import datetime, timedelta
 from cc2CRPS import cc2CRPS
 from crps import AlmostFairCRPSLoss
@@ -21,6 +20,7 @@ from cc2util import (
     roll_forecast,
     get_latest_run_dir,
     get_next_run_number,
+    read_checkpoint
 )
 from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
 from torch.optim.lr_scheduler import (
@@ -44,34 +44,6 @@ def read_config(file_path):
         print("Failed to decode json at {}".format(file_path))
         raise e
     return config
-
-
-def read_checkpoint(file_path, config):
-    try:
-        # Find latest checkpoint
-        checkpoints = glob(f"{file_path}/*.ckpt")
-        assert checkpoints, "No model checkpoints found in directory {}".format(
-            file_path
-        )
-        latest_ckpt = max(checkpoints, key=os.path.getctime)
-        print(f"Loading checkpoint: {latest_ckpt}")
-
-        ckpt = torch.load(latest_ckpt, weights_only=False)
-        new_state_dict = {}
-        state_dict = ckpt["state_dict"]
-
-        for k, v in state_dict.items():
-            new_k = k.replace("model.", "")
-            new_state_dict[new_k] = v
-
-        model = cc2CRPSModel(config)
-        model.load_state_dict(new_state_dict)
-
-        return model
-
-    except ValueError as e:
-        print("Model checkpoint file not found from path: ", file_path)
-        raise e
 
 
 def create_directory_structure(base_directory):
@@ -168,7 +140,9 @@ if args.run_name is not None:
         raise ValueError(f"No existing runs found with name: {args.run_name}")
 
     config = read_config(f"{latest_dir}/run-info.json")
-    model = read_checkpoint(f"{latest_dir}/models", config)
+
+    model = cc2CRPSModel(config)
+    model = read_checkpoint(f"{latest_dir}/models", model)
 
     if args.only_config is False:
         config.apply_args(args)
