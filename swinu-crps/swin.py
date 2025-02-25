@@ -124,7 +124,11 @@ class SwinTransformerBlock(nn.Module):
         H, W = self.input_resolution
         B, L, C = x.shape
 
-        assert L == H * W, "input feature has wrong size: {} vs {}".format(L, H * W)
+        assert (
+            L == H * W
+        ), "Input data has wrong size: L={} vs H*W={} (H={}, W={})".format(
+            L, H * W, H, W
+        )
 
         shortcut = x
         x = self.norm1(x, noise_embedding)
