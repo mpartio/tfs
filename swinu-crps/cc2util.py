@@ -38,40 +38,31 @@ def moving_average(arr, window_size):
     return result
 
 
-def roll_forecast(model, x, y, n_steps, loss_fn, num_members=1):
+def roll_forecast(model, data, forcing, n_steps, loss_fn, num_members=1):
     total_loss = []
     total_tendencies = []
     total_predictions = []
+    x = torch.concat((data[0], forcing[0]), dim=-1)
 
-    assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
-    assert y is None or y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
+    assert x.ndim == 5, "invalid dimensions for x: {}".format(x.shape)
 
     weights = torch.ones(n_steps).to(x.device)
 
     for step in range(n_steps):
 
-        if x.ndim == 4:
-            B, C, H, W = x.shape
-            # Must add member dimension
-            x = x.unsqueeze(1).expand(B, num_members, C, H, W)
-
-        assert x.ndim == 5, "invalid dimensions for x: {}".format(x.shape)
-
-        if y is not None:
-            y_true = y[:, step, :, :, :]
-
+        if loss_fn is not None:
+            y_true = data[1][:, step].permute(0, 3, 1, 2)
             assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
-
-            assert (
-                x.shape[-2:] == y_true.shape[-2:]
-            ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
 
         # Forward pass
 
         tendencies, predictions = model(x, step + 1)
 
         if loss_fn is not None:
-            loss = loss_fn(predictions.squeeze(1), y_true)
+            assert (
+                predictions.shape == y_true.shape
+            ), "shapes don't match: {} vs {}".format(predictions.shape, y_true.shape)
+            loss = loss_fn(predictions, y_true)
 
             total_loss.append(loss)
 
@@ -86,9 +77,9 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=1):
         total_loss = torch.stack(total_loss)
         total_loss *= weights
 
-    # B, T, M, C, H, W
-    tendencies = torch.stack(total_tendencies).permute(1, 0, 2, 3, 4, 5)
-    predictions = torch.stack(total_predictions).permute(1, 0, 2, 3, 4, 5)
+    # B, T, C, H, W
+    tendencies = torch.stack(total_tendencies).permute(1, 0, 2, 3, 4)
+    predictions = torch.stack(total_predictions).permute(1, 0, 2, 3, 4)
 
     return total_loss, tendencies, predictions
 

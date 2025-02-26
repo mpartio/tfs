@@ -20,7 +20,7 @@ from cc2util import (
     roll_forecast,
     get_latest_run_dir,
     get_next_run_number,
-    read_checkpoint
+    read_checkpoint,
 )
 from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
 from torch.optim.lr_scheduler import (
@@ -64,12 +64,12 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
         self.config = config
 
     def training_step(self, batch, batch_idx):
-        x, y = batch
+        data, forcing = batch
 
         loss, tendencies, predictions = roll_forecast(
             self,
-            x,
-            y,
+            data,
+            forcing,
             config.rollout_length,
             loss_fn=self.crps_loss,
             num_members=self.config.num_members,
@@ -79,12 +79,12 @@ class cc2CRPSModel(cc2CRPS, L.LightningModule):
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def validation_step(self, batch, batch_idx):
-        x, y = batch
+        data, forcing = batch
 
         loss, tendencies, predictions = roll_forecast(
             self,
-            x,
-            y,
+            data,
+            forcing,
             config.rollout_length,
             loss_fn=self.crps_loss,
             num_members=self.config.num_members,

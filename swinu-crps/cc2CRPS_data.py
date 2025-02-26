@@ -8,6 +8,7 @@ import sys
 import lightning as L
 import numpy as np
 import zarr
+from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 
 
@@ -88,6 +89,77 @@ def gaussian_smooth(x, sigma=0.8, kernel_size=5):
     return x
 
 
+class AnemoiDataset(Dataset):
+    def __init__(self, zarr_path, group_size, input_resolution):
+        self.data = open_dataset(zarr_path)
+        self.group_size = group_size
+        self.time_steps = len(self.data.dates)
+
+        self.data_names = [
+            "effective_cloudiness",
+        ]
+        self.forcings_names = [
+            "cos_latitude",
+            "sin_latitude",
+            "cos_longitude",
+            "sin_longitude",
+            "insolation",
+            "cos_julian_day",
+            "sin_julian_day",
+            "cos_local_time",
+            "sin_local_time",
+        ]
+
+        self.data_indexes = [self.data.name_to_index[x] for x in self.data_names]
+        self.forcings_indexes = [
+            self.data.name_to_index[x] for x in self.forcings_names
+        ]
+        print("Missing indices: {}".format(len(self.data.missing)))
+        self.input_resolution = input_resolution
+        assert self.time_steps >= group_size
+
+        self.missing_indices = set(self.data.missing)
+        self.valid_indices = [
+            i
+            for i in range(self.time_steps - self.group_size - 1)
+            if not self._sequence_has_missing_data(i)
+        ]
+
+    def _sequence_has_missing_data(self, start_idx):
+        for i in range(start_idx, start_idx + self.group_size):
+            if i in self.missing_indices:
+                return True
+        return False
+
+    def __len__(self):
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx):
+        actual_idx = self.valid_indices[idx]
+
+        data = self.data[
+            actual_idx : actual_idx + self.group_size, self.data_indexes, ...
+        ]
+        # (3, 1, 1, 16384)
+        T, C, E, HW = data.shape
+
+        data = data.reshape(
+            T, C * E, self.input_resolution[0], self.input_resolution[1]
+        )
+        data = torch.tensor(data).permute(0, 2, 3, 1)
+
+        forcing = self.data[
+            actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
+        ]
+        T, C, E, HW = forcing.shape
+        forcing = forcing.reshape(
+            T, C * E, self.input_resolution[0], self.input_resolution[1]
+        )
+        forcing = torch.tensor(forcing).permute(0, 2, 3, 1)
+
+        return data, forcing
+
+
 class HourlyZarrDataset(Dataset):
     def __init__(self, zarr_path, group_size):
         # Open the zarr array without loading data
@@ -151,21 +223,20 @@ class SplitWrapper:
         self.apply_smoothing = apply_smoothing
 
     def __getitem__(self, idx):
-        samples = self.dataset[idx]  # shape is T, H, W, C
-
+        data, forcing = self.dataset[idx]
         # Split into x and y
-        x = samples[: self.n_x]  # shape: [Tx, H, W, C]
-        y = samples[self.n_x :]  # shape: [Ty, H, W, C]
-        x = x.squeeze(-1)  # shape: [Tx, H, W]
-
-        # Reshape y: move C after T
-        y = y.permute(0, 3, 1, 2)  # shape: [Ty, C, H, W]
+        data_x = data[: self.n_x]
+        data_y = data[self.n_x :]
+        forcing_x = forcing[: self.n_x]
+        forcing_y = forcing[self.n_x :]
 
         if self.apply_smoothing:
-            x = gaussian_smooth(x)
-            y = gaussian_smooth(y)
+            data_x = gaussian_smooth(data_x)
+            data_y = gaussian_smooth(data_y)
+            forcing_x = gaussian_smooth(forcing_x)
+            forcing_y = gaussian_smooth(forcing_y)
 
-        return x, y
+        return [(data_x, data_y), (forcing_x, forcing_y)]
 
     def __len__(self):
         return len(self.dataset)
@@ -180,6 +251,7 @@ class cc2DataModule(L.LightningDataModule):
         n_y: int = 1,
         limit_to: int = None,
         apply_smoothing: bool = False,
+        input_resolution: tuple = (128, 128),
     ):
         self.batch_size = batch_size
         self.n_x = n_x
@@ -191,12 +263,19 @@ class cc2DataModule(L.LightningDataModule):
         self.cc2_test = None
         self.limit_to = limit_to
         self.apply_smoothing = apply_smoothing
+        self.input_resolution = input_resolution
 
         print("Reading data from {}".format(zarr_path))
         self.setup(zarr_path)
 
     def setup(self, zarr_path):
-        if "era5" in zarr_path:
+        if "anemoi" in zarr_path:
+            ds = AnemoiDataset(
+                zarr_path,
+                group_size=self.n_x + self.n_y,
+                input_resolution=self.input_resolution,
+            )
+        elif "era5" in zarr_path:
             ds = HourlyZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
         else:
             ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)

@@ -74,23 +74,25 @@ class TrainDataPlotterCallback(L.Callback):
         pl_module.eval()
 
         # Get a single batch from the dataloader
-        x, y = next(iter(self.dataloader))
-
-        x = x.to(pl_module.device)
+        data, forcing = next(iter(self.dataloader))
+        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
+        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
 
         # Perform a prediction
         with torch.no_grad():
             _, _, predictions = roll_forecast(
                 pl_module,
-                x,
-                y,
+                data,
+                forcing,
                 self.config.rollout_length,
                 None,
                 num_members=self.config.num_members,
             )
 
+        x, y = data
+
         self.plot(
-            x.cpu().detach(), y, predictions.cpu().detach(), trainer.current_epoch
+            x.cpu().detach(), y.cpu().detach(), predictions.cpu().detach(), trainer.current_epoch
         )
 
         # Restore model to training mode
@@ -239,7 +241,8 @@ class DiagnosticCallback(L.Callback):
             # b) signal to noise ratio
             predictions = outputs["predictions"]
 
-            _, y = batch
+            data, _ = batch
+            _, y = data
 
             # Select first of batch and last of time
             truth = y[0][-1].cpu().squeeze()
@@ -264,20 +267,22 @@ class DiagnosticCallback(L.Callback):
             return
 
         # Get a single batch from the dataloader
-        x, y = next(iter(trainer.val_dataloaders))
-        x = x[0].unsqueeze(0).to(pl_module.device)
-        y = y[0].unsqueeze(0).to(pl_module.device)
+        data, forcing = next(iter(trainer.val_dataloaders))
+        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
+        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
 
         # Perform a prediction
         with torch.no_grad():
             _, tendencies, predictions = roll_forecast(
                 pl_module,
-                x,
-                y,
+                data,
+                forcing,
                 self.config.rollout_length,
                 loss_fn=None,
                 num_members=self.config.num_members,
             )
+
+        x, y = data
 
         self.plot_visual(
             x[0].cpu().detach(),
@@ -301,14 +306,14 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        truth = truth.squeeze(1)  # remove channel dim
-        pred = pred.squeeze(2)
-        tendencies = tendencies.squeeze(2)
+        # input_field T, H, W, C
+        # truth T, H, W, C
+        # pred T, C, H, W
+        # tend T, C, H, W
 
-        # input_field T, H, W
-        # truth T, H, W
-        # pred T, M, H, W
-        # tend T, M, H, W
+        truth = truth.squeeze(-1)  # remove channel dim
+        pred = pred.squeeze(1)
+        tendencies = tendencies.squeeze(1)
 
         plt.subplot(341)
         plt.imshow(input_field[0])
@@ -326,18 +331,18 @@ class DiagnosticCallback(L.Callback):
         plt.colorbar()
 
         plt.subplot(344)
-        plt.imshow(pred[-1][0])
+        plt.imshow(pred[-1])
         plt.title("Prediction")
         plt.colorbar()
 
         plt.subplot(345)
         cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
-        plt.imshow(tendencies[-1][0], cmap=cmap, norm=norm)
+        plt.imshow(tendencies[-1], cmap=cmap, norm=norm)
         plt.title("Tendencies")
         plt.colorbar()
 
-        data = truth[-1] - input_field[-1]
+        data = truth[-1].squeeze() - input_field[-1].squeeze()
         cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
@@ -346,7 +351,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("True Tendencies")
         plt.colorbar()
 
-        data = pred[-1][0] - truth[-1]
+        data = pred[-1] - truth[-1]
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
         plt.subplot(347)
@@ -359,14 +364,8 @@ class DiagnosticCallback(L.Callback):
         plt.title("Truth histogram")
 
         plt.subplot(349)
-        plt.hist(pred[-1][0].flatten(), bins=20)
+        plt.hist(pred[-1].flatten(), bins=20)
         plt.title("Predicted histogram")
-
-        # uncertainty = torch.var(pred[-1], dim=0)
-        # plt.subplot(3, 4, 10)  # Adjust subplot number as needed
-        # plt.title("Member Variance")
-        # plt.imshow(uncertainty.cpu(), cmap="Reds")
-        # plt.colorbar()
 
         # Calculate mean prediction and error map
         mean_pred = torch.mean(pred[-1], dim=0)
