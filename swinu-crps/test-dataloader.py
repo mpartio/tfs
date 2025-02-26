@@ -1,4 +1,4 @@
-from cc2CRPS_data import cc2DataModule, cc2ZarrModule
+from cc2CRPS_data import cc2DataModule
 import matplotlib.pyplot as plt
 import torch as t
 import zarr
@@ -29,8 +29,8 @@ def print_env():
 
 print_env()
 
-zarr_path = "../data/cc-128x128-era5.zarr"
-cc2Data = cc2ZarrModule(zarr_path=zarr_path, batch_size=5, n_x=2, n_y=1)
+zarr_path = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
+cc2Data = cc2DataModule(zarr_path=zarr_path, batch_size=5, n_x=2, n_y=1)
 
 df = cc2Data.train_dataloader()
 
