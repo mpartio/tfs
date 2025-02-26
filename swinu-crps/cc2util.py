@@ -42,7 +42,8 @@ def roll_forecast(model, data, forcing, n_steps, loss_fn, num_members=1):
     total_loss = []
     total_tendencies = []
     total_predictions = []
-    x = torch.concat((data[0], forcing[0]), dim=-1)
+
+    x = torch.concat((data[0], forcing[0]), dim=2)
 
     assert x.ndim == 5, "invalid dimensions for x: {}".format(x.shape)
 
@@ -51,12 +52,15 @@ def roll_forecast(model, data, forcing, n_steps, loss_fn, num_members=1):
     for step in range(n_steps):
 
         if loss_fn is not None:
-            y_true = data[1][:, step].permute(0, 3, 1, 2)
+            y_true = data[1][:, step]
             assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
 
         # Forward pass
 
-        tendencies, predictions = model(x, step + 1)
+        last_state = x[:, -1, 0].unsqueeze(1)
+
+        tendencies = model(x, last_state, step + 1)
+        predictions = last_state + tendencies
 
         if loss_fn is not None:
             assert (

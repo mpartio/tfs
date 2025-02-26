@@ -26,28 +26,41 @@ class SkipConnection(nn.Module):
 
         return x_decoder + x_combined
 
+
 class SqueezeExciteBlock(nn.Module):
     def __init__(self, dim, reduction=16, noise_dim=128):
         super(SqueezeExciteBlock, self).__init__()
         self.fc1 = nn.Linear(dim, dim // reduction, bias=True)
         self.fc2 = nn.Linear(dim // reduction, dim, bias=True)
-        self.noise_proj = nn.Linear(noise_dim, dim)
 
-    def forward(self, x, noise_embedding):
-        # x shape: (batch, channels, height, width)
-        B, C, H, W = x.size()
+        if noise_dim is not None:
+            self.noise_proj = nn.Linear(noise_dim, dim)
 
-        # Squeeze: global average pooling over spatial dimensions
-        y = x.view(B, C, -1).mean(dim=2)  # shape: (batch, channels)
+    def forward(self, x, noise_embedding=None):
 
-        y = y + self.noise_proj(noise_embedding)
+        if x.ndim == 4:
+            # x shape: (batch, channels, height, width)
+            B, C, H, W = x.size()
+
+            # Squeeze: global average pooling over spatial dimensions
+            y = x.view(B, C, -1).mean(dim=2)  # shape: (batch, channels)
+
+        else:
+            B, S, Ft = x.size()
+            y = x.mean(dim=1)
+
+        if noise_embedding is not None:
+            y = y + self.noise_proj(noise_embedding)
 
         # Excitation: two-layer MLP with a bottleneck
         y = F.relu(self.fc1(y), inplace=True)  # shape: (batch, channels//reduction)
         y = torch.sigmoid(self.fc2(y))  # shape: (batch, channels)
 
         # Reshape to (batch, channels, 1, 1) for scaling
-        y = y.view(B, C, 1, 1)
+        if x.ndim == 4:
+            y = y.view(B, C, 1, 1)
+        else:
+            y = y.view(B, 1, Ft)
 
         return x * y
 

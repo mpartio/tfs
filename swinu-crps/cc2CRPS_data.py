@@ -68,6 +68,8 @@ def gaussian_smooth(x, sigma=0.8, kernel_size=5):
     else:
         B, C, H, W = x.shape
 
+    assert C < 50, "The order should be B, C, H, W, but got: {}".format(x.shape)
+
     assert x.ndim == 4, "data needs to have 4 dimensions, got: {}".format(x.shape)
 
     # Move kernel to same device as input
@@ -146,7 +148,7 @@ class AnemoiDataset(Dataset):
         data = data.reshape(
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
-        data = torch.tensor(data).permute(0, 2, 3, 1)
+        data = torch.tensor(data)
 
         forcing = self.data[
             actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
@@ -155,7 +157,7 @@ class AnemoiDataset(Dataset):
         forcing = forcing.reshape(
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
-        forcing = torch.tensor(forcing).permute(0, 2, 3, 1)
+        forcing = torch.tensor(forcing)
 
         return data, forcing
 

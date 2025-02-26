@@ -92,7 +92,10 @@ class TrainDataPlotterCallback(L.Callback):
         x, y = data
 
         self.plot(
-            x.cpu().detach(), y.cpu().detach(), predictions.cpu().detach(), trainer.current_epoch
+            x.cpu().detach(),
+            y.cpu().detach(),
+            predictions.cpu().detach(),
+            trainer.current_epoch,
         )
 
         # Restore model to training mode
@@ -311,7 +314,8 @@ class DiagnosticCallback(L.Callback):
         # pred T, C, H, W
         # tend T, C, H, W
 
-        truth = truth.squeeze(-1)  # remove channel dim
+        input_field = input_field.squeeze(1)
+        truth = truth.squeeze(1)  # remove channel dim
         pred = pred.squeeze(1)
         tendencies = tendencies.squeeze(1)
 

@@ -8,6 +8,7 @@ from layers import (
     SkipConnection,
     BasicBlock,
     FinalPatchExpand_X4,
+    SqueezeExciteBlock,
 )
 import lightning as L
 import config
@@ -145,7 +146,7 @@ class cc2CRPS(nn.Module):
         # Attention Bridge
 
         if config.num_layers:
-            self.bridge = SqueezeExciteBlock(dim=dim * 4, noise_dim=noise_dim)
+            self.bridge = SqueezeExciteBlock(dim=dim * 4, noise_dim=None)
         else:
             self.bridge = lambda x: x
 
@@ -243,16 +244,15 @@ class cc2CRPS(nn.Module):
     def soft_clamp(self, x, min_val, max_val, T=5):
         return min_val + (max_val - min_val) * torch.sigmoid(T * x)
 
-    def members_vec(self, x, timestep):
+    def members_vec(self, x, last_state, timestep):
         B, C, H, W = x.shape
 
-        last_state = torch.clone(x[:, 11, :, :]).unsqueeze(1).detach()  # B, 1, H, W
-
         x = self.patch_embed(x, timestep)
-        features = torch.clone(x).detach()
+        #        features = torch.clone(x).detach()
 
         # Get tendencies for all members at once
-        tendency = self._forward(features)
+        #        tendency = self._forward(features)
+        tendency = self._forward(x)
 
         # Calculate allowed deltas for all members
         max_allowed_delta = 1.0 - last_state
@@ -262,24 +262,24 @@ class cc2CRPS(nn.Module):
         # Reshape back to separate batch and member dimensions
         tendency = tendency.view(B, 1, H, W)
 
-        predictions = last_state + tendency
-        return tendency, predictions
+        return tendency
 
-    def forward(self, x, timestep):
+    def forward(self, x, last_state, timestep):
         assert (
             type(timestep) == int and timestep >= 1
         ), f"timestep must be integer larger than zero, got: {timestep}"
-        assert x.ndim == 5, "expected input shape is: B, M, C, H, W, got: {}".format(
+
+        assert x.ndim == 5, "expected input shape is: B, T, C, H, W, got: {}".format(
             x.shape
         )
 
-        B, T, H, W, C = x.shape
+        B, T, C, H, W = x.shape
 
-        x = x.permute(0, 1, 4, 2, 3).reshape(B, T * C, H, W)
+        x = x.reshape(B, T * C, H, W)
 
         timestep = 1 if timestep == 1 else 2
 
-        return self.members_vec(x, timestep)
+        return self.members_vec(x, last_state, timestep)
 
 
 if __name__ == "__main__":
