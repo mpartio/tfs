@@ -52,26 +52,27 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
     total_predictions = []
 
     assert x.ndim == 4, "invalid dimensions for x: {}".format(x.shape)
-    assert y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
+    assert y is None or y.ndim == 5, "invalid dimensions for y: {}".format(y.shape)
 
     weights = torch.ones(n_steps).to(x.device)
 
     for step in range(n_steps):
-        y_true = y[:, step, :, :, :]
 
         if x.ndim == 4:
             B, C, H, W = x.shape
             # Must add member dimension
             x = x.unsqueeze(1).expand(B, num_members, C, H, W)
 
-        # X dim: B, C=2, H, W
-        # Y dim: B, C=1, H, W
         assert x.ndim == 5, "invalid dimensions for x: {}".format(x.shape)
-        assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
 
-        assert (
-            x.shape[-2:] == y_true.shape[-2:]
-        ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
+        if y is not None:
+            y_true = y[:, step, :, :, :]
+
+            assert y_true.ndim == 4, "invalid dimensions for y: {}".format(y_true.shape)
+
+            assert (
+                x.shape[-2:] == y_true.shape[-2:]
+            ), "x shape does not match y shape: {} vs {}".format(x.shape, y_true.shape)
 
         # Forward pass
 
@@ -93,12 +94,9 @@ def roll_forecast(model, x, y, n_steps, loss_fn, num_members=3):
         total_loss = torch.stack(total_loss)
         total_loss *= weights
 
-    tendencies = torch.stack(total_tendencies).permute(
-        1, 0, 2, 3, 4, 5
-    )  # B, T, M, C, H, W
-    predictions = torch.stack(total_predictions).permute(
-        1, 0, 2, 3, 4, 5
-    )  # B, T, M, C, H, W
+    # B, T, M, C, H, W
+    tendencies = torch.stack(total_tendencies).permute(1, 0, 2, 3, 4, 5)
+    predictions = torch.stack(total_predictions).permute(1, 0, 2, 3, 4, 5)
 
     return total_loss, tendencies, predictions
 
@@ -146,6 +144,7 @@ def get_latest_run_dir(base_dir):
     latest = max([int(d) for d in subdirs])
     return os.path.join(base_dir, str(latest))
 
+
 def read_checkpoint(file_path, model):
     try:
         # Find latest checkpoint
@@ -171,4 +170,3 @@ def read_checkpoint(file_path, model):
     except ValueError as e:
         print("Model checkpoint file not found from path: ", file_path)
         raise e
-
