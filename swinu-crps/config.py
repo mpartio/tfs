@@ -24,7 +24,8 @@ class TrainingConfig:
     num_layers: int = 8
     num_blocks: List[int] = field(default_factory=lambda: [2, 2, 2, 2, 2, 2])
     window_size: int = 8
-    num_input_channels: int = 2
+    num_data_channels: int = 1
+    num_forcing_channels: int = 9
 
     # Training params
     batch_size: int = 32
@@ -83,7 +84,8 @@ def get_args():
     parser.add_argument("--num_layers", type=int)
     parser.add_argument("--num_blocks", type=int, nargs="+")
     parser.add_argument("--window_size", type=int, nargs="+")
-    parser.add_argument("--num_input_channels", type=int)
+    parser.add_argument("--num_data_channels", type=int)
+    parser.add_argument("--num_forcing_channels", type=int)
 
     # Training params
     parser.add_argument("--batch_size", type=int)

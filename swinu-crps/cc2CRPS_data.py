@@ -238,6 +238,9 @@ class SplitWrapper:
             forcing_x = gaussian_smooth(forcing_x)
             forcing_y = gaussian_smooth(forcing_y)
 
+        assert data_x.ndim == 4, "Invalid data_x shape: {}".format(data_x.shape)
+        assert data_y.ndim == 4, "Invalid data_y shape: {}".format(data_y.shape)
+
         return [(data_x, data_y), (forcing_x, forcing_y)]
 
     def __len__(self):

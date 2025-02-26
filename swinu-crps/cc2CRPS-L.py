@@ -8,6 +8,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from cc2CRPS import cc2CRPS
+from cc2pangu import cc2Pangu
 from crps import AlmostFairCRPSLoss
 from util import calculate_wavelet_snr
 from cc2CRPS_data import cc2DataModule
@@ -53,43 +54,93 @@ def create_directory_structure(base_directory):
     os.makedirs(f"{base_directory}/figures", exist_ok=True)
 
 
-class cc2CRPSModel(cc2CRPS, L.LightningModule):
+class cc2CRPSModel(cc2Pangu, L.LightningModule):
     def __init__(self, config):
         L.LightningModule.__init__(self)
-        cc2CRPS.__init__(
+        cc2Pangu.__init__(
             self,
             config,
         )
         self.crps_loss = nn.MSELoss()
         self.config = config
 
+    def roll_forecast(self, data, forcing, loss_fn):
+        # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
+        x, y = data
+        B, T, C, H, W = x.shape
+
+        tendencies = self(data, forcing, self.config.rollout_length)
+
+        # For single-step rollout
+        if self.config.rollout_length == 1:
+            # Calculate the ground truth delta between last input state and target
+            y_true = y - x[:, -1, ...].unsqueeze(1)
+
+            # Compute loss between predicted tendencies and true tendencies
+            assert (
+                tendencies.shape == y_true.shape
+            ), f"{tendencies.shape} != {y_true.shape}"
+            loss = loss_fn(tendencies, y_true)
+
+            # Generate the actual prediction by adding tendency to last input state
+            predictions = x[:, -1, ...].unsqueeze(1) + tendencies
+
+            return loss, tendencies, predictions
+
+        # Initialize empty lists for multi-step evaluation
+        losses = []
+        all_predictions = []
+
+        # Initial state is the last state from input sequence
+        current_state = x[:, -1, ...].unsqueeze(1)  # Shape: [B, 1, C, H, W]
+
+        # Loop through each rollout step
+        for t in range(self.config.rollout_length):
+            # Add the predicted tendency to get the next state
+            next_state = current_state + tendencies[:, t : t + 1, ...]
+
+            # Store the prediction
+            all_predictions.append(next_state)
+
+            # Calculate ground truth delta for this step
+            if t < y.shape[1]:  # Make sure we don't go beyond available ground truth
+                y_delta = y[:, t : t + 1, ...] - current_state
+                # Compute loss for this step
+                step_loss = loss_fn(tendencies[:, t : t + 1, ...], y_delta)
+                losses.append(step_loss)
+
+            # Update current state for next iteration
+            current_state = next_state
+
+        # Stack predictions into a single tensor
+        predictions = torch.cat(all_predictions, dim=1)
+
+        # Average the losses if we have multiple steps
+        avg_loss = torch.stack(losses).mean()
+
+        return avg_loss, tendencies, predictions
+
     def training_step(self, batch, batch_idx):
         data, forcing = batch
 
-        loss, tendencies, predictions = roll_forecast(
-            self,
+        loss, tendencies, predictions = self.roll_forecast(
             data,
             forcing,
-            config.rollout_length,
             loss_fn=self.crps_loss,
-            num_members=self.config.num_members,
         )
-        loss = loss.mean()
+
         self.log("train_loss", loss, sync_dist=True)
-        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
+        return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
 
-        loss, tendencies, predictions = roll_forecast(
-            self,
+        loss, tendencies, predictions = self.roll_forecast(
             data,
             forcing,
-            config.rollout_length,
             loss_fn=self.crps_loss,
-            num_members=self.config.num_members,
         )
-        loss = loss.mean()
+
         self.log("val_loss", loss, sync_dist=True)
         return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
@@ -151,6 +202,7 @@ if args.run_name is not None:
         config._run_name = args.run_name
 
 else:
+    assert args.generate_run_name, "Must provide a run name or generate one"
     config = get_config()
     model = cc2CRPSModel(config)
 
