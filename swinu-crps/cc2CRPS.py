@@ -81,7 +81,7 @@ class cc2CRPS(nn.Module):
         dim = config.hidden_dim
 
         self.patch_embed = PatchEmbedding(
-            in_channels=2, dim=dim, patch_size=2, stride=2
+            in_channels=config.num_input_channels, dim=dim, patch_size=2, stride=2
         )
 
         input_h, input_w = config.input_resolution
@@ -239,21 +239,19 @@ class cc2CRPS(nn.Module):
 
         x = self.final_expand(x)
         x = self.prediction_head(x)
+
         return x
 
     def soft_clamp(self, x, min_val, max_val, T=5):
         return min_val + (max_val - min_val) * torch.sigmoid(T * x)
 
     def members_vec(self, x, timestep):
-        B, M, C, H, W = x.shape
+        B, C, H, W = x.shape
 
-        # Reshape to treat batch and members as one batch dimension
-        xm = x.reshape(B * M, C, H, W)
+        last_state = torch.clone(x[:, 11, :, :]).unsqueeze(1).detach()  # B, 1, H, W
 
-        last_state = torch.clone(xm[:, -1:, :, :]).detach()  # B*M, 1, H, W
-
-        xm = self.patch_embed(xm, timestep)
-        features = torch.clone(xm).detach()
+        x = self.patch_embed(x, timestep)
+        features = torch.clone(x).detach()
 
         # Get tendencies for all members at once
         tendency = self._forward(features)
@@ -261,13 +259,13 @@ class cc2CRPS(nn.Module):
         # Calculate allowed deltas for all members
         max_allowed_delta = 1.0 - last_state
         min_allowed_delta = 0.0 - last_state
-        delta = self.soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
+        tendency = self.soft_clamp(tendency, min_allowed_delta, max_allowed_delta)
 
         # Reshape back to separate batch and member dimensions
-        delta = delta.view(B, M, 1, H, W)
+        tendency = tendency.view(B, 1, H, W)
 
-        predictions = x[:, :, -1:, ...] + delta
-        return delta, predictions
+        predictions = last_state + tendency
+        return tendency, predictions
 
     def forward(self, x, timestep):
         assert (
@@ -277,7 +275,10 @@ class cc2CRPS(nn.Module):
             x.shape
         )
 
-        B, M, C, H, W = x.shape
+        B, T, H, W, C = x.shape
+
+        x = x.permute(0, 1, 4, 2, 3).reshape(B, T * C, H, W)
+
         timestep = 1 if timestep == 1 else 2
 
         return self.members_vec(x, timestep)
