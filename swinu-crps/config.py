@@ -24,6 +24,7 @@ class TrainingConfig:
     num_layers: int = 8
     num_blocks: List[int] = field(default_factory=lambda: [2, 2, 2, 2, 2, 2])
     window_size: int = 8
+    num_input_channels: int = 2
 
     # Training params
     batch_size: int = 32
@@ -43,27 +44,7 @@ class TrainingConfig:
     data_path: str = "../data/nwcsaf-128x128.zarr"
     limit_data_to: int = None
 
-    _run_name: str = None
-
-    def _initialize_run(self):
-        if not hasattr(self, "_run_name") or self._run_name is None:
-            run_name_file = "current_run_name.txt"
-
-            if int(os.environ.get("SLURM_PROCID", 0)) == 0:
-                self._run_name = randomname.get_name()
-                with open(run_name_file, "w") as f:
-                    f.write(self._run_name)
-            else:
-                while not os.path.exists(run_name_file):
-                    time.sleep(0.1)
-                with open(run_name_file, "r") as f:
-                    self._run_name = f.read().strip()
-
-    @property
-    def run_name(self) -> str:
-        self._initialize_run()
-        return self._run_name
-
+    run_name: str = None
     run_dir: str = None
     run_number: int = None
 
@@ -102,6 +83,7 @@ def get_args():
     parser.add_argument("--num_layers", type=int)
     parser.add_argument("--num_blocks", type=int, nargs="+")
     parser.add_argument("--window_size", type=int, nargs="+")
+    parser.add_argument("--num_input_channels", type=int)
 
     # Training params
     parser.add_argument("--batch_size", type=int)
@@ -122,6 +104,7 @@ def get_args():
     parser.add_argument("--limit_data_to", type=int)
 
     parser.add_argument("--only_config", action="store_true")
+    parser.add_argument("--generate_run_name", action="store_true")
 
     args = parser.parse_args()
 
@@ -138,13 +121,15 @@ def get_config():
     else:
         config = TrainingConfig()
 
+    if args.generate_run_name:
+        config.run_name = randomname.get_name()
+
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k != "only_config":
-            if k == "run_name":
-                k = "_run_name"
+        if v is not None and k not in ("only_config", "generate_run_name"):
             setattr(config, k, v)
             print(k, "to", v)
+
     return config
 
 
