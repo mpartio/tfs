@@ -118,7 +118,7 @@ def get_args():
     parser.add_argument("--run_name", type=str)
     parser.add_argument("--data_path", type=str)
 
-    parser.add_argument("--apply_smoothing", action="store_true")
+    parser.add_argument("--apply_smoothing", action=argparse.BooleanOptionalAction)
     parser.add_argument("--limit_data_to", type=int)
 
     parser.add_argument("--only_config", action="store_true")
