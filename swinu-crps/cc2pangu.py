@@ -17,9 +17,7 @@ class PatchEmbed(nn.Module):
         embed_dim,
     ):
         super().__init__()
-        self.img_size = (
-            img_size if isinstance(img_size, tuple) else (img_size, img_size)
-        )
+        self.img_size = img_size if isinstance(img_size, list) else (img_size, img_size)
         self.patch_size = (
             patch_size if isinstance(patch_size, tuple) else (patch_size, patch_size)
         )
@@ -259,13 +257,12 @@ class cc2Pangu(nn.Module):
         self,
         config,
         output_channels=1,
-        encoder_depth=6,
-        decoder_depth=6,
+        encoder_depth=8,
+        decoder_depth=8,
         num_heads=12,
         mlp_ratio=4.0,
         drop_rate=0.1,
         attn_drop_rate=0.1,
-        max_seq_len=12,  # Maximum sequence length for temporal modeling
     ):
         super().__init__()
 

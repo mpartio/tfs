@@ -86,7 +86,6 @@ class TrainDataPlotterCallback(L.Callback):
                 forcing,
                 self.config.rollout_length,
                 None,
-                num_members=self.config.num_members,
             )
 
         x, y = data
@@ -282,7 +281,6 @@ class DiagnosticCallback(L.Callback):
                 forcing,
                 self.config.rollout_length,
                 loss_fn=None,
-                num_members=self.config.num_members,
             )
 
         x, y = data
