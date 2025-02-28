@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
-from layers import FeedForward
+from layers import FeedForward, PatchMerge
 import config
 
 
@@ -149,7 +149,7 @@ class PatchExpand(nn.Module):
     def __init__(self, input_dim, output_dim, scale_factor=2):
         super().__init__()
         self.dim = input_dim
-        self.expand = nn.Linear(input_dim, output_dim * scale_factor * scale_factor)
+        self.expand = nn.Linear(input_dim, output_dim * scale_factor**2)
         self.scale_factor = scale_factor
 
     def forward(self, x, H, W):
@@ -178,8 +178,8 @@ class cc2Pangu(nn.Module):
     def __init__(
         self,
         config,
-        encoder_depth=8,
-        decoder_depth=8,
+        encoder_depth=4,
+        decoder_depth=4,
         num_heads=12,
         mlp_ratio=4.0,
         drop_rate=0.1,
@@ -212,7 +212,7 @@ class cc2Pangu(nn.Module):
         self.dropout = nn.Dropout(drop_rate)
 
         # Transformer encoder blocks
-        self.encoder_blocks = nn.ModuleList(
+        self.encoder1 = nn.ModuleList(
             [
                 EncoderBlock(
                     dim=self.embed_dim,
@@ -226,11 +226,48 @@ class cc2Pangu(nn.Module):
             ]
         )
 
-        # Transformer decoder blocks
-        self.decoder_blocks = nn.ModuleList(
+        ir = (
+            config.input_resolution[0] // self.patch_size,
+            config.input_resolution[1] // self.patch_size,
+        )
+        self.downsample = PatchMerge(ir, self.embed_dim, time_dim=2)
+
+        self.encoder2 = nn.ModuleList(
+            [
+                EncoderBlock(
+                    dim=self.embed_dim * 2,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=True,
+                    drop=drop_rate,
+                    attn_drop=attn_drop_rate,
+                )
+                for _ in range(encoder_depth)
+            ]
+        )
+
+        self.decoder1 = nn.ModuleList(
             [
                 DecoderBlock(
-                    dim=self.embed_dim,
+                    dim=self.embed_dim * 2,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=True,
+                    drop=drop_rate,
+                    attn_drop=attn_drop_rate,
+                )
+                for _ in range(decoder_depth)
+            ]
+        )
+
+        self.upsample = PatchExpand(
+            self.embed_dim * 2, self.embed_dim * 2, scale_factor=2
+        )
+
+        self.decoder2 = nn.ModuleList(
+            [
+                DecoderBlock(
+                    dim=self.embed_dim * 2,
                     num_heads=num_heads,
                     mlp_ratio=mlp_ratio,
                     qkv_bias=True,
@@ -242,11 +279,12 @@ class cc2Pangu(nn.Module):
         )
 
         # Final norm and output projection
-        self.norm_final = nn.LayerNorm(self.embed_dim)
+        self.norm_final = nn.LayerNorm(self.embed_dim * 2)
 
         # Patch expansion for upsampling to original resolution
+
         self.patch_expand = PatchExpand(
-            self.embed_dim, self.embed_dim // 4, scale_factor=1
+            self.embed_dim * 2, self.embed_dim // 4, scale_factor=1
         )
 
         self.final_expand = nn.Sequential(
@@ -272,7 +310,6 @@ class cc2Pangu(nn.Module):
     def encode(self, data, forcing):
         """Encode input sequence into latent representation"""
         x = self.patch_embed(data[0], forcing[0])  # [B, T, patches, embed_dim]
-
         B, T, P, D = x.shape
 
         # Add positional embedding to each patch
@@ -285,12 +322,18 @@ class cc2Pangu(nn.Module):
         x = self.dropout(x)
 
         # Pass through encoder blocks
-        for block in self.encoder_blocks:
+        for block in self.encoder1:
+            x = block(x)
+
+        # Downsample
+        x = self.downsample(x)
+
+        # Pass through encoder blocks
+        for block in self.encoder2:
             x = block(x)
 
         # Reshape back to separate time and space dimensions
-        x = x.reshape(B, T, P, D)
-
+        x = x.reshape(B, T, -1, D * 2)
         return x
 
     def decode(self, encoded, target_len):
@@ -312,14 +355,41 @@ class cc2Pangu(nn.Module):
 
             # Process through decoder blocks
             x = decoder_in
-            for block in self.decoder_blocks:
+            for block in self.decoder1:
                 x = block(x, encoded_flat)
 
             # Get the delta prediction
-            delta_pred = x[:, -P:].reshape(B, 1, P, D)
+            delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
+
+            upsampled_delta, P_new, D_new = self.upsample(
+                delta_pred1.reshape(B, -1, D), H=int(math.sqrt(P)), W=int(math.sqrt(P))
+            )
+
+            P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
+
+            upsampled_delta = upsampled_delta.reshape(B, 1, P_new, D_new)
+            P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
+            x2 = upsampled_delta.reshape(B, -1, D_new)
+
+            for block in self.decoder2:
+                x2 = block(x2, encoded_flat)
+
+            delta_pred2 = x2.reshape(B, 1, P_new, D_new)
+
+            # If latest_state doesn't match the upsampled dimensions, we need to upsample it too
+            if latest_state.shape[2] != P_new:
+                latest_state_upsampled, _, _ = self.upsample(
+                    latest_state.reshape(B, -1, D),
+                    H=int(math.sqrt(P)),
+                    W=int(math.sqrt(P)),
+                )
+                latest_state_upsampled = latest_state_upsampled.reshape(
+                    B, 1, P_new, D_new
+                )
+                latest_state = latest_state_upsampled
 
             # Add delta to latest state to get new state
-            new_state = latest_state + delta_pred
+            new_state = latest_state + delta_pred2
 
             # Add new state to outputs
             outputs.append(new_state)
@@ -327,8 +397,11 @@ class cc2Pangu(nn.Module):
             # Update latest state
             latest_state = new_state
 
-            # Update decoder input for next step
-            decoder_input = torch.cat([decoder_input, new_state], dim=1)
+            if t == 0:
+                # First iteration after upsampling
+                decoder_input = new_state
+            else:
+                decoder_input = torch.cat([decoder_input, new_state], dim=1)
 
         # Concatenate all outputs
         outputs = torch.cat(outputs, dim=1)

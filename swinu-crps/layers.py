@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from swin import SwinTransformerBlock
 from einops import rearrange
+from math import sqrt
 
 
 class SkipConnection(nn.Module):
@@ -65,6 +66,53 @@ class SqueezeExciteBlock(nn.Module):
         return x * y
 
 
+class PatchMerge(nn.Module):
+    def __init__(self, input_resolution, dim, time_dim):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
+        self.norm = nn.LayerNorm(4 * dim)
+        self.time_dim = time_dim
+
+    def forward(self, x):
+        """
+        x: B, H*W, C
+        """
+        H, W = self.input_resolution
+        B, L, C = x.shape
+        T = self.time_dim
+
+        assert L == T * H * W, f"input feature has wrong size: {L} != {T * H * W}"
+        assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
+
+        x = x.reshape(B, T, H * W, C)
+
+        # Process each time step separately
+        output_time_steps = []
+
+        for t in range(T):
+            xt = x[:, t, :, :]  # B H*W C
+            xt = xt.reshape(B, H, W, C)
+
+            x0 = xt[:, 0::2, 0::2, :]  # B H/2 W/2 C
+            x1 = xt[:, 1::2, 0::2, :]  # B H/2 W/2 C
+            x2 = xt[:, 0::2, 1::2, :]  # B H/2 W/2 C
+            x3 = xt[:, 1::2, 1::2, :]  # B H/2 W/2 C
+            xt = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
+            xt = self.norm(xt)
+            xt = self.reduction(xt)
+            xt = xt.reshape(B, (H // 2) * (W // 2), 2 * C)  # [B, H/2*W/2, 2*C]
+            output_time_steps.append(xt)
+
+        # Recombine time steps
+        x = torch.cat(
+            [step.unsqueeze(1) for step in output_time_steps], dim=1
+        )  # [B, T, H/2*W/2, 2*C]
+        x = x.reshape(B, T * (H // 2) * (W // 2), 2 * C)  # [B, T*H/2*W/2, 2*C]
+        return x
+
+
 class PatchMerging(nn.Module):
     r"""Patch Merging Layer.
 
@@ -88,7 +136,7 @@ class PatchMerging(nn.Module):
         H, W = self.input_resolution
         B, L, C = x.shape
 
-        assert L == H * W, "input feature has wrong size"
+        assert L == H * W, f"input feature has wrong size: {L} != {H * W}"
         assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
 
         x = x.view(B, H, W, C)
