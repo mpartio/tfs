@@ -8,24 +8,22 @@ import config
 
 
 class PatchEmbed(nn.Module):
-    """Convert image data into patches"""
-
     def __init__(
         self,
-        img_size,
+        input_resolution,
         patch_size,
         data_channels,
         forcing_channels,
         embed_dim,
     ):
         super().__init__()
-        assert type(img_size) in (list, tuple)
-        self.img_size = img_size
+        assert type(input_resolution) in (list, tuple)
+        self.input_resolution = input_resolution
         self.patch_size = (
             patch_size if isinstance(patch_size, tuple) else (patch_size, patch_size)
         )
-        self.num_patches = (self.img_size[0] // self.patch_size[0]) * (
-            self.img_size[1] // self.patch_size[1]
+        self.num_patches = (self.input_resolution[0] // self.patch_size[0]) * (
+            self.input_resolution[1] // self.patch_size[1]
         )
 
         # Separate projections for data and forcings
@@ -79,9 +77,7 @@ class PatchEmbed(nn.Module):
 class EncoderBlock(nn.Module):
     """Standard Transformer encoder block"""
 
-    def __init__(
-        self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, drop=0.0, attn_drop=0.0
-    ):
+    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(
@@ -106,9 +102,7 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     """Transformer decoder block with self-attention and cross-attention"""
 
-    def __init__(
-        self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, drop=0.0, attn_drop=0.0
-    ):
+    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.self_attn = nn.MultiheadAttention(
@@ -132,7 +126,7 @@ class DecoderBlock(nn.Module):
         self.norm3 = nn.LayerNorm(dim)
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
 
-    def forward(self, x, context, self_attention_mask=None):
+    def forward(self, x, context):
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x)
         self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
@@ -184,7 +178,6 @@ class cc2Pangu(nn.Module):
     def __init__(
         self,
         config,
-        output_channels=1,
         encoder_depth=8,
         decoder_depth=8,
         num_heads=12,
@@ -201,7 +194,7 @@ class cc2Pangu(nn.Module):
 
         # Patch embedding for converting images to tokens
         self.patch_embed = PatchEmbed(
-            img_size=config.input_resolution,
+            input_resolution=config.input_resolution,
             patch_size=self.patch_size,
             data_channels=config.num_data_channels,
             forcing_channels=config.num_forcing_channels,
@@ -257,7 +250,9 @@ class cc2Pangu(nn.Module):
         )
 
         self.final_expand = nn.Sequential(
-            nn.Linear(self.embed_dim // 4, self.patch_size**2 * output_channels),
+            nn.Linear(
+                self.embed_dim // 4, self.patch_size**2 * config.num_data_channels
+            ),
             nn.Tanh(),
         )
 
@@ -273,26 +268,6 @@ class cc2Pangu(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-
-    def _prepare_decoder_input(self, B, seq_len):
-        """Create an initial decoder input (start token or zeros)"""
-        decoder_input = torch.zeros(
-            B, seq_len, self.num_patches, self.embed_dim, device=self.pos_embed.device
-        )
-        # Add positional embedding to each time step
-        decoder_input = decoder_input + self.pos_embed.unsqueeze(1)
-        return decoder_input
-
-    def _create_causal_mask(self, seq_len):
-        """Create a causal mask for autoregressive generation"""
-        # Create mask that prevents attending to future time steps
-        mask = torch.ones(
-            seq_len, seq_len, dtype=torch.bool, device=self.pos_embed.device
-        )
-        mask = torch.triu(
-            mask, diagonal=1
-        )  # Upper triangular part (excluding diagonal)
-        return mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, seq_len]
 
     def encode(self, data, forcing):
         """Encode input sequence into latent representation"""
@@ -318,7 +293,7 @@ class cc2Pangu(nn.Module):
 
         return x
 
-    def decode_autoregressive(self, encoded, target_len):
+    def decode(self, encoded, target_len):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -328,11 +303,12 @@ class cc2Pangu(nn.Module):
         # Keep track of the latest state
         latest_state = encoded[:, -1:, :, :]  # Just the last time step
 
+        encoded_flat = encoded.reshape(B, -1, D)
+
         # Decode one step at a time
         for t in range(target_len):
             # Reshape for decoder
             decoder_in = decoder_input.reshape(B, -1, D)
-            encoded_flat = encoded.reshape(B, -1, D)
 
             # Process through decoder blocks
             x = decoder_in
@@ -400,15 +376,13 @@ class cc2Pangu(nn.Module):
             data[0].shape
         )
 
-        # Encode input sequence
         encoded = self.encode(
             data,
             forcing,
         )
 
-        decoded = self.decode_autoregressive(encoded, target_len)
+        decoded = self.decode(encoded, target_len)
 
-        # Project back to image space
         output = self.project_to_image(decoded)
 
         return output
