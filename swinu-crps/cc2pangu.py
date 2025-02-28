@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
+from layers import FeedForward
+import config
 
 
 class PatchEmbed(nn.Module):
@@ -17,7 +19,8 @@ class PatchEmbed(nn.Module):
         embed_dim,
     ):
         super().__init__()
-        self.img_size = img_size if isinstance(img_size, list) else (img_size, img_size)
+        assert type(img_size) in (list, tuple)
+        self.img_size = img_size
         self.patch_size = (
             patch_size if isinstance(patch_size, tuple) else (patch_size, patch_size)
         )
@@ -73,89 +76,6 @@ class PatchEmbed(nn.Module):
         return embeddings
 
 
-class MultiHeadAttention(nn.Module):
-    """Multi-head self-attention with optional cross-attention mode"""
-
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0.0, proj_drop=0.0):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim**-0.5
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
-
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x, context=None, attention_mask=None):
-        # Self-attention if context is None, otherwise cross-attention
-        B, N, C = x.shape
-
-        # Project queries from x
-        q = (
-            self.q(x)
-            .reshape(B, N, self.num_heads, C // self.num_heads)
-            .permute(0, 2, 1, 3)
-        )  # B, num_heads, N, head_dim
-
-        # Get keys and values (either from context or x)
-        if context is not None:
-            k = (
-                self.k(context)
-                .reshape(B, context.size(1), self.num_heads, C // self.num_heads)
-                .permute(0, 2, 1, 3)
-            )
-            v = (
-                self.v(context)
-                .reshape(B, context.size(1), self.num_heads, C // self.num_heads)
-                .permute(0, 2, 1, 3)
-            )
-        else:
-            k = (
-                self.k(x)
-                .reshape(B, N, self.num_heads, C // self.num_heads)
-                .permute(0, 2, 1, 3)
-            )
-            v = (
-                self.v(x)
-                .reshape(B, N, self.num_heads, C // self.num_heads)
-                .permute(0, 2, 1, 3)
-            )
-
-        # Compute attention scores
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # B, num_heads, N, context_len/N
-
-        # Get attention weights and apply to values
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)  # B, N, C
-        x = self.proj(x)
-        x = self.proj_drop(x)
-
-        return x
-
-
-class FeedForward(nn.Module):
-    """Standard feedforward network with GELU activation"""
-
-    def __init__(self, dim, hidden_dim, dropout=0.0):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
 class EncoderBlock(nn.Module):
     """Standard Transformer encoder block"""
 
@@ -164,18 +84,21 @@ class EncoderBlock(nn.Module):
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = MultiHeadAttention(
-            dim,
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
             num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
+            dropout=attn_drop,
+            bias=qkv_bias,
+            batch_first=True,
         )
+
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+        x_norm = self.norm1(x)
+        attn, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + attn
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -188,21 +111,22 @@ class DecoderBlock(nn.Module):
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.self_attn = MultiHeadAttention(
-            dim,
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=dim,
             num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
+            dropout=attn_drop,
+            bias=qkv_bias,
+            batch_first=True,
         )
 
         self.norm2 = nn.LayerNorm(dim)
-        self.cross_attn = MultiHeadAttention(
-            dim,
+
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=dim,
             num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
+            dropout=attn_drop,
+            bias=qkv_bias,
+            batch_first=True,
         )
 
         self.norm3 = nn.LayerNorm(dim)
@@ -210,10 +134,14 @@ class DecoderBlock(nn.Module):
 
     def forward(self, x, context, self_attention_mask=None):
         # Self-attention (without mask for now to avoid shape issues)
-        x = x + self.self_attn(self.norm1(x))
+        x_norm1 = self.norm1(x)
+        self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+        x = x + self_attn
 
         # Cross-attention to encoder outputs
-        x = x + self.cross_attn(self.norm2(x), context=context)
+        x_norm2 = self.norm2(x)
+        cross_attn, _ = self.cross_attn(x_norm2, context, context)
+        x = x + cross_attn
 
         # Feedforward
         x = x + self.mlp(self.norm3(x))
@@ -266,7 +194,7 @@ class cc2Pangu(nn.Module):
     ):
         super().__init__()
 
-        self.patch_size = 8
+        self.patch_size = 4
         self.embed_dim = config.hidden_dim
         self.h_patches = self.w_patches = config.input_resolution[0] // self.patch_size
         self.num_patches = self.h_patches * self.w_patches
@@ -330,7 +258,7 @@ class cc2Pangu(nn.Module):
 
         self.final_expand = nn.Sequential(
             nn.Linear(self.embed_dim // 4, self.patch_size**2 * output_channels),
-            nn.Tanh(),  # Adjust final activation based on your data range
+            nn.Tanh(),
         )
 
         # Initialize weights
@@ -431,39 +359,6 @@ class cc2Pangu(nn.Module):
 
         return outputs
 
-    def Xdecode_autoregressive(self, encoded, target_len=1):
-        """Autoregressive decoding for future time steps"""
-        B, T, P, D = encoded.shape
-        outputs = []
-
-        # Initial input is the encoded sequence
-        decoder_input = encoded
-
-        # Decode one step at a time
-        for t in range(target_len):
-            # Reshape for decoder (combine time and space dimensions)
-            decoder_in = decoder_input.reshape(B, -1, D)
-            encoded_flat = encoded.reshape(B, -1, D)
-
-            # Process each decoder block without mask (we'll handle autoregression manually)
-            x = decoder_in
-            for block in self.decoder_blocks:
-                x = block(x, encoded_flat)
-
-            # Get the last time step prediction
-            pred = x[:, -P:].reshape(B, 1, P, D)
-
-            # Add prediction to outputs
-            outputs.append(pred)
-
-            # Update decoder input for next step (autoregressive)
-            decoder_input = torch.cat([decoder_input, pred], dim=1)
-
-        # Concatenate all outputs
-        outputs = torch.cat(outputs, dim=1)  # [B, target_len, P, D]
-
-        return outputs
-
     def project_to_image(self, x):
         """Project latent representation back to image space"""
         B, T, P, D = x.shape
@@ -517,3 +412,26 @@ class cc2Pangu(nn.Module):
         output = self.project_to_image(decoded)
 
         return output
+
+
+if __name__ == "__main__":
+
+    # Sample data of shape (batch_size, times, channels, height, width)
+    sample_data = (torch.randn(1, 2, 1, 128, 128), torch.randn(1, 2, 1, 128, 128))
+    sample_forcing = (torch.randn(1, 2, 9, 128, 128), torch.randn(1, 2, 9, 128, 128))
+
+    # Create the model
+    model = cc2Pangu(config.get_config())
+
+    print(model)
+    print(
+        "Number of trainable parameters: {:,}".format(
+            sum(p.numel() for p in model.parameters() if p.requires_grad)
+        )
+    )
+
+    # Forward pass
+    output = model(sample_data, sample_forcing, 1)
+
+    print(f"Input shape: {sample_data[0].shape} and {sample_forcing[0].shape}")
+    print(f"Output shape: {output.shape}")
