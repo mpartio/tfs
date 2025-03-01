@@ -7,6 +7,86 @@ from layers import FeedForward, PatchMerge
 import config
 
 
+def get_padded_size(H, W, patch_size=4, num_merges=1):
+    # Calculate required factor for divisibility
+    required_factor = patch_size * (2**num_merges)
+
+    # Calculate target dimensions (must be divisible by required_factor)
+    target_h = ((H + required_factor - 1) // required_factor) * required_factor
+    target_w = ((W + required_factor - 1) // required_factor) * required_factor
+
+    return target_h, target_w
+
+
+def pad_tensor(tensor, patch_size=4, num_merges=1):
+    H, W = tensor.shape[-2:]
+
+    # Calculate required factor for divisibility
+    required_factor = patch_size * (2**num_merges)
+
+    # Calculate target dimensions (must be divisible by required_factor)
+    target_h = ((H + required_factor - 1) // required_factor) * required_factor
+    target_w = ((W + required_factor - 1) // required_factor) * required_factor
+
+    # Calculate padding needed
+    pad_h = target_h - H
+    pad_w = target_w - W
+
+    # Create padding configuration (left, right, top, bottom)
+    pad_left = 0
+    pad_right = pad_w
+    pad_top = 0
+    pad_bottom = pad_h
+
+    # Apply padding
+    if pad_h > 0 or pad_w > 0:
+        padded_tensor = F.pad(
+            tensor, (pad_left, pad_right, pad_top, pad_bottom), mode="constant", value=0
+        )
+    else:
+        padded_tensor = tensor
+
+    # Store padding info for later de-padding
+    padding_info = {
+        "original_size": (H, W),
+        "padded_size": (target_h, target_w),
+        "pad_h": pad_h,
+        "pad_w": pad_w,
+    }
+
+    return padded_tensor, padding_info
+
+
+def pad_tensors(tensors, patch_size=4, num_merges=1):
+    padded_list = []
+    for t in tensors:
+        padded, pad_info = pad_tensor(t, patch_size, num_merges)
+        padded_list.append(padded)
+
+    return padded_list, pad_info
+
+
+def depad_tensor(tensor, padding_info):
+    if padding_info["pad_h"] == 0 and padding_info["pad_w"] == 0:
+        return tensor
+
+    B, C, H, W = tensor.shape
+    original_h, original_w = padding_info["original_size"]
+
+    # Handle case where tensor has been processed and dimensions changed
+    # Scale the original dimensions to match current tensor's scale
+    scale_h = H / padding_info["padded_size"][0]
+    scale_w = W / padding_info["padded_size"][1]
+
+    target_h = int(original_h * scale_h)
+    target_w = int(original_w * scale_w)
+
+    # Extract the unpadded region
+    depadded_tensor = tensor[:, :, :target_h, :target_w]
+
+    return depadded_tensor
+
+
 class PatchEmbed(nn.Module):
     def __init__(
         self,
@@ -178,8 +258,8 @@ class cc2Pangu(nn.Module):
     def __init__(
         self,
         config,
-        encoder_depth=4,
-        decoder_depth=4,
+        encoder_depth=2,
+        decoder_depth=2,
         num_heads=12,
         mlp_ratio=4.0,
         drop_rate=0.1,
@@ -189,7 +269,8 @@ class cc2Pangu(nn.Module):
 
         self.patch_size = 4
         self.embed_dim = config.hidden_dim
-        self.h_patches = self.w_patches = config.input_resolution[0] // self.patch_size
+        self.h_patches = config.input_resolution[0] // self.patch_size
+        self.w_patches = config.input_resolution[1] // self.patch_size
         self.num_patches = self.h_patches * self.w_patches
 
         # Patch embedding for converting images to tokens
@@ -449,6 +530,9 @@ class cc2Pangu(nn.Module):
             data[0].shape
         )
 
+        data, pad_info = pad_tensors(data, 4, 1)
+        forcing, _ = pad_tensors(forcing, 4, 1)
+
         encoded = self.encode(
             data,
             forcing,
@@ -458,17 +542,22 @@ class cc2Pangu(nn.Module):
 
         output = self.project_to_image(decoded)
 
+        output = depad_tensor(output)
+
         return output
 
 
 if __name__ == "__main__":
 
+    conf = config.get_config()
+
+    conf.input_resolution = (268, 238)
     # Sample data of shape (batch_size, times, channels, height, width)
-    sample_data = (torch.randn(1, 2, 1, 128, 128), torch.randn(1, 2, 1, 128, 128))
-    sample_forcing = (torch.randn(1, 2, 9, 128, 128), torch.randn(1, 2, 9, 128, 128))
+    sample_data = (torch.randn(1, 2, 1, 268, 238), torch.randn(1, 2, 1, 268, 238))
+    sample_forcing = (torch.randn(1, 2, 9, 268, 238), torch.randn(1, 2, 9, 268, 238))
 
     # Create the model
-    model = cc2Pangu(config.get_config())
+    model = cc2Pangu(conf)
 
     print(model)
     print(
