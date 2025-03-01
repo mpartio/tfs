@@ -97,9 +97,14 @@ class AnemoiDataset(Dataset):
         self.group_size = group_size
         self.time_steps = len(self.data.dates)
 
-        self.data_names = [
-            "effective_cloudiness",
-        ]
+        guess_names = ["effective_cloudiness", "tcc"]
+
+        self.data_names = []
+
+        for n in guess_names:
+            if n in self.data.variables:
+                self.data_names.append(n)
+
         self.forcings_names = [
             "cos_latitude",
             "sin_latitude",
