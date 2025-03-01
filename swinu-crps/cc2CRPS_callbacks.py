@@ -35,11 +35,13 @@ def var_and_mae(predictions, y):
 def analyze_gradients(model):
     # Group gradients by network section
     gradient_stats = {
-        "encoder": [],
-        "attention": [],
-        "decoder": [],
-        "prediction": [],
-        "skip": [],
+        "encoder1": [],
+        "encoder2": [],
+        "upsample": [],
+        "downsample": [],
+        "decoder1": [],
+        "decoder2": [],
+        "expand": [],
     }
 
     for name, param in model.named_parameters():
