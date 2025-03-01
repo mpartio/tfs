@@ -147,7 +147,7 @@ if args.run_name is not None:
         config.apply_args(args)
 
     if args.run_name is not None:
-        config._run_name = args.run_name
+        config.run_name = args.run_name
 
 else:
     assert args.generate_run_name, "Must provide a run name or generate one"
