@@ -21,12 +21,7 @@ def get_padded_size(H, W, patch_size=4, num_merges=1):
 def pad_tensor(tensor, patch_size=4, num_merges=1):
     H, W = tensor.shape[-2:]
 
-    # Calculate required factor for divisibility
-    required_factor = patch_size * (2**num_merges)
-
-    # Calculate target dimensions (must be divisible by required_factor)
-    target_h = ((H + required_factor - 1) // required_factor) * required_factor
-    target_w = ((W + required_factor - 1) // required_factor) * required_factor
+    target_h, target_w = get_padded_size(H, W, patch_size, num_merges)
 
     # Calculate padding needed
     pad_h = target_h - H
@@ -70,7 +65,7 @@ def depad_tensor(tensor, padding_info):
     if padding_info["pad_h"] == 0 and padding_info["pad_w"] == 0:
         return tensor
 
-    B, C, H, W = tensor.shape
+    H, W = tensor.shape[-2:]
     original_h, original_w = padding_info["original_size"]
 
     # Handle case where tensor has been processed and dimensions changed
@@ -235,7 +230,7 @@ class PatchExpand(nn.Module):
     def forward(self, x, H, W):
         # x: [B, H*W, C]
         B, L, C = x.shape
-        assert L == H * W, "Input feature has wrong size"
+        assert L == H * W, "Input feature has wrong size: {} vs {}".format(L, H * W)
 
         x = self.expand(x)  # B, H*W, C*scale_factor^2
 
@@ -269,13 +264,22 @@ class cc2Pangu(nn.Module):
 
         self.patch_size = 4
         self.embed_dim = config.hidden_dim
-        self.h_patches = config.input_resolution[0] // self.patch_size
-        self.w_patches = config.input_resolution[1] // self.patch_size
+
+        input_resolution = get_padded_size(
+            config.input_resolution[0], config.input_resolution[1], self.patch_size, 1
+        )
+
+        if config.input_resolution != input_resolution:
+            print(
+                f"Input resolution changed from {config.input_resolution} to {input_resolution}"
+            )
+        self.h_patches = input_resolution[0] // self.patch_size
+        self.w_patches = input_resolution[1] // self.patch_size
         self.num_patches = self.h_patches * self.w_patches
 
         # Patch embedding for converting images to tokens
         self.patch_embed = PatchEmbed(
-            input_resolution=config.input_resolution,
+            input_resolution=input_resolution,
             patch_size=self.patch_size,
             data_channels=config.num_data_channels,
             forcing_channels=config.num_forcing_channels,
@@ -307,11 +311,13 @@ class cc2Pangu(nn.Module):
             ]
         )
 
-        ir = (
-            config.input_resolution[0] // self.patch_size,
-            config.input_resolution[1] // self.patch_size,
+        self.input_resolution_halved = (
+            input_resolution[0] // self.patch_size,
+            input_resolution[1] // self.patch_size,
         )
-        self.downsample = PatchMerge(ir, self.embed_dim, time_dim=2)
+        self.downsample = PatchMerge(
+            self.input_resolution_halved, self.embed_dim, time_dim=2
+        )
 
         self.encoder2 = nn.ModuleList(
             [
@@ -442,8 +448,12 @@ class cc2Pangu(nn.Module):
             # Get the delta prediction
             delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
 
+            new_H, new_W = self.input_resolution_halved
+            new_H = new_H // 2  # 2 = num_times
+            new_W = new_W // 2  # 2 = num_times
+
             upsampled_delta, P_new, D_new = self.upsample(
-                delta_pred1.reshape(B, -1, D), H=int(math.sqrt(P)), W=int(math.sqrt(P))
+                delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
             )
 
             P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
@@ -461,8 +471,8 @@ class cc2Pangu(nn.Module):
             if latest_state.shape[2] != P_new:
                 latest_state_upsampled, _, _ = self.upsample(
                     latest_state.reshape(B, -1, D),
-                    H=int(math.sqrt(P)),
-                    W=int(math.sqrt(P)),
+                    H=new_H,
+                    W=new_W,
                 )
                 latest_state_upsampled = latest_state_upsampled.reshape(
                     B, 1, P_new, D_new
@@ -500,7 +510,7 @@ class cc2Pangu(nn.Module):
         outputs = []
         for t in range(T):
             # Expand patches back to image resolution
-            h_patches = w_patches = int(math.sqrt(P))
+            h_patches, w_patches = self.input_resolution_halved
             expanded, h_new, w_new = self.patch_expand(x[:, t], h_patches, w_patches)
 
             # Project to output channels and reshape to image format
@@ -530,9 +540,10 @@ class cc2Pangu(nn.Module):
             data[0].shape
         )
 
-        data, pad_info = pad_tensors(data, 4, 1)
+        data, padding_info = pad_tensors(data, 4, 1)
         forcing, _ = pad_tensors(forcing, 4, 1)
 
+        print(f"Data shape: {data[0].shape}")
         encoded = self.encode(
             data,
             forcing,
@@ -542,7 +553,7 @@ class cc2Pangu(nn.Module):
 
         output = self.project_to_image(decoded)
 
-        output = depad_tensor(output)
+        output = depad_tensor(output, padding_info)
 
         return output
 
