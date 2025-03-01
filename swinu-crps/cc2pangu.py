@@ -7,7 +7,7 @@ from layers import FeedForward, PatchMerge
 import config
 
 
-def get_padded_size(H, W, patch_size=4, num_merges=1):
+def get_padded_size(H, W, patch_size, num_merges=1):
     # Calculate required factor for divisibility
     required_factor = patch_size * (2**num_merges)
 
@@ -18,9 +18,8 @@ def get_padded_size(H, W, patch_size=4, num_merges=1):
     return target_h, target_w
 
 
-def pad_tensor(tensor, patch_size=4, num_merges=1):
+def pad_tensor(tensor, patch_size, num_merges=1):
     H, W = tensor.shape[-2:]
-
     target_h, target_w = get_padded_size(H, W, patch_size, num_merges)
 
     # Calculate padding needed
@@ -52,7 +51,7 @@ def pad_tensor(tensor, patch_size=4, num_merges=1):
     return padded_tensor, padding_info
 
 
-def pad_tensors(tensors, patch_size=4, num_merges=1):
+def pad_tensors(tensors, patch_size, num_merges=1):
     padded_list = []
     for t in tensors:
         padded, pad_info = pad_tensor(t, patch_size, num_merges)
@@ -77,7 +76,7 @@ def depad_tensor(tensor, padding_info):
     target_w = int(original_w * scale_w)
 
     # Extract the unpadded region
-    depadded_tensor = tensor[:, :, :target_h, :target_w]
+    depadded_tensor = tensor[:, :, :, :target_h, :target_w]
 
     return depadded_tensor
 
@@ -262,8 +261,10 @@ class cc2Pangu(nn.Module):
     ):
         super().__init__()
 
-        self.patch_size = 4
+        self.patch_size = config.patch_size
         self.embed_dim = config.hidden_dim
+
+        self.real_input_resolution = config.input_resolution
 
         input_resolution = get_padded_size(
             config.input_resolution[0], config.input_resolution[1], self.patch_size, 1
@@ -543,7 +544,6 @@ class cc2Pangu(nn.Module):
         data, padding_info = pad_tensors(data, 4, 1)
         forcing, _ = pad_tensors(forcing, 4, 1)
 
-        print(f"Data shape: {data[0].shape}")
         encoded = self.encode(
             data,
             forcing,
@@ -552,9 +552,11 @@ class cc2Pangu(nn.Module):
         decoded = self.decode(encoded, target_len)
 
         output = self.project_to_image(decoded)
-
         output = depad_tensor(output, padding_info)
 
+        assert (
+            list(output.shape[-2:]) == self.real_input_resolution
+        ), f"Output shape {output.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
         return output
 
 

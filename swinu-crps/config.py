@@ -26,6 +26,7 @@ class TrainingConfig:
     window_size: int = 8
     num_data_channels: int = 1
     num_forcing_channels: int = 9
+    patch_size: int = 4
 
     # Training params
     batch_size: int = 32
@@ -86,6 +87,7 @@ def get_args():
     parser.add_argument("--window_size", type=int, nargs="+")
     parser.add_argument("--num_data_channels", type=int)
     parser.add_argument("--num_forcing_channels", type=int)
+    parser.add_argument("--patch_size", type=int)
 
     # Training params
     parser.add_argument("--batch_size", type=int)
