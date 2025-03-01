@@ -68,6 +68,7 @@ class TrainDataPlotterCallback(L.Callback):
         self.dataloader = dataloader
         self.config = config
 
+    @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
             return
@@ -191,6 +192,7 @@ class DiagnosticCallback(L.Callback):
         self.freq = freq
         self.config = config
 
+    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
@@ -227,6 +229,7 @@ class DiagnosticCallback(L.Callback):
             self.train_var.append(var)
             self.train_mae.append(mae)
 
+    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
@@ -257,6 +260,7 @@ class DiagnosticCallback(L.Callback):
             self.val_var.append(var)
             self.val_mae.append(mae)
 
+    @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
             return
@@ -289,6 +293,48 @@ class DiagnosticCallback(L.Callback):
         )
 
         self.plot_history(trainer.current_epoch)
+
+    @rank_zero_only
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Convert any tensors/numpy arrays to Python types
+        def convert_to_serializable(obj):
+            if hasattr(obj, "tolist"):  # Handle tensors/numpy arrays
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(i) for i in obj]
+            else:
+                return obj
+
+        D = {"config": {}, "statistics": {}}
+
+        saved_variables = [
+            "train_loss",
+            # "train_mae",
+            # "train_var",
+            "val_loss",
+            # "val_mae",
+            # "val_var",
+            "val_snr",
+            "lr",
+            "gradients_mean",
+            "gradients_std",
+            "freq",
+        ]
+
+        for k in saved_variables:
+            D["statistics"][k] = self.__dict__[k]
+
+        for k in self.config.__dict__.keys():
+            D["config"][k] = self.config.__dict__[k]
+
+        D["config"]["current_iteration"] = trainer.global_step
+
+        filename = f"{self.config.run_dir}/run-info.json"
+
+        with open(filename, "w") as f:
+            json.dump(D, f, indent=4, default=convert_to_serializable)
 
     def plot_visual(self, input_field, truth, pred, tendencies, epoch):
         plt.figure(figsize=(24, 12))
@@ -538,6 +584,7 @@ class DiagnosticCallback(L.Callback):
 
         plt.close()
 
+
     def on_train_epoch_end(self, trainer, pl_module):
         # Convert any tensors/numpy arrays to Python types
         def convert_to_serializable(obj):
@@ -586,6 +633,7 @@ class LazyLoggerCallback(L.Callback):
         self.config = config
         self.logger_created = False
 
+    @rank_zero_only
     def on_train_start(self, trainer, pl_module):
         """This runs after the sanity check is successful."""
         if not self.logger_created and get_rank() == 0:
