@@ -252,11 +252,11 @@ class cc2DataModule(L.LightningDataModule):
         self,
         zarr_path: str,
         batch_size: int,
+        input_resolution: tuple,
         n_x: int = 1,
         n_y: int = 1,
         limit_to: int = None,
         apply_smoothing: bool = False,
-        input_resolution: tuple = (128, 128),
     ):
         self.batch_size = batch_size
         self.n_x = n_x

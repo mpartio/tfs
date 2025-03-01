@@ -169,6 +169,7 @@ cc2Data = cc2DataModule(
     n_y=config.rollout_length,
     limit_to=config.limit_data_to,
     apply_smoothing=config.apply_smoothing,
+    input_resolution=config.input_resolution,
 )
 
 train_loader = cc2Data.train_dataloader()
