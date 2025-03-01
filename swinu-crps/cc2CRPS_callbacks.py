@@ -15,6 +15,7 @@ from datetime import datetime
 from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.utilities import rank_zero_only
 
 matplotlib.use("Agg")
 
@@ -416,10 +417,9 @@ class DiagnosticCallback(L.Callback):
         plt.title("Predicted histogram")
 
         # Calculate mean prediction and error map
-        mean_pred = torch.mean(pred[-1], dim=0)
-        error_map = torch.abs(mean_pred - truth[-1])
+        error_map = torch.abs(pred[-1] - truth[-1])
 
-        plt.subplot(3, 4, 11)
+        plt.subplot(3, 4, 10)
         plt.title("Spatial MAE")
         plt.imshow(error_map.cpu())
         plt.colorbar()
