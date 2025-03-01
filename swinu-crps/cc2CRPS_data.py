@@ -121,7 +121,6 @@ class AnemoiDataset(Dataset):
         self.forcings_indexes = [
             self.data.name_to_index[x] for x in self.forcings_names
         ]
-        print("Missing indices: {}".format(len(self.data.missing)))
         self.input_resolution = input_resolution
         assert self.time_steps >= group_size
 

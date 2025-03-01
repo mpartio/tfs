@@ -8,6 +8,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, List
 from cc2util import get_latest_run_dir, get_rank
 
+
 @dataclass
 class TrainingConfig:
     input_resolution: tuple = (128, 128)
@@ -124,15 +125,35 @@ def get_config():
     else:
         config = TrainingConfig()
 
+    rank = get_rank()
     if args.generate_run_name:
-        config.run_name = randomname.get_name()
+        if rank == 0:
+            run_name = randomname.get_name()
+            with open("generated_run_name.txt", "w") as f:
+                f.write(run_name)
+        else:
+            run_name = None
+            wait_time = 0
+            while run_name is None and wait_time < 10:
+                try:
+                    with open("generated_run_name.txt", "r") as f:
+                        run_name = f.read().strip()
+                except FileNotFoundError:
+                    time.sleep(0.5)
+                    wait_time += 0.5
+
+            assert run_name is not None, "Run name not found"
+
+        config.run_name = run_name
 
     # Override with command line arguments
     for k, v in vars(args).items():
         if v is not None and k not in ("only_config", "generate_run_name"):
             setattr(config, k, v)
-            print(k, "to", v)
+            if rank == 0:
+                print(k, "to", v)
 
+    assert config.warmup_iterations < config.num_iterations
     return config
 
 

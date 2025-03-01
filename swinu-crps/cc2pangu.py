@@ -270,10 +270,6 @@ class cc2Pangu(nn.Module):
             config.input_resolution[0], config.input_resolution[1], self.patch_size, 1
         )
 
-        if config.input_resolution != input_resolution:
-            print(
-                f"Input resolution changed from {config.input_resolution} to {input_resolution}"
-            )
         self.h_patches = input_resolution[0] // self.patch_size
         self.w_patches = input_resolution[1] // self.patch_size
         self.num_patches = self.h_patches * self.w_patches

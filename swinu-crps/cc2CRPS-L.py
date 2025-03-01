@@ -22,6 +22,7 @@ from cc2util import (
     get_latest_run_dir,
     get_next_run_number,
     read_checkpoint,
+    get_rank,
 )
 from lightning.pytorch.callbacks import ModelCheckpoint, LambdaCallback
 from torch.optim.lr_scheduler import (
@@ -131,6 +132,7 @@ class cc2CRPSModel(cc2Pangu, L.LightningModule):
         }
 
 
+rank = get_rank()
 args = get_args()
 
 if args.run_name is not None:
@@ -159,8 +161,11 @@ new_run_number = get_next_run_number(f"runs/{config.run_name}")
 config.run_dir = f"runs/{config.run_name}/{new_run_number}"
 config.run_number = new_run_number
 
-print("Starting run at {}".format(datetime.now()))
-print("Run directory: ", config.run_dir)
+print(
+    "Rank {} starting at {} using run directory {}".format(
+        rank, datetime.now(), config.run_dir
+    )
+)
 
 cc2Data = cc2DataModule(
     zarr_path=config.data_path,
@@ -205,4 +210,4 @@ torch.set_float32_matmul_precision("high")
 
 trainer.fit(model, train_loader, val_loader)
 
-print("Done at {}".format(datetime.now()))
+print("rank {} finished at {}".format(rank, datetime.now()))
