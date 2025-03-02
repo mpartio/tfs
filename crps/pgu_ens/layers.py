@@ -80,7 +80,9 @@ def depad_tensor(tensor, padding_info):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128):
+    def __init__(
+        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128
+    ):
         super().__init__()
         self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.attn = nn.MultiheadAttention(
@@ -103,9 +105,11 @@ class EncoderBlock(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128):
+    def __init__(
+        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128
+    ):
         super().__init__()
-        self.norm1 = ConditionalLayerNorm(dim,noise_dim)
+        self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.self_attn = nn.MultiheadAttention(
             embed_dim=dim,
             num_heads=num_heads,
@@ -114,7 +118,7 @@ class DecoderBlock(nn.Module):
             batch_first=True,
         )
 
-        self.norm2 = ConditionalLayerNorm(dim,noise_dim)
+        self.norm2 = ConditionalLayerNorm(dim, noise_dim)
 
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=dim,
@@ -130,12 +134,20 @@ class DecoderBlock(nn.Module):
     def forward(self, x, context, noise_embedding):
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x, noise_embedding)
-        self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+
+        with torch.amp.autocast("cuda", enabled=False):
+            x_norm1 = x_norm1.float()
+            self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+
         x = x + self_attn
 
         # Cross-attention to encoder outputs
         x_norm2 = self.norm2(x, noise_embedding)
-        cross_attn, _ = self.cross_attn(x_norm2, context, context)
+        with torch.amp.autocast("cuda", enabled=False):
+            cross_attn, _ = self.cross_attn(
+                x_norm2.float(), context.float(), context.float()
+            )
+
         x = x + cross_attn
 
         # Feedforward
@@ -169,7 +181,6 @@ class PatchExpand(nn.Module):
         x = rearrange(x, "b h w c -> b (h w) c")
 
         return x, H * self.scale_factor, W * self.scale_factor
-
 
 
 class PatchMerge(nn.Module):
@@ -395,4 +406,3 @@ class ConditionalLayerNorm(nn.Module):
 
         # Apply conditional transformation
         return normalized * (1 + scale) + shift
-
