@@ -20,6 +20,7 @@ import importlib
 
 package = "pgu_ens"
 
+
 def read_config(file_path):
     try:
         with open(file_path) as f:
@@ -51,22 +52,26 @@ def dynamic_import(items):
 
 
 def string_to_type(type_str: str) -> type:
-    # Check if it's a fully qualified name
     assert "." in type_str
-    if "." in type_str:
-        module_name, _, type_name = type_str.rpartition(".")
-        try:
-            module = importlib.import_module(module_name)
-            cls = getattr(module, type_name)
-        except (ImportError, AttributeError) as e:
-            raise ValueError(f"Could not import type '{type_str}': {e}") from e
-        return cls
-    else:
-        # Try to find the type in the builtins
-        if hasattr(builtins, type_str):
-            return getattr(builtins, type_str)
-        else:
-            raise ValueError(f"Unknown type: {type_str}")
+    module_name, _, type_name = type_str.rpartition(".")
+    try:
+        module = importlib.import_module(module_name)
+        cls = getattr(module, type_name)
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"Could not import type '{type_str}': {e}") from e
+    return cls
+
+
+def effective_parameters(num_devices, batch_size, lr, total_iterations):
+    if num_devices == 1:
+        # keep current batch size
+        return batch_size, lr, total_iterations
+
+    effective_bs = batch_size * num_devices
+    effective_lr = lr * num_devices
+    effective_total_iterations = total_iterations * num_devices
+
+    return batch_size, effective_lr, effective_total_iterations
 
 
 imports = [
@@ -121,7 +126,7 @@ class cc2CRPSModel(model_class, L.LightningModule):
         )
 
         self.log("train_loss", loss, sync_dist=True)
-        return {"loss": loss}
+        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
 
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
@@ -140,12 +145,12 @@ class cc2CRPSModel(model_class, L.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.AdamW(
             self.parameters(),
-            lr=config.learning_rate,
+            lr=lr,
             betas=(0.9, 0.95),
             weight_decay=0.05,
         )
 
-        T_max = config.num_iterations - config.warmup_iterations
+        T_max = it - config.warmup_iterations
 
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
@@ -211,9 +216,13 @@ print(
     )
 )
 
+bs, lr, it = effective_parameters(
+    config.num_devices, config.batch_size, config.learning_rate, config.num_iterations
+)
+
 cc2Data = cc2DataModule(
     zarr_path=config.data_path,
-    batch_size=config.batch_size * config.num_devices,
+    batch_size=bs,
     n_x=config.history_length,
     n_y=config.rollout_length,
     limit_to=config.limit_data_to,
@@ -224,7 +233,7 @@ cc2Data = cc2DataModule(
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()
 
-max_steps = config.num_iterations
+max_steps = it
 
 if args.only_config:
     max_steps -= config.current_iteration
