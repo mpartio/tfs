@@ -9,3 +9,5 @@ xarray
 scipy
 lightning
 PyWavelets
+dask
+anemoi-datasets
