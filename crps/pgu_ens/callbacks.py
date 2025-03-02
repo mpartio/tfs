@@ -129,10 +129,10 @@ class TrainDataPlotterCallback(L.Callback):
         input_field = x[0].squeeze()
         truth = y[0]
 
-        predictions = predictions[0]  # T, M, C, H, W (B removed)
+        predictions = predictions[0]  # M, T, C, H, W (B removed)
 
         num_truth = truth.shape[0]
-        num_members = predictions.shape[1]
+        num_members = predictions.shape[0]
 
         rows = num_truth
         cols = num_members + 2 + 1  # +2 for input fields, +1 for truth
@@ -160,8 +160,8 @@ class TrainDataPlotterCallback(L.Callback):
             ax[i, 1].set_axis_off()
 
             for j in range(num_members):  # members
-                ax[i, j + 2].imshow(predictions[i, j, ...].squeeze())
-                ax[i, j + 2].set_title(f"Time T+{i+1} member {j}")
+                ax[i, j + 2].imshow(predictions[j, i, ...].squeeze())
+                ax[i, j + 2].set_title(f"Time T+{i+i} member {j}")
                 ax[i, j + 2].set_axis_off()
 
             ax[i, j + 3].imshow(truth[i].squeeze())
