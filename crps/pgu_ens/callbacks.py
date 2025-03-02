@@ -538,7 +538,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(245)
         plt.yscale("log")
         plt.title("Gradients (std)")
-        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
         for section in self.gradients_std.keys():
             if section == "attention":
                 continue
