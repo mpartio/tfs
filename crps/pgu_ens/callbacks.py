@@ -9,6 +9,7 @@ import lightning as L
 import sys
 import config
 import json
+import warnings
 from util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
@@ -183,14 +184,14 @@ class DiagnosticCallback(L.Callback):
     def __init__(self, config, freq=50):
         (
             self.train_loss,
-            # self.train_mae,
-            # self.train_var,
+            self.train_mae,
+            self.train_var,
             self.val_loss,
             self.lr,
             self.val_snr,
-            # self.val_mae,
-            # self.val_var,
-        ) = ([], [], [], [])
+            self.val_mae,
+            self.val_var,
+        ) = ([], [], [], [], [], [], [], [])
 
         self.gradients_mean = {}
         self.gradients_std = {}
@@ -227,13 +228,14 @@ class DiagnosticCallback(L.Callback):
 
             # d) variance and l1
 
-            # predictions = outputs["predictions"]
+            predictions = outputs["predictions"]
 
-            # _, y = batch
+            data, _ = batch
+            _, y = data
 
-            # var, mae = var_and_mae(predictions, y)
-            # self.train_var.append(var)
-            # self.train_mae.append(mae)
+            var, mae = var_and_mae(predictions, y)
+            self.train_var.append(var)
+            self.train_mae.append(mae)
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -263,14 +265,12 @@ class DiagnosticCallback(L.Callback):
             self.val_snr.append((snr_real["snr_db"], snr_pred["snr_db"]))
 
             # d) variance and l1
-            # var, mae = var_and_mae(predictions, y)
-            # self.val_var.append(var)
-            # self.val_mae.append(mae)
+            var, mae = var_and_mae(predictions, y)
+            self.val_var.append(var)
+            self.val_mae.append(mae)
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
 
         if not trainer.is_global_zero:
             return
@@ -298,9 +298,10 @@ class DiagnosticCallback(L.Callback):
             predictions[0].cpu().detach(),
             tendencies[0].cpu().detach(),
             trainer.current_epoch,
+            trainer.sanity_checking
         )
 
-        self.plot_history(trainer.current_epoch)
+        self.plot_history(trainer.current_epoch, trainer.sanity_checking)
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
@@ -319,11 +320,11 @@ class DiagnosticCallback(L.Callback):
 
         saved_variables = [
             "train_loss",
-            # "train_mae",
-            # "train_var",
+            "train_mae",
+            "train_var",
             "val_loss",
-            # "val_mae",
-            # "val_var",
+            "val_mae",
+            "val_var",
             "val_snr",
             "lr",
             "gradients_mean",
@@ -344,7 +345,7 @@ class DiagnosticCallback(L.Callback):
         with open(filename, "w") as f:
             json.dump(D, f, indent=4, default=convert_to_serializable)
 
-    def plot_visual(self, input_field, truth, pred, tendencies, epoch):
+    def plot_visual(self, input_field, truth, pred, tendencies, epoch, sanity_checking=False):
         plt.figure(figsize=(24, 12))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
@@ -356,15 +357,15 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        # input_field T, H, W, C
-        # truth T, H, W, C
-        # pred T, C, H, W
-        # tend T, C, H, W
+        # input_field T, C, H, W
+        # truth T, C, H, W
+        # pred M, T, C, H, W
+        # tend M, T, C, H, W
 
         input_field = input_field.squeeze(1)
         truth = truth.squeeze(1)  # remove channel dim
-        pred = pred.squeeze(1)
-        tendencies = tendencies.squeeze(1)
+        pred = pred.squeeze(2)
+        tendencies = tendencies.squeeze(2)
 
         plt.subplot(341)
         plt.imshow(input_field[0])
@@ -382,14 +383,14 @@ class DiagnosticCallback(L.Callback):
         plt.colorbar()
 
         plt.subplot(344)
-        plt.imshow(pred[-1])
+        plt.imshow(pred[0][-1])
         plt.title("Prediction")
         plt.colorbar()
 
         plt.subplot(345)
         cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
-        plt.imshow(tendencies[-1], cmap=cmap, norm=norm)
+        plt.imshow(tendencies[0,-1], cmap=cmap, norm=norm)
         plt.title("Tendencies")
         plt.colorbar()
 
@@ -402,7 +403,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("True Tendencies")
         plt.colorbar()
 
-        data = pred[-1] - truth[-1]
+        data = pred[0,-1] - truth[-1]
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
         plt.subplot(347)
@@ -415,18 +416,27 @@ class DiagnosticCallback(L.Callback):
         plt.title("Truth histogram")
 
         plt.subplot(349)
-        plt.hist(pred[-1].flatten(), bins=20)
+        plt.hist(pred[0,-1].flatten(), bins=20)
         plt.title("Predicted histogram")
 
         # Calculate mean prediction and error map
-        error_map = torch.abs(pred[-1] - truth[-1])
+        error_map = torch.abs(pred[0][-1] - truth[-1])
 
         plt.subplot(3, 4, 10)
         plt.title("Spatial MAE")
         plt.imshow(error_map.cpu())
         plt.colorbar()
 
+        uncertainty = torch.var(pred[:, -1], dim=0)
+        plt.subplot(3, 4, 11)  # Adjust subplot number as needed
+        plt.title("Member Variance")
+        plt.imshow(uncertainty.cpu(), cmap="Reds")
+        plt.colorbar()
+
         plt.tight_layout()
+        if sanity_checking:
+            return
+
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_val.png".format(
                 self.config.run_dir,
@@ -439,7 +449,9 @@ class DiagnosticCallback(L.Callback):
 
         plt.close()
 
-    def plot_history(self, epoch):
+    def plot_history(self, epoch, sanity_checking=False):
+        warnings.filterwarnings("ignore", message="No artists with labels found to put in legend")
+
         plt.figure(figsize=(20, 8))
         plt.suptitle(
             "{} at epoch {} (host={}, time={})".format(
@@ -512,7 +524,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(244)
         plt.yscale("log")
         plt.title("Gradients (mean)")
-        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
         for section in self.gradients_mean.keys():
             if section == "attention":
                 continue
@@ -537,43 +549,46 @@ class DiagnosticCallback(L.Callback):
             plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
 
-        # plt.subplot(246)
-        # plt.plot(self.train_var, color="blue", alpha=0.3)
-        # plt.plot(
-        #    moving_average(torch.tensor(self.train_var), 30),
-        #    color="blue",
-        #    label="Variance",
-        # )
-        # plt.legend(loc="upper left")
+        plt.subplot(246)
+        plt.plot(self.train_var, color="blue", alpha=0.3)
+        plt.plot(
+            moving_average(torch.tensor(self.train_var), 30),
+            color="blue",
+            label="Variance",
+        )
+        plt.legend(loc="upper left")
 
-        # ax2 = plt.gca().twinx()
-        # ax2.plot(self.train_mae, color="orange", alpha=0.3)
-        # ax2.plot(
-        #    moving_average(torch.tensor(self.train_mae), 30),
-        #    color="orange",
-        #    label="MAE",
-        # )
-        # ax2.legend(loc="upper right")
-        # plt.title("Train Variance vs MAE")
+        ax2 = plt.gca().twinx()
+        ax2.plot(self.train_mae, color="orange", alpha=0.3)
+        ax2.plot(
+            moving_average(torch.tensor(self.train_mae), 30),
+            color="orange",
+            label="MAE",
+        )
+        ax2.legend(loc="upper right")
+        plt.title("Train Variance vs MAE")
 
-        # plt.subplot(247)
-        # plt.plot(self.val_var, color="blue", alpha=0.3)
-        # plt.plot(
-        #    moving_average(torch.tensor(self.val_var), 30),
-        #    color="blue",
-        #    label="Variance",
-        # )
-        # plt.legend(loc="upper left")
+        plt.subplot(247)
+        plt.plot(self.val_var, color="blue", alpha=0.3)
+        plt.plot(
+            moving_average(torch.tensor(self.val_var), 30),
+            color="blue",
+            label="Variance",
+        )
+        plt.legend(loc="upper left")
 
-        # ax2 = plt.gca().twinx()
-        # ax2.plot(self.val_mae, color="orange", alpha=0.3)
-        # ax2.plot(
-        #    moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
-        # )
-        # ax2.legend(loc="upper right")
-        # plt.title("Val Variance vs MAE")
+        ax2 = plt.gca().twinx()
+        ax2.plot(self.val_mae, color="orange", alpha=0.3)
+        ax2.plot(
+            moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
+        )
+        ax2.legend(loc="upper right")
+        plt.title("Val Variance vs MAE")
 
         plt.tight_layout()
+        if sanity_checking:
+            return
+
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_history.png".format(
                 self.config.run_dir,

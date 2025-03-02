@@ -15,7 +15,7 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
     assert y.ndim == 5
 
     last_input_state = (
-        x[:, -1, ...].unsqueeze(1).unsqueeze(1).expand(B, M, T, C_data, H, W)
+        x[:, -1, ...].unsqueeze(1).unsqueeze(1).expand(B, M, 1, C_data, H, W)
     )
 
     # For single-step rollout
@@ -30,10 +30,15 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
             loss = loss_fn(y_true.squeeze(2), tendencies.squeeze(2))
 
         # Generate the actual prediction by adding tendency to last input state
-        # predictions = x[:, -1, ...].unsqueeze(1) + tendencies
+
         predictions = last_input_state + tendencies
         predictions = torch.clamp(predictions, 0, 1)
 
+        assert (
+            tendencies.shape == predictions.shape
+        ), "tendencies and predictions don't match: {} vs {}".format(
+            tendencies.shape, predictions.shape
+        )
         return loss, tendencies, predictions
 
     # Initialize empty lists for multi-step evaluation
