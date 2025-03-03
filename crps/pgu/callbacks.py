@@ -9,8 +9,8 @@ import lightning as L
 import sys
 import config
 import json
-# from util import roll_forecast, moving_average, get_rank
-# from common import calculate_wavelet_snr
+from util import roll_forecast
+from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
@@ -512,7 +512,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(244)
         plt.yscale("log")
         plt.title("Gradients (mean)")
-        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
         for section in self.gradients_mean.keys():
             if section == "attention":
                 continue
@@ -526,7 +526,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(245)
         plt.yscale("log")
         plt.title("Gradients (std)")
-        colors = ["blue", "orange", "green", "red", "black", "purple"]
+        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
         for section in self.gradients_std.keys():
             if section == "attention":
                 continue

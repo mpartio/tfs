@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import dataclass, asdict, field
 from typing import Optional, List
-# from util import get_latest_run_dir, get_rank
+from common.util import get_latest_run_dir, get_rank
 
 
 @dataclass
@@ -42,7 +42,7 @@ class TrainingConfig:
     # Current training state
     current_iteration: int = 0
 
-    data_path: str = "../data/nwcsaf-128x128.zarr"
+    data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
     limit_data_to: int = None
 
     run_name: str = None
@@ -80,10 +80,8 @@ def get_args():
 
     # Model params
     parser.add_argument("--hidden_dim", type=int)
-    parser.add_argument("--num_heads", type=int, nargs="+")
-    parser.add_argument("--num_layers", type=int)
-    parser.add_argument("--num_blocks", type=int, nargs="+")
-    parser.add_argument("--window_size", type=int, nargs="+")
+    parser.add_argument("--num_heads", type=int)
+    parser.add_argument("--window_size", type=int)
     parser.add_argument("--num_data_channels", type=int)
     parser.add_argument("--num_forcing_channels", type=int)
     parser.add_argument("--patch_size", type=int)

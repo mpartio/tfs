@@ -9,6 +9,7 @@ from layers import (
     PatchExpand,
     EncoderBlock,
     DecoderBlock,
+    get_padded_size,
     pad_tensors,
     depad_tensor,
 )
