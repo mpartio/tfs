@@ -18,8 +18,7 @@ from torch.optim.lr_scheduler import (
 )
 import importlib
 
-package = "pgu_ens"
-
+package = os.environ.get("MODEL_FAMILY", "pgu_ens")
 
 def read_config(file_path):
     try:
