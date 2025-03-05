@@ -54,9 +54,6 @@ class TrainingConfig:
     def apply_args(self, args: argparse.Namespace):
         for k, v in vars(args).items():
             if v is not None and hasattr(self, k):
-                if k == "run_name":
-                    k = "_run_name"
-
                 print(f"Setting {k} to {v}")
                 setattr(self, k, v)
 
