@@ -18,6 +18,13 @@ class AlmostFairCRPSLoss(nn.Module):
             predictions: [B, M, 1, H, W]
             target: [B, 1, H, W]
         """
+        assert (
+            predictions.ndim == 5
+        ), "predictions shape needs to be: B, M, C, H, W: {}".format(predictions.shape)
+        assert target.ndim == 4, "target shape needs to be: B, C, H, W: {}".format(
+            predictions.shape
+        )
+
         B, M, C, H, W = predictions.shape
         epsilon = (1 - self.alpha) / M
 
