@@ -315,8 +315,8 @@ class cc2CRPS(nn.Module):
         output = self.project_to_image(decoded)
         output = depad_tensor(output, padding_info)
 
-        assert (
-            list(output.shape[-2:]) == self.real_input_resolution
+        assert list(output.shape[-2:]) == list(
+            self.real_input_resolution
         ), f"Output shape {output.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
         return output
 
