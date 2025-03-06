@@ -298,7 +298,7 @@ class DiagnosticCallback(L.Callback):
             predictions[0].cpu().detach(),
             tendencies[0].cpu().detach(),
             trainer.current_epoch,
-            trainer.sanity_checking
+            trainer.sanity_checking,
         )
 
         self.plot_history(trainer.current_epoch, trainer.sanity_checking)
@@ -345,7 +345,9 @@ class DiagnosticCallback(L.Callback):
         with open(filename, "w") as f:
             json.dump(D, f, indent=4, default=convert_to_serializable)
 
-    def plot_visual(self, input_field, truth, pred, tendencies, epoch, sanity_checking=False):
+    def plot_visual(
+        self, input_field, truth, pred, tendencies, epoch, sanity_checking=False
+    ):
         plt.figure(figsize=(24, 12))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
@@ -390,7 +392,7 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(345)
         cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
-        plt.imshow(tendencies[0,-1], cmap=cmap, norm=norm)
+        plt.imshow(tendencies[0, -1], cmap=cmap, norm=norm)
         plt.title("Tendencies")
         plt.colorbar()
 
@@ -403,7 +405,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("True Tendencies")
         plt.colorbar()
 
-        data = pred[0,-1] - truth[-1]
+        data = pred[0, -1] - truth[-1]
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
         plt.subplot(347)
@@ -416,7 +418,7 @@ class DiagnosticCallback(L.Callback):
         plt.title("Truth histogram")
 
         plt.subplot(349)
-        plt.hist(pred[0,-1].flatten(), bins=20)
+        plt.hist(pred[0, -1].flatten(), bins=20)
         plt.title("Predicted histogram")
 
         # Calculate mean prediction and error map
@@ -450,7 +452,9 @@ class DiagnosticCallback(L.Callback):
         plt.close()
 
     def plot_history(self, epoch, sanity_checking=False):
-        warnings.filterwarnings("ignore", message="No artists with labels found to put in legend")
+        warnings.filterwarnings(
+            "ignore", message="No artists with labels found to put in legend"
+        )
 
         plt.figure(figsize=(20, 8))
         plt.suptitle(
@@ -524,7 +528,16 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(244)
         plt.yscale("log")
         plt.title("Gradients (mean)")
-        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
+        colors = [
+            "blue",
+            "orange",
+            "green",
+            "red",
+            "black",
+            "purple",
+            "yellow",
+            "magenta",
+        ]
         for section in self.gradients_mean.keys():
             if section == "attention":
                 continue
@@ -538,7 +551,16 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(245)
         plt.yscale("log")
         plt.title("Gradients (std)")
-        colors = ["blue", "orange", "green", "red", "black", "purple", "yellow", "magenta"]
+        colors = [
+            "blue",
+            "orange",
+            "green",
+            "red",
+            "black",
+            "purple",
+            "yellow",
+            "magenta",
+        ]
         for section in self.gradients_std.keys():
             if section == "attention":
                 continue

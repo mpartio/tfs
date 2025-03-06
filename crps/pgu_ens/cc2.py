@@ -348,7 +348,7 @@ class cc2CRPS(nn.Module):
 
         output = self.project_to_image(decoded, noise_embed)
         output = depad_tensor(output, padding_info)
-        H, W = padding_info['original_size']
+        H, W = padding_info["original_size"]
 
         output = output.reshape(B, M, target_len, C_data, H, W)
 
