@@ -12,31 +12,15 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     tendencies = model(data, forcing, n_step)
 
+    step_weights = torch.tensor([1, 1.2, 1.5, 1.8, 2.2, 3.0])[:n_step].to(x.device)
+    tendency_weights = torch.tensor([2, 2.2, 2.5, 2.8, 3.2, 4.0])[:n_step].to(x.device)
+
     # Initial state is the last state from input sequence
     current_state = x[:, -1, ...].unsqueeze(1)  # Shape: [B, 1, C, H, W]
 
-    # For single-step rollout
-    if n_step == 1:
-        # Calculate the ground truth delta between last input state and target
-        y_true = y - x[:, -1, ...].unsqueeze(1)
-
-        # Compute loss between predicted tendencies and true tendencies
-        assert tendencies.shape == y_true.shape, f"{tendencies.shape} != {y_true.shape}"
-
-        if loss_fn is None:
-            loss = None
-        else:
-            loss = loss_fn(tendencies, y_true)
-
-        # Generate the actual prediction by adding tendency to last input state
-        predictions = current_state + tendencies
-        predictions = torch.clamp(predictions, 0, 1)
-
-        assert tendencies.ndim == 5
-        return loss, tendencies, predictions
-
     # Initialize empty lists for multi-step evaluation
-    losses = []
+    step_losses = []
+    tendency_losses = []
     all_predictions = []
 
     # Loop through each rollout step
@@ -57,23 +41,42 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
             # Calculate ground truth delta for this step
             if t == 0:
                 # First step: y - last_x
-                y_delta = y[:, t : t + 1, ...] - x[:, -1, ...].unsqueeze(1)
+                y_true = y[:, t : t + 1, ...] - x[:, -1, ...].unsqueeze(1)
             else:
                 # Second, third, ... step: y - y_prev
-                y_delta = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
+                y_true = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
 
-            step_loss = loss_fn(tendency, y_delta)
-            losses.append(step_loss)
+            step_loss = loss_fn(tendency, y_true)
+            step_losses.append(step_loss)
+
+            tendency_importance = 1.0 + 5.0 * torch.abs(y_true)
+            tendency_loss = torch.mean(tendency_importance * (tendency - y_true) ** 2)
+            tendency_losses.append(tendency_loss)
+
+            # losses.append(step_loss + tendency_loss)
 
     # Stack predictions into a single tensor
     predictions = torch.cat(all_predictions, dim=1)
     predictions = torch.clamp(predictions, 0, 1)
 
-    # Average the losses if we have multiple steps
-    if len(losses) > 0:
-        loss = torch.stack(losses).mean()
-    else:
-        loss = None
+    loss = None
+
+    if loss_fn is not None:
+        step_losses = step_weights * torch.stack(step_losses)
+        tendency_losses = tendency_weights * torch.stack(tendency_losses)
+
+        step_losses_individual = step_losses.detach()
+        tendency_losses_individual = tendency_losses.detach()
+
+        loss = torch.sum(step_losses + tendency_losses)
+
+        assert torch.isnan(loss).any() == False, "Loss is NaN"
+
+        loss = {
+            "loss": loss,
+            "step_losses": step_losses_individual,
+            "tendency_losses": tendency_losses_individual,
+        }
 
     assert tendencies.ndim == 5
     return loss, tendencies, predictions
