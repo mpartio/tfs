@@ -20,6 +20,7 @@ import importlib
 
 package = os.environ.get("MODEL_FAMILY", "pgu_ens")
 
+
 def read_config(file_path):
     try:
         with open(file_path) as f:
@@ -124,8 +125,13 @@ class cc2CRPSModel(model_class, L.LightningModule):
             loss_fn=self.loss_fn,
         )
 
-        self.log("train_loss", loss, sync_dist=True)
-        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
+        self.log("train_loss", loss["loss"], sync_dist=True)
+        return {
+            "loss": loss["loss"],
+            "tendencies": tendencies,
+            "predictions": predictions,
+            "loss_components": loss,
+        }
 
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
@@ -138,8 +144,13 @@ class cc2CRPSModel(model_class, L.LightningModule):
             loss_fn=self.loss_fn,
         )
 
-        self.log("val_loss", loss, sync_dist=True)
-        return {"loss": loss, "tendencies": tendencies, "predictions": predictions}
+        self.log("val_loss", loss["loss"], sync_dist=True)
+        return {
+            "loss": loss["loss"],
+            "tendencies": tendencies,
+            "predictions": predictions,
+            "loss_components": loss,
+        }
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(
