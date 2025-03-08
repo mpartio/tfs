@@ -88,7 +88,7 @@ sys.path.append(os.path.abspath(package))
 
 imports = [
     "util.roll_forecast",
-    "callbacks.TrainDataPlotterCallback",
+    "callbacks.PredictionPlotterCallback",
     "callbacks.DiagnosticCallback",
     "callbacks.LazyLoggerCallback",
     "config.get_config",
@@ -256,7 +256,7 @@ trainer = L.Trainer(
     num_nodes=config.num_nodes,
     strategy=config.strategy,
     callbacks=[
-        TrainDataPlotterCallback(train_loader, config),
+        PredictionPlotterCallback(train_loader, val_loader, config),
         DiagnosticCallback(config),
         ModelCheckpoint(monitor="val_loss", dirpath=f"{config.run_dir}/models"),
         LambdaCallback(
