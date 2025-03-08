@@ -150,6 +150,10 @@ class cc2CRPS(nn.Module):
             nn.Tanh(),
         )
 
+        # Step identification embeddings
+        self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
+        nn.init.normal_(self.step_id_embeddings, std=0.02)
+
         # Initialize weights
         self.apply(self._init_weights)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -209,8 +213,23 @@ class cc2CRPS(nn.Module):
             # Reshape for decoder
             decoder_in = decoder_input.reshape(B, -1, D)
 
+            # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
+            step_id = 0 if t == 0 else 1
+
+            # Get appropriate step embedding
+            step_embedding = self.step_id_embeddings[step_id]  # [D]
+
+            # Add step embedding to decoder input
+            # For first token in each sequence (acts as a "step type" token)
+            # We'll add it to the last P tokens which represent our current state
+            decoder_in_with_id = decoder_in.clone()
+            decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
+                0
+            ).unsqueeze(1)
+
             # Process through decoder blocks
-            x = decoder_in
+            x = decoder_in_with_id
+
             for block in self.decoder1:
                 x = block(x, encoded_flat, noise_embedding)
 
