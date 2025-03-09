@@ -66,7 +66,7 @@ def analyze_gradients(model):
     return stats
 
 
-class TrainDataPlotterCallback(L.Callback):
+class PredictionPlotterCallback(L.Callback):
     def __init__(self, dataloader, config):
         self.dataloader = dataloader
         self.config = config
