@@ -1,6 +1,7 @@
 import numpy as np
 import pywt
 import torch.distributed as dist
+import torch.nn.functional as F
 import os
 import torch
 import time
@@ -8,7 +9,43 @@ from scipy.signal import medfilt2d
 from glob import glob
 
 
-def read_checkpoint(file_path, model):
+def interpolate_pos_embed(pos_embed, new_grid_size, old_grid_size, num_extra_tokens=0):
+    embed_dim = pos_embed.shape[-1]
+
+    # Separate extra tokens (like a class token) from the regular positional tokens.
+    extra_tokens = pos_embed[:, :num_extra_tokens]
+    pos_tokens = pos_embed[:, num_extra_tokens:]
+
+    # Reshape tokens into a 2D grid.
+    pos_tokens = pos_tokens.reshape(
+        1, old_grid_size[0], old_grid_size[1], embed_dim
+    ).permute(0, 3, 1, 2)
+
+    # Interpolate to the new grid size.
+    pos_tokens = F.interpolate(
+        pos_tokens,
+        size=new_grid_size,
+        mode="bicubic",
+        align_corners=False,
+    )
+
+    # Reshape back to the original format.
+    pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(
+        1, new_grid_size[0] * new_grid_size[1], embed_dim
+    )
+
+    # Concatenate the extra tokens back.
+    new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+    return new_pos_embed
+
+
+def read_checkpoint(
+    file_path,
+    model,
+    interpolate_positional_embeddings=False,
+    old_size=None,
+    new_size=None,
+):
     try:
         # Find latest checkpoint
         checkpoints = glob(f"{file_path}/*.ckpt")
@@ -19,14 +56,29 @@ def read_checkpoint(file_path, model):
         print(f"Loading checkpoint: {latest_ckpt}")
 
         ckpt = torch.load(latest_ckpt, weights_only=False)
-        new_state_dict = {}
         state_dict = ckpt["state_dict"]
 
-        for k, v in state_dict.items():
-            new_k = k.replace("model.", "")
-            new_state_dict[new_k] = v
+        old_pos_embed_shape = state_dict["pos_embed"].shape
+        new_pos_embed_shape = model.state_dict()["pos_embed"].shape
 
-        model.load_state_dict(new_state_dict)
+        if (
+            interpolate_positional_embeddings
+            and old_pos_embed_shape != new_pos_embed_shape
+        ):
+            print(
+                "Different resolutions for pos_embed: checkpoint: {} vs model: {}, interpolating to match".format(
+                    list(old_pos_embed_shape),
+                    list(new_pos_embed_shape),
+                )
+            )
+            new_pos_embed = interpolate_pos_embed(
+                state_dict["pos_embed"], new_size, old_size
+            )
+
+            # Update the checkpoint.
+            state_dict["pos_embed"] = new_pos_embed
+
+        model.load_state_dict(state_dict)
 
         return model
 
