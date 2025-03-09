@@ -399,53 +399,36 @@ class DiagnosticCallback(L.Callback):
 
         T = pred.shape[0]
 
-        if T == 1:
-            true_tendencies = truth[-1].squeeze() - input_field[-1].squeeze()
-        else:
-            true_tendencies = truth[-1].squeeze() - truth[-2].squeeze()
+        fig, ax = plt.subplots(T, 5, figsize=(15, 3 * T + 0.5))
+        ax = np.atleast_2d(ax)
 
-        cmap = plt.cm.coolwarm
-        norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
+        for t in range(T):
+            if t == 0:
+                true_tendencies = truth[t].squeeze() - input_field[-1].squeeze()
+            else:
+                true_tendencies = truth[t].squeeze() - truth[t - 1].squeeze()
 
-        plt.subplot(241)
-        plt.imshow(true_tendencies, cmap=cmap, norm=norm)
-        plt.title("True Tendencies")
-        plt.colorbar()
+            cmap = plt.cm.coolwarm
+            norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
-        plt.subplot(242)
-        cmap = plt.cm.coolwarm
-        norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
-        plt.imshow(tendencies[-1], cmap=cmap, norm=norm)
-        plt.title("Predicted Tendencies")
-        plt.colorbar()
+            ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
+            ax[t, 0].title(f"True tendencies step={t}")
+            ax[t, 0].colorbar()
 
-        data = pred[-1] - truth[-1]
-        plt.subplot(243)
-        plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("Prediction Bias")
-        plt.colorbar()
+            ax[t, 1].imshow(tendencies[-1], cmap=cmap, norm=norm)
+            ax[t, 1].title(f"Predicted tendencies step={t}")
+            ax[t, 1].colorbar()
 
-        data = true_tendencies - tendencies[-1]
-        plt.subplot(244)
-        plt.title("Tendency Bias")
-        plt.imshow(data.cpu(), cmap=cmap, norm=norm)
-        plt.colorbar()
+            data = true_tendencies - tendencies[t]
+            ax[t, 2].title(f"Tendences bias step={t}")
+            ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
+            ax[t, 2].colorbar()
 
-        plt.subplot(245)
-        plt.hist(truth[-1].flatten(), bins=30)
-        plt.title("True histogram")
+            ax[t, 3].title(f"True tendencies histogram step={t}")
+            ax[t, 3].hist(true_tendencies.flatten(), bins=30)
 
-        plt.subplot(246)
-        plt.hist(pred[-1].flatten(), bins=30)
-        plt.title("Predicted histogram")
-
-        plt.subplot(247)
-        plt.title("True tendencies histogram")
-        plt.hist(true_tendencies.flatten(), bins=30)
-
-        plt.subplot(248)
-        plt.title("Predicted tendencies histogram")
-        plt.hist(tendencies[-1].flatten(), bins=30)
+            ax[t, 4].plt.title(f"Predicted tendencies histogram step={t}")
+            ax[t, 4].hist(tendencies[t].flatten(), bins=30)
 
         plt.tight_layout()
         plt.savefig(
