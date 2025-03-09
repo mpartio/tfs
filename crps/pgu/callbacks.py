@@ -411,23 +411,21 @@ class DiagnosticCallback(L.Callback):
             cmap = plt.cm.coolwarm
             norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
-            ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
-            ax[t, 0].title(f"True tendencies step={t}")
-            ax[t, 0].colorbar()
+            im = ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
+            ax[t, 0].set_title(f"True tendencies step={t}")
 
-            ax[t, 1].imshow(tendencies[-1], cmap=cmap, norm=norm)
-            ax[t, 1].title(f"Predicted tendencies step={t}")
-            ax[t, 1].colorbar()
+            im = ax[t, 1].imshow(tendencies[t], cmap=cmap, norm=norm)
+            ax[t, 1].set_title(f"Predicted tendencies step={t}")
 
             data = true_tendencies - tendencies[t]
-            ax[t, 2].title(f"Tendences bias step={t}")
-            ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
-            ax[t, 2].colorbar()
+            ax[t, 2].set_title(f"Tendences bias step={t}")
+            im = ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
+            fig.colorbar(im, ax=ax[t, 2])
 
-            ax[t, 3].title(f"True tendencies histogram step={t}")
+            ax[t, 3].set_title(f"True tendencies step={t}")
             ax[t, 3].hist(true_tendencies.flatten(), bins=30)
 
-            ax[t, 4].plt.title(f"Predicted tendencies histogram step={t}")
+            ax[t, 4].set_title(f"Predicted tendencies step={t}")
             ax[t, 4].hist(tendencies[t].flatten(), bins=30)
 
         plt.tight_layout()
