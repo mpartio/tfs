@@ -34,13 +34,6 @@ def read_config(file_path):
     return config
 
 
-def create_directory_structure(base_directory):
-    os.makedirs(base_directory, exist_ok=True)
-    os.makedirs(f"{base_directory}/models", exist_ok=True)
-    os.makedirs(f"{base_directory}/logs", exist_ok=True)
-    os.makedirs(f"{base_directory}/figures", exist_ok=True)
-
-
 def dynamic_import(items):
     for item in items:
         path_name = ".".join(item.split(".")[:-1])
@@ -51,35 +44,15 @@ def dynamic_import(items):
         globals()[item_name] = getattr(_module, item_name)
 
 
-def string_to_type(type_str: str) -> type:
-    assert "." in type_str
-    module_name, _, type_name = type_str.rpartition(".")
-    try:
-        module = importlib.import_module(module_name)
-        cls = getattr(module, type_name)
-    except (ImportError, AttributeError) as e:
-        raise ValueError(f"Could not import type '{type_str}': {e}") from e
-    return cls
-
-
-def effective_parameters(num_devices, batch_size, lr, total_iterations):
-    if num_devices == 1:
-        # keep current batch size
-        return batch_size, lr, total_iterations
-
-    effective_bs = batch_size * num_devices
-    effective_lr = lr * num_devices
-    effective_total_iterations = total_iterations * num_devices
-
-    return batch_size, effective_lr, effective_total_iterations
-
-
 imports = [
     "common.util.calculate_wavelet_snr",
     "common.util.get_latest_run_dir",
     "common.util.get_next_run_number",
     "common.util.read_checkpoint",
     "common.util.get_rank",
+    "common.util.string_to_type",
+    "common.util.effective_parameters",
+    "common.util.create_directory_structure",
 ]
 
 dynamic_import(imports)
@@ -88,6 +61,7 @@ sys.path.append(os.path.abspath(package))
 
 imports = [
     "util.roll_forecast",
+    "layers.get_padded_size",
     "callbacks.PredictionPlotterCallback",
     "callbacks.DiagnosticCallback",
     "callbacks.LazyLoggerCallback",
@@ -102,6 +76,56 @@ dynamic_import(imports)
 dynamic_import([f"{package}.cc2.cc2CRPS"])
 model_class = string_to_type(f"{package}.cc2.cc2CRPS")
 loss_fn = string_to_type(f"{package}.loss.loss_fn")
+
+
+def create_model(args):
+    if args.run_name is not None:
+        latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
+        if not latest_dir:
+            raise ValueError(f"No existing runs found with name: {args.run_name}")
+
+        config = read_config(f"{latest_dir}/run-info.json")
+
+        model = cc2CRPSModel(config)
+        model = read_checkpoint(f"{latest_dir}/models", model)
+
+        if args.only_config is False:
+            config.apply_args(args)
+
+        if args.run_name is not None:
+            config.run_name = args.run_name
+
+    elif args.start_from:
+        latest_dir = get_latest_run_dir(f"runs/{args.start_from}")
+
+        if not latest_dir:
+            raise ValueError(f"No existing runs found with name: {args.start_from}")
+
+        config = read_config(f"{latest_dir}/run-info.json")
+        config.run_name = TrainingConfig.generate_run_name()
+
+        old_resolution = get_padded_size(*config.input_resolution, config.patch_size)
+        old_resolution = (old_resolution[0] // 4, old_resolution[1] // 4)
+
+        config.apply_args(args)
+        new_resolution = get_padded_size(*config.input_resolution, config.patch_size)
+        new_resolution = (new_resolution[0] // 4, new_resolution[1] // 4)
+
+        model = cc2CRPSModel(config)
+        model = read_checkpoint(
+            f"{latest_dir}/models",
+            model,
+            interpolate_positional_embeddings=True,
+            old_size=old_resolution,
+            new_size=new_resolution,
+        )
+
+    else:
+        assert args.generate_run_name, "Must provide a run name or generate one"
+        config = get_config()
+        model = cc2CRPSModel(config)
+
+    return model, config
 
 
 class cc2CRPSModel(model_class, L.LightningModule):
@@ -194,26 +218,7 @@ class cc2CRPSModel(model_class, L.LightningModule):
 rank = get_rank()
 args = get_args()
 
-if args.run_name is not None:
-    latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
-    if not latest_dir:
-        raise ValueError(f"No existing runs found with name: {args.run_name}")
-
-    config = read_config(f"{latest_dir}/run-info.json")
-
-    model = cc2CRPSModel(config)
-    model = read_checkpoint(f"{latest_dir}/models", model)
-
-    if args.only_config is False:
-        config.apply_args(args)
-
-    if args.run_name is not None:
-        config.run_name = args.run_name
-
-else:
-    assert args.generate_run_name, "Must provide a run name or generate one"
-    config = get_config()
-    model = cc2CRPSModel(config)
+model, config = create_model(args)
 
 new_run_number = get_next_run_number(f"runs/{config.run_name}")
 

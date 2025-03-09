@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import os
 import torch
 import time
+import importlib
 from scipy.signal import medfilt2d
 from glob import glob
 
@@ -248,3 +249,33 @@ def calculate_wavelet_snr(prediction, reference=None, wavelet="db2", level=2):
         "noise_field": _noise_field,
         "local_snr_map": local_snr,
     }
+
+
+def string_to_type(type_str: str) -> type:
+    assert "." in type_str
+    module_name, _, type_name = type_str.rpartition(".")
+    try:
+        module = importlib.import_module(module_name)
+        cls = getattr(module, type_name)
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"Could not import type '{type_str}': {e}") from e
+    return cls
+
+
+def effective_parameters(num_devices, batch_size, lr, total_iterations):
+    if num_devices == 1:
+        # keep current batch size
+        return batch_size, lr, total_iterations
+
+    effective_bs = batch_size * num_devices
+    effective_lr = lr * num_devices
+    effective_total_iterations = total_iterations * num_devices
+
+    return batch_size, effective_lr, effective_total_iterations
+
+
+def create_directory_structure(base_directory):
+    os.makedirs(base_directory, exist_ok=True)
+    os.makedirs(f"{base_directory}/models", exist_ok=True)
+    os.makedirs(f"{base_directory}/logs", exist_ok=True)
+    os.makedirs(f"{base_directory}/figures", exist_ok=True)
