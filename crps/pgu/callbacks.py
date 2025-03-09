@@ -298,8 +298,6 @@ class DiagnosticCallback(L.Callback):
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
 
         if not trainer.is_global_zero:
             return
@@ -333,9 +331,10 @@ class DiagnosticCallback(L.Callback):
             predictions[0].cpu().detach(),
             tendencies[0].cpu().detach(),
             trainer.current_epoch,
+            trainer.sanity_checking,
         )
 
-        self.plot_history(trainer.current_epoch)
+        self.plot_history(trainer.current_epoch, trainer.sanity_checking)
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
@@ -443,7 +442,11 @@ class DiagnosticCallback(L.Callback):
 
         plt.close()
 
-    def plot_history(self, epoch):
+    def plot_history(self, epoch, sanity_checking=False):
+        warnings.filterwarnings(
+            "ignore", message="No artists with labels found to put in legend"
+        )
+
         plt.figure(figsize=(16, 16))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
@@ -580,6 +583,10 @@ class DiagnosticCallback(L.Callback):
         plt.legend()
 
         plt.tight_layout()
+
+        if sanity_checking:
+            return
+
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_history.png".format(
                 self.config.run_dir,
