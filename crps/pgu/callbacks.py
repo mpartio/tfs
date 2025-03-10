@@ -9,6 +9,7 @@ import lightning as L
 import sys
 import config
 import json
+import warnings
 from util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
@@ -374,7 +375,7 @@ class DiagnosticCallback(L.Callback):
         with open(filename, "w") as f:
             json.dump(D, f, indent=4, default=convert_to_serializable)
 
-    def plot_visual(self, input_field, truth, pred, tendencies, epoch):
+    def plot_visual(self, input_field, truth, pred, tendencies, epoch, sanity_checking):
         plt.figure(figsize=(24, 8))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
@@ -386,8 +387,8 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        # input_field T, H, W, C
-        # truth T, H, W, C
+        # input_field T, C, H, W
+        # truth T, C, H, W
         # pred T, C, H, W
         # tend T, C, H, W
 
@@ -401,14 +402,14 @@ class DiagnosticCallback(L.Callback):
         fig, ax = plt.subplots(T, 5, figsize=(15, 3 * T + 0.5))
         ax = np.atleast_2d(ax)
 
+        cmap = plt.cm.coolwarm
+        norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
+
         for t in range(T):
             if t == 0:
                 true_tendencies = truth[t].squeeze() - input_field[-1].squeeze()
             else:
                 true_tendencies = truth[t].squeeze() - truth[t - 1].squeeze()
-
-            cmap = plt.cm.coolwarm
-            norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
             im = ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
             ax[t, 0].set_title(f"True tendencies step={t}")
@@ -417,17 +418,21 @@ class DiagnosticCallback(L.Callback):
             ax[t, 1].set_title(f"Predicted tendencies step={t}")
 
             data = true_tendencies - tendencies[t]
-            ax[t, 2].set_title(f"Tendences bias step={t}")
+            ax[t, 2].set_title(f"Tendencies bias step={t}")
             im = ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
             fig.colorbar(im, ax=ax[t, 2])
 
-            ax[t, 3].set_title(f"True tendencies step={t}")
+            ax[t, 3].set_title(f"True histogram step={t}")
             ax[t, 3].hist(true_tendencies.flatten(), bins=30)
 
-            ax[t, 4].set_title(f"Predicted tendencies step={t}")
+            ax[t, 4].set_title(f"Predicted histogram step={t}")
             ax[t, 4].hist(tendencies[t].flatten(), bins=30)
 
         plt.tight_layout()
+
+        if sanity_checking:
+            return
+
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_analysis.png".format(
                 self.config.run_dir,
@@ -487,7 +492,7 @@ class DiagnosticCallback(L.Callback):
 
         loss_names = self.train_loss_components.keys()
 
-        assert len(loss_names) == 2
+        assert sanity_checking == True or len(loss_names) == 2
 
         for i, name in enumerate(loss_names):
             plt.subplot(3, 3, 2 + i)
