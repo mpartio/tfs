@@ -62,13 +62,16 @@ class TrainingConfig:
         import json
 
         with open(config_path, "r") as f:
-            config_dict = json.load(f)
-            return cls(**config_dict["config"])
+            config = json.load(f)["config"]
+            for k in ("only_config", "generate_run_name", "start_from"):
+                config.pop(k, None)
 
+            return cls(**config)
 
     @classmethod
     def generate_run_name(cls):
         return randomname.get_name()
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -145,7 +148,11 @@ def get_config():
 
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k not in ("only_config", "generate_run_name", "start_from"):
+        if v is not None and k not in (
+            "only_config",
+            "generate_run_name",
+            "start_from",
+        ):
             setattr(config, k, v)
             if rank == 0:
                 print(k, "to", v)

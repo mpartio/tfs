@@ -21,19 +21,6 @@ import importlib
 package = os.environ.get("MODEL_FAMILY", "pgu_ens")
 
 
-def read_config(file_path):
-    try:
-        with open(file_path) as f:
-            print(f"Loading config: {file_path}")
-            config = json.load(f)
-            config = config["config"]
-            config = TrainingConfig(**config)
-    except json.decoder.JSONDecodeError as e:
-        print("Failed to decode json at {}".format(file_path))
-        raise e
-    return config
-
-
 def dynamic_import(items):
     for item in items:
         path_name = ".".join(item.split(".")[:-1])
@@ -84,8 +71,7 @@ def create_model(args):
         if not latest_dir:
             raise ValueError(f"No existing runs found with name: {args.run_name}")
 
-        config = read_config(f"{latest_dir}/run-info.json")
-
+        config = TrainingConfig.load(f"{latest_dir}/run-info.json")
         model = cc2CRPSModel(config)
         model = read_checkpoint(f"{latest_dir}/models", model)
 
@@ -101,7 +87,7 @@ def create_model(args):
         if not latest_dir:
             raise ValueError(f"No existing runs found with name: {args.start_from}")
 
-        config = read_config(f"{latest_dir}/run-info.json")
+        config = TrainingConfig.load(f"{latest_dir}/run-info.json")
         config.run_name = TrainingConfig.generate_run_name()
 
         old_resolution = get_padded_size(*config.input_resolution, config.patch_size)
