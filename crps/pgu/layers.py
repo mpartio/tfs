@@ -132,12 +132,19 @@ class DecoderBlock(nn.Module):
     def forward(self, x, context):
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x)
-        self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+
+        with torch.amp.autocast("cuda", enabled=False):
+            x_norm1 = x_norm1.float()
+            self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+
         x = x + self_attn
 
         # Cross-attention to encoder outputs
         x_norm2 = self.norm2(x)
-        cross_attn, _ = self.cross_attn(x_norm2, context, context)
+
+        with torch.amp.autocast("cuda", enabled=False):
+            cross_attn, _ = self.cross_attn(x_norm2.float(), context.float(), context.float())
+
         x = x + cross_attn
 
         # Feedforward
