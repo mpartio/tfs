@@ -20,12 +20,22 @@ from pytorch_lightning.utilities import rank_zero_only
 
 matplotlib.use("Agg")
 
+colors = [
+    "blue",
+    "orange",
+    "green",
+    "red",
+    "black",
+    "purple",
+    "grey",
+    "magenta",
+]
 
 def var_and_mae(predictions, y):
-    variance = torch.var(predictions[:, -1, ...], dim=1, unbiased=False)
+    variance = torch.var(predictions[:, :, -1, ...], dim=2, unbiased=False)
     variance = variance.detach().mean().cpu().numpy().item()
 
-    mean_pred = torch.mean(predictions[:, -1, ...], dim=1)
+    mean_pred = torch.mean(predictions[:, :, -1, ...], dim=2)
     y_true = y[:, -1, ...]
 
     mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
@@ -282,7 +292,7 @@ class DiagnosticCallback(L.Callback):
 
             # d) variance and l1
 
-            predictions = outputs["predictions"]
+            predictions = outputs["predictions"] # B, M, T, C, H, W
 
             data, _ = batch
             _, y = data
@@ -412,9 +422,9 @@ class DiagnosticCallback(L.Callback):
         pred = pred.squeeze(2)
         tendencies = tendencies.squeeze(2)
 
-        T = pred.shape[0]
+        T = pred.shape[1]
 
-        fig, ax = plt.subplots(T, 6, figsize=(15, 3 * T + 0.5))
+        fig, ax = plt.subplots(T, 6, figsize=(18, 3 * T + 1))
         ax = np.atleast_2d(ax)
 
         cmap = plt.cm.coolwarm
@@ -552,22 +562,11 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(244)
         plt.yscale("log")
         plt.title("Gradients (mean)")
-        colors = [
-            "blue",
-            "orange",
-            "green",
-            "red",
-            "black",
-            "purple",
-            "yellow",
-            "magenta",
-        ]
-        for section in self.gradients_mean.keys():
-            if section == "attention":
-                continue
+
+        for i,section in enumerate(self.gradients_mean.keys()):
             data = self.gradients_mean[section]
             data = torch.tensor(data)
-            color = colors.pop(0)
+            color = colors[i]
             plt.plot(data, color=color, alpha=0.3)
             plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
@@ -575,22 +574,11 @@ class DiagnosticCallback(L.Callback):
         plt.subplot(245)
         plt.yscale("log")
         plt.title("Gradients (std)")
-        colors = [
-            "blue",
-            "orange",
-            "green",
-            "red",
-            "black",
-            "purple",
-            "yellow",
-            "magenta",
-        ]
-        for section in self.gradients_std.keys():
-            if section == "attention":
-                continue
+
+        for i,section in enumerate(self.gradients_std.keys()):
             data = self.gradients_std[section]
             data = torch.tensor(data)
-            color = colors.pop(0)
+            color = colors[i]
             plt.plot(data, color=color, alpha=0.3)
             plt.plot(moving_average(data, 30), color=color, label=section)
         plt.legend()
