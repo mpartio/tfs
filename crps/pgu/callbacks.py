@@ -144,42 +144,52 @@ class PredictionPlotterCallback(L.Callback):
         # y shape: [B, T, 1, 128, 128]
         # prediction shape: [B, T, 1, 128, 128]
 
-        input_field = x[0].squeeze()
+        # input_field = x[0].squeeze()
         truth = y[0]
 
+        x = x[0]
         predictions = predictions[0]  # T, C, H, W (B removed)
         num_truth = truth.shape[0]
 
+        num_hist = self.config.history_length
+
         rows = num_truth
-        cols = 2 + 1 + 1  # +2 for input fields, +1 for prediction, +1 for truth
+        cols = num_hist + 1 + 1  # input fields, +1 for prediction, +1 for truth
 
         fig, ax = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows + 0.5))
         ax = np.atleast_2d(ax)
 
         for i in range(num_truth):  # times
             if i == 0:
-                input_field = x[0].squeeze()
-            elif i == 1:
-                input_field = torch.stack(
-                    [x[0, 1].squeeze(), predictions[0][0].squeeze()]
-                )
-            elif i > 1:
-                input_field = torch.stack(
-                    [predictions[i - 2, 0].squeeze(), predictions[i - 1, 0].squeeze()]
-                )
+                # First prediction: all ground truth
+                input_field = x.squeeze()
+            elif i <= num_hist:
+                # gradually using own predictions as input
+                num_ground_truth = max(0, num_hist - i)
+                num_pred = num_hist - num_ground_truth
+                start_pred = max(0, i - num_hist)
 
-            ax[i, 0].imshow(input_field[0])
-            ax[i, 0].set_title(f"Time T{i-1:+}")
-            ax[i, 0].set_axis_off()
-            ax[i, 1].imshow(input_field[1])
-            ax[i, 1].set_title(f"Time T{i:+}")
-            ax[i, 1].set_axis_off()
-            ax[i, 2].imshow(predictions[i].squeeze())
-            ax[i, 2].set_title(f"Time T{i+1:+} prediction")
-            ax[i, 2].set_axis_off()
-            ax[i, 3].imshow(truth[i].squeeze())
-            ax[i, 3].set_title(f"Time T{i+1:+} truth")
-            ax[i, 3].set_axis_off()
+                input_field = torch.cat(
+                    [
+                        x[i:num_hist].squeeze(),
+                        predictions[start_pred:num_pred].squeeze(1),
+                    ]
+                )
+            elif i > num_hist:
+                start_pred = max(0, i - num_hist)
+                input_field = predictions[start_pred:num_hist].squeeze()
+
+            for j in range(num_hist):
+                num = i - num_hist + j + 1
+                ax[i, j].imshow(input_field[j])
+                ax[i, j].set_title(f"Time T{num:+}")
+                ax[i, j].set_axis_off()
+            ax[i, num_hist].imshow(predictions[i].squeeze())
+            ax[i, num_hist].set_title(f"Time T{i+1:+} prediction")
+            ax[i, num_hist].set_axis_off()
+            ax[i, num_hist + 1].imshow(truth[i].squeeze())
+            ax[i, num_hist + 1].set_title(f"Time T{i+1:+} truth")
+            ax[i, num_hist + 1].set_axis_off()
 
         title = (
             "Training time prediction"
