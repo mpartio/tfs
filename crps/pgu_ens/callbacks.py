@@ -67,8 +67,9 @@ def analyze_gradients(model):
 
 
 class PredictionPlotterCallback(L.Callback):
-    def __init__(self, dataloader, config):
-        self.dataloader = dataloader
+    def __init__(self, train_loader, val_loader, config):
+        self.train_dataloader = train_loader
+        self.val_dataloader = val_loader
         self.config = config
 
     @rank_zero_only
@@ -79,7 +80,7 @@ class PredictionPlotterCallback(L.Callback):
         pl_module.eval()
 
         # Get a single batch from the dataloader
-        data, forcing = next(iter(self.dataloader))
+        data, forcing = next(iter(self.train_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
 
@@ -100,12 +101,47 @@ class PredictionPlotterCallback(L.Callback):
             y.cpu().detach(),
             predictions.cpu().detach(),
             trainer.current_epoch,
+            "train",
         )
 
         # Restore model to training mode
         pl_module.train()
 
-    def plot(self, x, y, predictions, epoch):
+    @rank_zero_only
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+
+        pl_module.eval()
+
+        data, forcing = next(iter(self.val_dataloader))
+        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
+        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+
+        # Perform a prediction
+        with torch.no_grad():
+            _, _, predictions = roll_forecast(
+                pl_module,
+                data,
+                forcing,
+                self.config.rollout_length,
+                None,
+            )
+
+        x, y = data
+
+        self.plot(
+            x.cpu().detach(),
+            y.cpu().detach(),
+            predictions.cpu().detach(),
+            trainer.current_epoch,
+            "val",
+        )
+
+        # Restore model to training mode
+        pl_module.train()
+
+    def plot(self, x, y, predictions, epoch, stage):
         # Take first batch member
         # Layout
         # 1. Input field at T-1
@@ -137,7 +173,7 @@ class PredictionPlotterCallback(L.Callback):
         rows = num_truth
         cols = num_members + 2 + 1  # +2 for input fields, +1 for truth
 
-        fig, ax = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+        fig, ax = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows + 0.5))
         ax = np.atleast_2d(ax)
 
         for i in range(num_truth):  # times
@@ -153,30 +189,48 @@ class PredictionPlotterCallback(L.Callback):
                 )
 
             ax[i, 0].imshow(input_field[0])
-            ax[i, 0].set_title("Time T-1")
+            ax[i, 0].set_title(f"Time T{i-1:+}")
             ax[i, 0].set_axis_off()
             ax[i, 1].imshow(input_field[1])
-            ax[i, 1].set_title("Time T")
+            ax[i, 1].set_title(f"Time T{i:+}")
             ax[i, 1].set_axis_off()
 
             for j in range(num_members):  # members
                 ax[i, j + 2].imshow(predictions[j, i, ...].squeeze())
-                ax[i, j + 2].set_title(f"Time T+{i+i} member {j}")
+                ax[i, j + 2].set_title(f"Time T{i+1:+} member {j}")
                 ax[i, j + 2].set_axis_off()
 
             ax[i, j + 3].imshow(truth[i].squeeze())
-            ax[i, j + 3].set_title(f"Time T+{i+1} truth")
+            ax[i, j + 3].set_title(f"Time T{i+1:+} truth")
             ax[i, j + 3].set_axis_off()
 
-        plt.savefig(
-            "{}/figures/{}_{}_{}_epoch_{:03d}_train.png".format(
-                self.config.run_dir,
-                platform.node(),
-                self.config.run_name,
-                self.config.run_number,
-                epoch,
-            )
+        title = (
+            "Training time prediction"
+            if stage == "train"
+            else "Validation time prediction"
         )
+
+        title = "{} for {} num={} at epoch {} (host={}, time={})".format(
+            title,
+            self.config.run_name,
+            self.config.run_number,
+            epoch,
+            platform.node(),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        filename = "{}/figures/{}_{}_{}_epoch_{:03d}_{}.png".format(
+            self.config.run_dir,
+            platform.node(),
+            self.config.run_name,
+            self.config.run_number,
+            epoch,
+            stage,
+        )
+
+        plt.suptitle(title)
+        plt.savefig(filename)
+
         plt.close()
 
 
@@ -348,17 +402,6 @@ class DiagnosticCallback(L.Callback):
     def plot_visual(
         self, input_field, truth, pred, tendencies, epoch, sanity_checking=False
     ):
-        plt.figure(figsize=(24, 12))
-        plt.suptitle(
-            "{} num={} at epoch {} (host={}, time={})".format(
-                self.config.run_name,
-                self.config.run_number,
-                epoch,
-                platform.node(),
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
-        )
-
         # input_field T, C, H, W
         # truth T, C, H, W
         # pred M, T, C, H, W
@@ -369,75 +412,56 @@ class DiagnosticCallback(L.Callback):
         pred = pred.squeeze(2)
         tendencies = tendencies.squeeze(2)
 
-        plt.subplot(341)
-        plt.imshow(input_field[0])
-        plt.title("Input time=T-1")
-        plt.colorbar()
+        T = pred.shape[0]
 
-        plt.subplot(342)
-        plt.imshow(input_field[1])
-        plt.title("Input time=T")
-        plt.colorbar()
+        fig, ax = plt.subplots(T, 6, figsize=(15, 3 * T + 0.5))
+        ax = np.atleast_2d(ax)
 
-        plt.subplot(343)
-        plt.imshow(truth[-1])
-        plt.title("Truth")
-        plt.colorbar()
-
-        plt.subplot(344)
-        plt.imshow(pred[0][-1])
-        plt.title("Prediction")
-        plt.colorbar()
-
-        plt.subplot(345)
-        cmap = plt.cm.coolwarm
-        norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
-        plt.imshow(tendencies[0, -1], cmap=cmap, norm=norm)
-        plt.title("Tendencies")
-        plt.colorbar()
-
-        data = truth[-1].squeeze() - input_field[-1].squeeze()
         cmap = plt.cm.coolwarm
         norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
 
-        plt.subplot(346)
-        plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("True Tendencies")
-        plt.colorbar()
+        for t in range(T):
+            if t == 0:
+                true_tendencies = truth[t].squeeze() - input_field[-1].squeeze()
+            else:
+                true_tendencies = truth[t].squeeze() - truth[t - 1].squeeze()
 
-        data = pred[0, -1] - truth[-1]
-        norm = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
+            im = ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
+            ax[t, 0].set_title(f"True tendencies step={t}")
 
-        plt.subplot(347)
-        plt.imshow(data, cmap=cmap, norm=norm)
-        plt.title("Prediction Bias")
-        plt.colorbar()
+            im = ax[t, 1].imshow(tendencies[0][t], cmap=cmap, norm=norm)
+            ax[t, 1].set_title(f"Predicted tendencies m=0 step={t}")
 
-        plt.subplot(348)
-        plt.hist(truth[-1].flatten(), bins=20)
-        plt.title("Truth histogram")
+            data = true_tendencies - tendencies[0][t]
+            ax[t, 2].set_title(f"Tendencies bias m=0 step={t}")
+            im = ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
+            fig.colorbar(im, ax=ax[t, 2])
 
-        plt.subplot(349)
-        plt.hist(pred[0, -1].flatten(), bins=20)
-        plt.title("Predicted histogram")
+            ax[t, 3].set_title(f"True histogram step={t}")
+            ax[t, 3].hist(true_tendencies.flatten(), bins=30)
 
-        # Calculate mean prediction and error map
-        error_map = torch.abs(pred[0][-1] - truth[-1])
+            ax[t, 4].set_title(f"Predicted histogram m=0 step={t}")
+            ax[t, 4].hist(tendencies[0][t].flatten(), bins=30)
 
-        plt.subplot(3, 4, 10)
-        plt.title("Spatial MAE")
-        plt.imshow(error_map.cpu())
-        plt.colorbar()
-
-        uncertainty = torch.var(pred[:, -1], dim=0)
-        plt.subplot(3, 4, 11)  # Adjust subplot number as needed
-        plt.title("Member Variance")
-        plt.imshow(uncertainty.cpu(), cmap="Reds")
-        plt.colorbar()
+            uncertainty = torch.var(pred[:, t], dim=0)
+            plt.title("Tendency Variance")
+            plt.imshow(uncertainty.cpu(), cmap="Reds")
+            plt.colorbar()
 
         plt.tight_layout()
+
         if sanity_checking:
             return
+
+        plt.suptitle(
+            "{} num={} at epoch {} (host={}, time={})".format(
+                self.config.run_name,
+                self.config.run_number,
+                epoch,
+                platform.node(),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
 
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_val.png".format(

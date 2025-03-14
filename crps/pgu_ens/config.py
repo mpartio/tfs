@@ -70,6 +70,9 @@ class TrainingConfig:
             config_dict = json.load(f)
             return cls(**config_dict["config"])
 
+    @classmethod
+    def generate_run_name(cls):
+        return randomname.get_name()
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -109,6 +112,7 @@ def get_args():
 
     parser.add_argument("--only_config", action="store_true")
     parser.add_argument("--generate_run_name", action="store_true")
+    parser.add_argument("--start_from", type=str)
 
     args = parser.parse_args()
 
@@ -128,7 +132,7 @@ def get_config():
     rank = get_rank()
     if args.generate_run_name:
         if rank == 0:
-            run_name = randomname.get_name()
+            run_name = TrainingConfig.generate_run_name()
             with open("generated_run_name.txt", "w") as f:
                 f.write(run_name)
         else:
@@ -148,7 +152,7 @@ def get_config():
 
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k not in ("only_config", "generate_run_name"):
+        if v is not None and k not in ("only_config", "generate_run_name", "start_from"):
             setattr(config, k, v)
             if rank == 0:
                 print(k, "to", v)

@@ -42,7 +42,7 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
         ), "tendencies and predictions don't match: {} vs {}".format(
             tendencies.shape, predictions.shape
         )
-        return loss, tendencies, predictions
+        return {"loss":loss}, tendencies, predictions
 
     # Initialize empty lists for multi-step evaluation
     losses = []

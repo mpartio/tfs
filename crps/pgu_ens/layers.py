@@ -132,6 +132,9 @@ class DecoderBlock(nn.Module):
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
 
     def forward(self, x, context, noise_embedding):
+        assert torch.isfinite(x).all(), "x has nan or inf"
+        assert torch.isfinite(context).all(), "context has nan or inf"
+
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x, noise_embedding)
 
@@ -151,7 +154,11 @@ class DecoderBlock(nn.Module):
         x = x + cross_attn
 
         # Feedforward
-        x = x + self.mlp(self.norm3(x, noise_embedding))
+        assert torch.isfinite(x).all(), "before x_norm3 has nan or inf"
+
+        with torch.amp.autocast("cuda", enabled=False):
+            x = self.norm3(x.float(), noise_embedding)
+            x = x + self.mlp(x)
 
         return x
 
@@ -168,7 +175,8 @@ class PatchExpand(nn.Module):
         B, L, C = x.shape
         assert L == H * W, "Input feature has wrong size: {} vs {}".format(L, H * W)
 
-        x = self.expand(x)  # B, H*W, C*scale_factor^2
+        with torch.amp.autocast("cuda", enabled=False):
+            x = self.expand(x.float())  # B, H*W, C*scale_factor^2
 
         # Reshape to spatial format for upsampling
         x = x.view(B, H, W, -1)
@@ -391,13 +399,24 @@ class ConditionalLayerNorm(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x, noise_embedding):
+        assert torch.isfinite(x).all(), "Input has NaNs before normalization"
+        y = x.clone().detach()
         # Standard normalization first
         normalized = self.norm(x)
+        assert torch.isfinite(
+            normalized
+        ).all(), "NaNs after LayerNorm/min={},max={}".format(torch.min(y), torch.max(y))
 
         # Get scale and shift from noise
         scale_shift = self.scale_shift(noise_embedding)
+        assert torch.isfinite(scale_shift).all(), "NaNs in scale_shift"
+
         # Split into scale and shift components
         scale, shift = scale_shift.chunk(2, dim=-1)
+
+        scale = torch.clamp(
+            scale, min=-0.9, max=10.0
+        )  # Prevents 1+scale from being <= 0
 
         # Add dimensions if needed to match input
         while len(scale.shape) < len(x.shape):
@@ -405,4 +424,5 @@ class ConditionalLayerNorm(nn.Module):
             shift = shift.unsqueeze(-2)
 
         # Apply conditional transformation
+
         return normalized * (1 + scale) + shift
