@@ -78,7 +78,7 @@ class cc2CRPS(nn.Module):
             input_resolution[1] // self.patch_size,
         )
         self.downsample = PatchMerge(
-            self.input_resolution_halved, self.embed_dim, time_dim=2
+            self.input_resolution_halved, self.embed_dim, time_dim=config.history_length
         )
 
         self.encoder2 = nn.ModuleList(
@@ -322,8 +322,8 @@ class cc2CRPS(nn.Module):
             data[0].shape
         )
 
-        data, padding_info = pad_tensors(data, 4, 1)
-        forcing, _ = pad_tensors(forcing, 4, 1)
+        data, padding_info = pad_tensors(data, self.patch_size, 1)
+        forcing, _ = pad_tensors(forcing, self.patch_size, 1)
 
         encoded = self.encode(
             data,
