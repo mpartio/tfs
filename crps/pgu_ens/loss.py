@@ -22,7 +22,7 @@ class AlmostFairCRPSLoss(nn.Module):
             predictions.ndim == 5
         ), "predictions shape needs to be: B, M, C, H, W: {}".format(predictions.shape)
         assert target.ndim == 4, "target shape needs to be: B, C, H, W: {}".format(
-            predictions.shape
+            target.shape
         )
 
         B, M, C, H, W = predictions.shape
