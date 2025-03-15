@@ -179,11 +179,23 @@ class cc2CRPSModel(model_class, L.LightningModule):
         )
 
         if args.only_config and config.current_iteration > 0:
+            initial_lr = cosine_scheduler.get_last_lr()[0]
             steps_after_warmup = config.current_iteration - config.warmup_iterations
 
             for _ in range(steps_after_warmup):
                 cosine_scheduler.step()
 
+            current_lr = cosine_scheduler.get_last_lr()[0]
+
+            print(
+                "Learning rate set from {:.1e} to {:.1e} when starting from iteration {}/{} ({:.1f}% done)".format(
+                    initial_lr,
+                    current_lr,
+                    config.current_iteration,
+                    it,
+                    (100 * config.current_iteration / it),
+                )
+            )
             scheduler = cosine_scheduler
         else:
             warmup_scheduler = LinearLR(
