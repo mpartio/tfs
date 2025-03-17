@@ -73,9 +73,6 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-
         pl_module.eval()
 
         # Get a single batch from the dataloader
@@ -101,6 +98,7 @@ class PredictionPlotterCallback(L.Callback):
             predictions.cpu().detach(),
             trainer.current_epoch,
             "train",
+            trainer.sanity_checking,
         )
 
         # Restore model to training mode
@@ -108,9 +106,6 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-
         pl_module.eval()
 
         data, forcing = next(iter(self.val_dataloader))
@@ -135,12 +130,13 @@ class PredictionPlotterCallback(L.Callback):
             predictions.cpu().detach(),
             trainer.current_epoch,
             "val",
+            trainer.sanity_checking,
         )
 
         # Restore model to training mode
         pl_module.train()
 
-    def plot(self, x, y, predictions, epoch, stage):
+    def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # y shape: [B, T, 1, 128, 128]
         # prediction shape: [B, T, 1, 128, 128]
 
@@ -171,7 +167,7 @@ class PredictionPlotterCallback(L.Callback):
 
                 input_field = torch.cat(
                     [
-                        x[i:num_hist].squeeze(),
+                        x[i:num_hist].squeeze(1),
                         predictions[start_pred:num_pred].squeeze(1),
                     ]
                 )
@@ -216,7 +212,9 @@ class PredictionPlotterCallback(L.Callback):
         )
 
         plt.suptitle(title)
-        plt.savefig(filename)
+
+        if sanity_check is False:
+            plt.savefig(filename)
         plt.close()
 
 
