@@ -11,6 +11,7 @@ from layers import (
     DecoderBlock,
     get_padded_size,
     pad_tensors,
+    pad_tensor,
     depad_tensor,
 )
 import config
@@ -160,9 +161,9 @@ class cc2CRPS(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def encode(self, data, forcing):
+    def encode(self, x, forcing):
         """Encode input sequence into latent representation"""
-        x = self.patch_embed(data[0], forcing[0])  # [B, T, patches, embed_dim]
+        x = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
         B, T, P, D = x.shape
 
         # Add positional embedding to each patch
@@ -189,7 +190,7 @@ class cc2CRPS(nn.Module):
         x = x.reshape(B, T, -1, D * 2)
         return x
 
-    def decode(self, encoded, target_len):
+    def decode(self, encoded, step):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -200,86 +201,52 @@ class cc2CRPS(nn.Module):
         latest_state = encoded[:, -1:, :, :]  # Just the last time step
 
         encoded_flat = encoded.reshape(B, -1, D)
+        decoder_in = decoder_input.reshape(B, -1, D)
 
-        # Decode one step at a time
-        for t in range(target_len):
-            # Reshape for decoder
-            decoder_in = decoder_input.reshape(B, -1, D)
+        # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
+        step_id = 0 if step == 0 else 1
 
-            # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-            step_id = 0 if t == 0 else 1
+        # Get appropriate step embedding
+        step_embedding = self.step_id_embeddings[step_id]  # [D]
 
-            # Get appropriate step embedding
-            step_embedding = self.step_id_embeddings[step_id]  # [D]
+        # Add step embedding to decoder input
+        # For first token in each sequence (acts as a "step type" token)
+        # We'll add it to the last P tokens which represent our current state
+        decoder_in_with_id = decoder_in.clone()
+        decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
+            0
+        ).unsqueeze(1)
 
-            # Add step embedding to decoder input
-            # For first token in each sequence (acts as a "step type" token)
-            # We'll add it to the last P tokens which represent our current state
-            decoder_in_with_id = decoder_in.clone()
-            decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
-                0
-            ).unsqueeze(1)
+        # Process through decoder blocks
+        x = decoder_in_with_id
 
-            # Process through decoder blocks
-            x = decoder_in_with_id
+        # Process through decoder blocks
+        for block in self.decoder1:
+            x = block(x, encoded_flat)
 
-            # Process through decoder blocks
-            for block in self.decoder1:
-                x = block(x, encoded_flat)
+        # Get the delta prediction
+        delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
 
-            # Get the delta prediction
-            delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
+        new_H, new_W = self.input_resolution_halved
+        new_H = new_H // 2  # 2 = num_times
+        new_W = new_W // 2  # 2 = num_times
 
-            new_H, new_W = self.input_resolution_halved
-            new_H = new_H // 2  # 2 = num_times
-            new_W = new_W // 2  # 2 = num_times
+        upsampled_delta, P_new, D_new = self.upsample(
+            delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
+        )
 
-            upsampled_delta, P_new, D_new = self.upsample(
-                delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
-            )
+        P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
 
-            P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
+        upsampled_delta = upsampled_delta.reshape(B, 1, P_new, D_new)
+        P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
+        x2 = upsampled_delta.reshape(B, -1, D_new)
 
-            upsampled_delta = upsampled_delta.reshape(B, 1, P_new, D_new)
-            P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
-            x2 = upsampled_delta.reshape(B, -1, D_new)
+        for block in self.decoder2:
+            x2 = block(x2, encoded_flat)
 
-            for block in self.decoder2:
-                x2 = block(x2, encoded_flat)
+        delta_pred2 = x2.reshape(B, 1, P_new, D_new)
 
-            delta_pred2 = x2.reshape(B, 1, P_new, D_new)
-
-            # If latest_state doesn't match the upsampled dimensions, we need to upsample it too
-            if latest_state.shape[2] != P_new:
-                latest_state_upsampled, _, _ = self.upsample(
-                    latest_state.reshape(B, -1, D),
-                    H=new_H,
-                    W=new_W,
-                )
-                latest_state_upsampled = latest_state_upsampled.reshape(
-                    B, 1, P_new, D_new
-                )
-                latest_state = latest_state_upsampled
-
-            # Add delta to latest state to get new state
-            new_state = latest_state + delta_pred2
-
-            # Add new state to outputs
-            outputs.append(new_state)
-
-            # Update latest state
-            latest_state = new_state
-
-            if t == 0:
-                # First iteration after upsampling
-                decoder_input = new_state
-            else:
-                decoder_input = torch.cat([decoder_input, new_state], dim=1)
-
-        # Concatenate all outputs
-        outputs = torch.cat(outputs, dim=1)
-
-        return outputs
+        return delta_pred2
 
     def project_to_image(self, x):
         """Project latent representation back to image space"""
@@ -317,13 +284,13 @@ class cc2CRPS(nn.Module):
 
     def forward(self, data, forcing, target_len):
         assert (
-            data[0].ndim == 5
+            data.ndim == 5
         ), "Input data tensor shape should be [B, T, C, H, W], is: {}".format(
-            data[0].shape
+            data.shape
         )
 
-        data, padding_info = pad_tensors(data, self.patch_size, 1)
-        forcing, _ = pad_tensors(forcing, self.patch_size, 1)
+        data, padding_info = pad_tensor(data, self.patch_size, 1)
+        forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
         encoded = self.encode(
             data,

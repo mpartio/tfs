@@ -10,30 +10,35 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
 
-    tendencies = model(data, forcing, n_step)
-
     step_weights = torch.tensor([1, 1.2, 1.5, 1.8, 2.2, 3.0])[:n_step].to(x.device)
     tendency_weights = torch.tensor([2, 2.2, 2.5, 2.8, 3.2, 4.0])[:n_step].to(x.device)
 
     # Initial state is the last state from input sequence
     current_state = x[:, -1, ...].unsqueeze(1)  # Shape: [B, 1, C, H, W]
+    previous_state = x[:, -2, ...].unsqueeze(1)
 
     # Initialize empty lists for multi-step evaluation
     step_losses = []
     tendency_losses = []
     all_predictions = []
+    all_tendencies = []
 
     # Loop through each rollout step
     for t in range(n_step):
-        tendency = tendencies[:, t : t + 1, ...]
+        step_forcing = forcing[:, t : t + 2, ...]
+        input_state = torch.cat([previous_state, current_state], dim=1)
+
+        tendency = model(input_state, step_forcing, t)
 
         # Add the predicted tendency to get the next state
         next_state = current_state + tendency
 
         # Store the prediction
         all_predictions.append(next_state)
+        all_tendencies.append(tendency)
 
         # Update current state for next iteration
+        previous_state = current_state
         current_state = next_state
 
         # Compute loss for this step
@@ -53,9 +58,8 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
             tendency_loss = torch.mean(tendency_importance * (tendency - y_true) ** 2)
             tendency_losses.append(tendency_loss)
 
-            # losses.append(step_loss + tendency_loss)
-
     # Stack predictions into a single tensor
+    tendencies = torch.cat(all_tendencies, dim=1)
     predictions = torch.cat(all_predictions, dim=1)
     predictions = torch.clamp(predictions, 0, 1)
 

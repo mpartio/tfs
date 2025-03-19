@@ -17,6 +17,7 @@ from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.utilities import rank_zero_only
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 matplotlib.use("Agg")
 
@@ -78,7 +79,7 @@ class PredictionPlotterCallback(L.Callback):
         # Get a single batch from the dataloader
         data, forcing = next(iter(self.train_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -110,7 +111,7 @@ class PredictionPlotterCallback(L.Callback):
 
         data, forcing = next(iter(self.val_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -173,7 +174,7 @@ class PredictionPlotterCallback(L.Callback):
                 )
             elif i > num_hist:
                 start_pred = max(0, i - num_hist)
-                input_field = predictions[start_pred:num_hist].squeeze()
+                input_field = predictions[start_pred:start_pred+num_hist].squeeze()
 
             for j in range(num_hist):
                 num = i - num_hist + j + 1
@@ -314,7 +315,7 @@ class DiagnosticCallback(L.Callback):
         # Get a single batch from the dataloader
         data, forcing = next(iter(trainer.val_dataloaders))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -421,14 +422,20 @@ class DiagnosticCallback(L.Callback):
 
             im = ax[t, 0].imshow(true_tendencies, cmap=cmap, norm=norm)
             ax[t, 0].set_title(f"True tendencies step={t}")
+            ax[t, 0].set_axis_off()
 
-            im = ax[t, 1].imshow(tendencies[t], cmap=cmap, norm=norm)
+            divider = make_axes_locatable(ax[t, 0])
+            cax = divider.append_axes("right", size="0.1%", pad=0.05)
+            fig.colorbar(im, cax=cax)
+
+            ax[t, 1].imshow(tendencies[t], cmap=cmap, norm=norm)
             ax[t, 1].set_title(f"Predicted tendencies step={t}")
+            ax[t, 1].set_axis_off()
 
             data = true_tendencies - tendencies[t]
             ax[t, 2].set_title(f"Tendencies bias step={t}")
-            im = ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
-            fig.colorbar(im, ax=ax[t, 2])
+            ax[t, 2].set_axis_off()
+            ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
 
             ax[t, 3].set_title(f"True histogram step={t}")
             ax[t, 3].hist(true_tendencies.flatten(), bins=30)

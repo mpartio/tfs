@@ -319,6 +319,8 @@ class PatchEmbed(nn.Module):
         self.fusion = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, data, forcing):
+        assert data.ndim == 5, "x dims should be B, T, C, H, W, found: {}".format(data.shape)
+        assert forcing.ndim == 5, "forcing dims should be B, T, C, H, W, found: {}".format(forcing.shape)
         B, T, C_data, H, W = data.shape
         _, _, C_forcing, _, _ = forcing.shape
 
