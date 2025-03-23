@@ -42,11 +42,10 @@ class TrainingConfig:
     limit_data_to: int = None
     prognostic_params: tuple = ("tcc",)
     forcing_params: tuple = ("insolation",)
+    data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
 
     # Current training state
     current_iteration: int = 0
-
-    data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
 
     run_name: str = None
     run_dir: str = None
@@ -60,8 +59,6 @@ class TrainingConfig:
 
     @classmethod
     def load(cls, config_path):
-        import json
-
         with open(config_path, "r") as f:
             config = json.load(f)["config"]
             for k in ("only_config", "generate_run_name", "start_from"):
@@ -101,6 +98,7 @@ def get_args():
     parser.add_argument("--limit_data_to", type=int)
     parser.add_argument("--prognostic_params", type=str, nargs="+")
     parser.add_argument("--forcing_params", type=str, nargs="+")
+    parser.add_argument("--data_path", type=str)
 
     # Compute environment
     parser.add_argument("--num_devices", type=int)
@@ -108,7 +106,6 @@ def get_args():
     parser.add_argument("--strategy", type=str)
 
     parser.add_argument("--run_name", type=str)
-    parser.add_argument("--data_path", type=str)
 
     parser.add_argument("--only_config", action="store_true")
     parser.add_argument("--generate_run_name", action="store_true")
