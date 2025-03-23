@@ -231,9 +231,10 @@ class cc2CRPS(nn.Module):
         new_H = new_H // 2  # 2 = num_times
         new_W = new_W // 2  # 2 = num_times
 
-        upsampled_delta, P_new, D_new = self.upsample(
-            delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
-        )
+        with torch.amp.autocast("cuda", enabled=False):
+            upsampled_delta, P_new, D_new = self.upsample(
+                delta_pred1.reshape(B, -1, D).float(), H=new_H, W=new_W
+            )
 
         P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
 
