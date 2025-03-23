@@ -24,8 +24,6 @@ class TrainingConfig:
     decoder_depth: int = 2
     window_size: int = 8
     num_heads: int = 12
-    num_data_channels: int = 1
-    num_forcing_channels: int = 9
     patch_size: int = 4
     noise_dim: int = 128
 
@@ -41,38 +39,39 @@ class TrainingConfig:
     num_devices: int = 1
     strategy: str = "auto"
 
+    # Data params
+    apply_smoothing: bool = False
+    limit_data_to: int = None
+    prognostic_params: tuple = ("tcc",)
+    forcing_params: tuple = ("insolation",)
+    data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
+
     # Current training state
     current_iteration: int = 0
-
-    data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
-    limit_data_to: int = None
 
     run_name: str = None
     run_dir: str = None
     run_number: int = None
 
-    apply_smoothing: bool = False
-
     def apply_args(self, args: argparse.Namespace):
         for k, v in vars(args).items():
             if v is not None and hasattr(self, k):
-                if k == "run_name":
-                    k = "_run_name"
-
                 print(f"Setting {k} to {v}")
                 setattr(self, k, v)
 
     @classmethod
     def load(cls, config_path):
-        import json
-
         with open(config_path, "r") as f:
-            config_dict = json.load(f)
-            return cls(**config_dict["config"])
+            config = json.load(f)["config"]
+            for k in ("only_config", "generate_run_name", "start_from"):
+                config.pop(k, None)
+
+            return cls(**config)
 
     @classmethod
     def generate_run_name(cls):
         return randomname.get_name()
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -86,11 +85,10 @@ def get_args():
     # Model params
     parser.add_argument("--hidden_dim", type=int)
     parser.add_argument("--num_heads", type=int)
-    parser.add_argument("--num_layers", type=int)
     parser.add_argument("--window_size", type=int)
-    parser.add_argument("--num_data_channels", type=int)
-    parser.add_argument("--num_forcing_channels", type=int)
     parser.add_argument("--patch_size", type=int)
+    parser.add_argument("--encoder_depth", type=int)
+    parser.add_argument("--decoder_depth", type=int)
 
     # Training params
     parser.add_argument("--batch_size", type=int)
@@ -99,16 +97,19 @@ def get_args():
     parser.add_argument("--warmup_iterations", type=int)
     parser.add_argument("--precision", type=str)
 
+    # Data params
+    parser.add_argument("--apply_smoothing", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--limit_data_to", type=int)
+    parser.add_argument("--prognostic_params", type=str, nargs="+")
+    parser.add_argument("--forcing_params", type=str, nargs="+")
+    parser.add_argument("--data_path", type=str)
+
     # Compute environment
     parser.add_argument("--num_devices", type=int)
     parser.add_argument("--num_nodes", type=int)
     parser.add_argument("--strategy", type=str)
 
     parser.add_argument("--run_name", type=str)
-    parser.add_argument("--data_path", type=str)
-
-    parser.add_argument("--apply_smoothing", action=argparse.BooleanOptionalAction)
-    parser.add_argument("--limit_data_to", type=int)
 
     parser.add_argument("--only_config", action="store_true")
     parser.add_argument("--generate_run_name", action="store_true")
@@ -152,7 +153,11 @@ def get_config():
 
     # Override with command line arguments
     for k, v in vars(args).items():
-        if v is not None and k not in ("only_config", "generate_run_name", "start_from"):
+        if v is not None and k not in (
+            "only_config",
+            "generate_run_name",
+            "start_from",
+        ):
             setattr(config, k, v)
             if rank == 0:
                 print(k, "to", v)
