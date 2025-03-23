@@ -74,7 +74,7 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
         loss = torch.sum(step_losses + tendency_losses)
 
-        assert torch.isnan(loss).any() == False, "Loss is NaN"
+        assert torch.isfinite(loss).all() , "Loss is non-finite"
 
         loss = {
             "loss": loss,
