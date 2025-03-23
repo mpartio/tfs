@@ -44,8 +44,8 @@ class cc2CRPS(nn.Module):
         self.patch_embed = PatchEmbed(
             input_resolution=input_resolution,
             patch_size=self.patch_size,
-            data_channels=config.num_data_channels,
-            forcing_channels=config.num_forcing_channels,
+            data_channels=len(config.prognostic_params),
+            forcing_channels=len(config.forcing_params),
             embed_dim=self.embed_dim,
         )
 
@@ -139,7 +139,7 @@ class cc2CRPS(nn.Module):
 
         self.final_expand = nn.Sequential(
             nn.Linear(
-                self.embed_dim // 4, self.patch_size**2 * config.num_data_channels
+                self.embed_dim // 4, self.patch_size**2 * len(config.prognostic_params)
             ),
             nn.Tanh(),
         )
