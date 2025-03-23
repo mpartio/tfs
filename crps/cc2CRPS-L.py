@@ -233,15 +233,7 @@ bs, lr, it = effective_parameters(
     config.num_devices, config.batch_size, config.learning_rate, config.num_iterations
 )
 
-cc2Data = cc2DataModule(
-    zarr_path=config.data_path,
-    batch_size=bs,
-    n_x=config.history_length,
-    n_y=config.rollout_length,
-    limit_to=config.limit_data_to,
-    apply_smoothing=config.apply_smoothing,
-    input_resolution=config.input_resolution,
-)
+cc2Data = cc2DataModule(config)
 
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()

@@ -12,6 +12,33 @@ from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 
 
+def get_default_normalization_methods():
+    return {
+        "insolation": "none",
+        "t_1000": "standard",
+        "t_500": "standard",
+        "t_700": "standard",
+        "t_850": "standard",
+        "t_925": "standard",
+        "tcc": "none",
+        "u_isobaricInhPa_1000": "standard",
+        "u_isobaricInhPa_500": "standard",
+        "u_isobaricInhPa_700": "standard",
+        "u_isobaricInhPa_850": "standard",
+        "u_isobaricInhPa_925": "standard",
+        "v_isobaricInhPa_1000": "standard",
+        "v_isobaricInhPa_500": "standard",
+        "v_isobaricInhPa_700": "standard",
+        "v_isobaricInhPa_850": "standard",
+        "v_isobaricInhPa_925": "standard",
+        "z_isobaricInhPa_1000": "standard",
+        "z_isobaricInhPa_500": "standard",
+        "z_isobaricInhPa_700": "standard",
+        "z_isobaricInhPa_850": "standard",
+        "z_isobaricInhPa_925": "standard",
+    }
+
+
 def augment_data(x, y):
     xshape, yshape = x.shape, y.shape
     if torch.rand(1).item() > 0.6:
@@ -92,34 +119,25 @@ def gaussian_smooth(x, sigma=0.8, kernel_size=5):
 
 
 class AnemoiDataset(Dataset):
-    def __init__(self, zarr_path, group_size, input_resolution):
+    def __init__(
+        self,
+        zarr_path: str,
+        group_size: int,
+        input_resolution: tuple,
+        prognostic_params: list,
+        forcing_params: list,
+        normalization_methods: dict,
+    ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
         self.time_steps = len(self.data.dates)
 
-        guess_names = ["effective_cloudiness", "tcc"]
+        self.prognostic_params = prognostic_params
+        self.forcing_params = forcing_params
 
-        self.data_names = []
-
-        for n in guess_names:
-            if n in self.data.variables:
-                self.data_names.append(n)
-
-        self.forcings_names = [
-            "cos_latitude",
-            "sin_latitude",
-            "cos_longitude",
-            "sin_longitude",
-            "insolation",
-            "cos_julian_day",
-            "sin_julian_day",
-            "cos_local_time",
-            "sin_local_time",
-        ]
-
-        self.data_indexes = [self.data.name_to_index[x] for x in self.data_names]
+        self.data_indexes = [self.data.name_to_index[x] for x in self.prognostic_params]
         self.forcings_indexes = [
-            self.data.name_to_index[x] for x in self.forcings_names
+            self.data.name_to_index[x] for x in self.forcing_params
         ]
         self.input_resolution = input_resolution
         assert self.time_steps >= group_size
@@ -131,6 +149,10 @@ class AnemoiDataset(Dataset):
             if not self._sequence_has_missing_data(i)
         ]
 
+        self.statistics = self.data.statistics
+
+        self.normalization_methods = normalization_methods
+
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
             if i in self.missing_indices:
@@ -140,13 +162,54 @@ class AnemoiDataset(Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
+    def normalize(self, tensor: torch.tensor, params: list):
+        T, C, H, W = tensor.shape
+
+        methods = [self.normalization_methods[k] for k in params]
+
+        mins = self.statistics["minimum"].reshape(1, C, 1, 1)
+        maxs = self.statistics["maximum"].reshape(1, C, 1, 1)
+        means = self.statistics["mean"].reshape(1, C, 1, 1)
+        stds = self.statistics["stdev"].reshape(1, C, 1, 1) + 1e-8
+
+        dtype = tensor.dtype
+        device = tensor.device
+
+        # Create masks for each normalization type
+        minmax_mask = torch.tensor(
+            [m == "minmax" for m in methods], dtype=dtype, device=device
+        ).view(1, C, 1, 1)
+        std_mask = torch.tensor(
+            [m == "standard" for m in methods], dtype=dtype, device=device
+        ).view(1, C, 1, 1)
+        none_mask = torch.tensor(
+            [m == "none" for m in methods], dtype=dtype, device=device
+        ).view(1, C, 1, 1)
+
+        # Apply normalizations to all data
+        minmax_normalized = (tensor - mins) / (maxs - mins)
+        std_normalized = (tensor - means) / stds
+
+        # Combine results using masks (with no normalization option)
+        result = (
+            minmax_mask * minmax_normalized
+            + std_mask * std_normalized
+            + none_mask * tensor
+        )
+
+        result = result.to(dtype)
+
+        return result
+
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
 
         data = self.data[
             actual_idx : actual_idx + self.group_size, self.data_indexes, ...
         ]
+
         # (3, 1, 1, 16384)
+
         T, C, E, HW = data.shape
 
         data = data.reshape(
@@ -162,6 +225,7 @@ class AnemoiDataset(Dataset):
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         forcing = torch.tensor(forcing)
+        forcing = self.normalize(forcing, self.forcing_params)
 
         return data, forcing
 
@@ -233,65 +297,49 @@ class SplitWrapper:
         # Split into x and y
         data_x = data[: self.n_x]
         data_y = data[self.n_x :]
-        forcing_x = forcing[: self.n_x]
-        forcing_y = forcing[self.n_x :]
 
         if self.apply_smoothing:
             data_x = gaussian_smooth(data_x)
             data_y = gaussian_smooth(data_y)
-            forcing_x = gaussian_smooth(forcing_x)
-            forcing_y = gaussian_smooth(forcing_y)
+            forcing = gaussian_smooth(forcing)
 
         assert data_x.ndim == 4, "Invalid data_x shape: {}".format(data_x.shape)
         assert data_y.ndim == 4, "Invalid data_y shape: {}".format(data_y.shape)
+        assert forcing.ndim == 4, "Invalid forcing shape: {}".format(forcing.shape)
 
-        return [(data_x, data_y), (forcing_x, forcing_y)]
+        return [(data_x, data_y), forcing]
 
     def __len__(self):
         return len(self.dataset)
 
 
 class cc2DataModule(L.LightningDataModule):
-    def __init__(
-        self,
-        zarr_path: str,
-        batch_size: int,
-        input_resolution: tuple,
-        n_x: int = 1,
-        n_y: int = 1,
-        limit_to: int = None,
-        apply_smoothing: bool = False,
-    ):
-        self.batch_size = batch_size
-        self.n_x = n_x
-        self.n_y = n_y
+    def __init__(self, config):
+        self.n_x = config.history_length
+        self.n_y = config.rollout_length
         self.val_split = 0.1
 
         self.cc2_train = None
         self.cc2_val = None
         self.cc2_test = None
-        self.limit_to = limit_to
-        self.apply_smoothing = apply_smoothing
-        self.input_resolution = input_resolution
 
-        print("Reading data from {}".format(zarr_path))
-        self.setup(zarr_path)
+        self.config = config
+        print("Reading data from {}".format(config.data_path))
+        self.setup(config.data_path)
 
     def setup(self, zarr_path):
-        if "anemoi" in zarr_path:
-            ds = AnemoiDataset(
-                zarr_path,
-                group_size=self.n_x + self.n_y,
-                input_resolution=self.input_resolution,
-            )
-        elif "era5" in zarr_path:
-            ds = HourlyZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
-        else:
-            ds = HourlyStreamZarrDataset(zarr_path, group_size=self.n_x + self.n_y)
+        ds = AnemoiDataset(
+            zarr_path,
+            group_size=self.n_x + self.n_y,
+            input_resolution=self.config.input_resolution,
+            prognostic_params=self.config.prognostic_params,
+            forcing_params=self.config.forcing_params,
+            normalization_methods=get_default_normalization_methods(),
+        )
         indices = np.arange(len(ds))
 
-        if self.limit_to is not None:
-            indices = indices[: self.limit_to]
+        if self.config.limit_data_to is not None:
+            indices = indices[: self.config.limit_data_to]
         rng = np.random.RandomState(0)
         rng.shuffle(indices)
 
@@ -303,8 +351,10 @@ class cc2DataModule(L.LightningDataModule):
 
     def _get_dataloader(self, dataset, shuffle=False):
         return DataLoader(
-            SplitWrapper(dataset, n_x=self.n_x, apply_smoothing=self.apply_smoothing),
-            batch_size=self.batch_size,
+            SplitWrapper(
+                dataset, n_x=self.n_x, apply_smoothing=self.config.apply_smoothing
+            ),
+            batch_size=self.config.batch_size,
             num_workers=6,
             pin_memory=True,
             persistent_workers=True,
