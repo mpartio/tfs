@@ -31,6 +31,7 @@ colors = [
     "magenta",
 ]
 
+
 def var_and_mae(predictions, y):
     variance = torch.var(predictions[:, :, -1, ...], dim=2, unbiased=False)
     variance = variance.detach().mean().cpu().numpy().item()
@@ -92,7 +93,7 @@ class PredictionPlotterCallback(L.Callback):
         # Get a single batch from the dataloader
         data, forcing = next(iter(self.train_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -126,7 +127,7 @@ class PredictionPlotterCallback(L.Callback):
 
         data, forcing = next(iter(self.val_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -292,7 +293,7 @@ class DiagnosticCallback(L.Callback):
 
             # d) variance and l1
 
-            predictions = outputs["predictions"] # B, M, T, C, H, W
+            predictions = outputs["predictions"]  # B, M, T, C, H, W
 
             data, _ = batch
             _, y = data
@@ -342,7 +343,7 @@ class DiagnosticCallback(L.Callback):
         # Get a single batch from the dataloader
         data, forcing = next(iter(trainer.val_dataloaders))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = (forcing[0].to(pl_module.device), forcing[1].to(pl_module.device))
+        forcing = forcing.to(pl_module.device)
 
         # Perform a prediction
         with torch.no_grad():
@@ -563,7 +564,7 @@ class DiagnosticCallback(L.Callback):
         plt.yscale("log")
         plt.title("Gradients (mean)")
 
-        for i,section in enumerate(self.gradients_mean.keys()):
+        for i, section in enumerate(self.gradients_mean.keys()):
             data = self.gradients_mean[section]
             data = torch.tensor(data)
             color = colors[i]
@@ -575,7 +576,7 @@ class DiagnosticCallback(L.Callback):
         plt.yscale("log")
         plt.title("Gradients (std)")
 
-        for i,section in enumerate(self.gradients_std.keys()):
+        for i, section in enumerate(self.gradients_std.keys()):
             data = self.gradients_std[section]
             data = torch.tensor(data)
             color = colors[i]

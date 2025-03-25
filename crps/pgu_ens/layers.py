@@ -60,6 +60,7 @@ def pad_tensors(tensors, patch_size, num_merges=1):
 
 def depad_tensor(tensor, padding_info):
     if padding_info["pad_h"] == 0 and padding_info["pad_w"] == 0:
+        print("NO DEPADDING")
         return tensor
 
     H, W = tensor.shape[-2:]

@@ -12,6 +12,7 @@ from layers import (
     NoiseProcessor,
     ConditionalLayerNorm,
     pad_tensors,
+    pad_tensor,
     depad_tensor,
     get_padded_size,
 )
@@ -50,8 +51,8 @@ class cc2CRPS(nn.Module):
         self.patch_embed = PatchEmbed(
             input_resolution=input_resolution,
             patch_size=self.patch_size,
-            data_channels=config.num_data_channels,
-            forcing_channels=config.num_forcing_channels,
+            data_channels=len(config.prognostic_params),
+            forcing_channels=len(config.forcing_params),
             embed_dim=self.embed_dim,
         )
 
@@ -145,7 +146,7 @@ class cc2CRPS(nn.Module):
 
         self.final_expand = nn.Sequential(
             nn.Linear(
-                self.embed_dim // 4, self.patch_size**2 * config.num_data_channels
+                self.embed_dim // 4, self.patch_size**2 * len(config.prognostic_params)
             ),
             nn.Tanh(),
         )
@@ -169,7 +170,7 @@ class cc2CRPS(nn.Module):
 
     def encode(self, data, forcing, noise_embedding):
         """Encode input sequence into latent representation"""
-        x = self.patch_embed(data[0], forcing[0])  # [B, T, patches, embed_dim]
+        x = self.patch_embed(data, forcing)  # [B, T, patches, embed_dim]
         B, T, P, D = x.shape
 
         # Add positional embedding to each patch
@@ -196,7 +197,7 @@ class cc2CRPS(nn.Module):
         x = x.reshape(B, T, -1, D * 2)
         return x
 
-    def decode(self, encoded, target_len, noise_embedding):
+    def decode(self, encoded, step: int, noise_embedding):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -208,84 +209,53 @@ class cc2CRPS(nn.Module):
 
         encoded_flat = encoded.reshape(B, -1, D)
 
-        # Decode one step at a time
-        for t in range(target_len):
-            # Reshape for decoder
-            decoder_in = decoder_input.reshape(B, -1, D)
+        # Reshape for decoder
+        decoder_in = decoder_input.reshape(B, -1, D)
 
-            # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-            step_id = 0 if t == 0 else 1
+        # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
+        step_id = 0 if step == 0 else 1
 
-            # Get appropriate step embedding
-            step_embedding = self.step_id_embeddings[step_id]  # [D]
+        # Get appropriate step embedding
+        step_embedding = self.step_id_embeddings[step_id]  # [D]
 
-            # Add step embedding to decoder input
-            # For first token in each sequence (acts as a "step type" token)
-            # We'll add it to the last P tokens which represent our current state
-            decoder_in_with_id = decoder_in.clone()
-            decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
-                0
-            ).unsqueeze(1)
+        # Add step embedding to decoder input
+        # For first token in each sequence (acts as a "step type" token)
+        # We'll add it to the last P tokens which represent our current state
+        decoder_in_with_id = decoder_in.clone()
+        decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
+            0
+        ).unsqueeze(1)
 
-            # Process through decoder blocks
-            x = decoder_in_with_id
+        # Process through decoder blocks
+        x = decoder_in_with_id
 
-            for block in self.decoder1:
-                x = block(x, encoded_flat, noise_embedding)
+        for block in self.decoder1:
+            x = block(x, encoded_flat, noise_embedding)
 
-            # Get the delta prediction
-            delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
+        # Get the delta prediction
+        delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
 
-            new_H, new_W = self.input_resolution_halved
-            new_H = new_H // 2  # 2 = num_times
-            new_W = new_W // 2  # 2 = num_times
+        new_H, new_W = self.input_resolution_halved
+        new_H = new_H // 2  # 2 = num_times
+        new_W = new_W // 2  # 2 = num_times
 
+        with torch.amp.autocast("cuda", enabled=False):
             upsampled_delta, P_new, D_new = self.upsample(
                 delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
             )
 
-            P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
+        P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
 
-            upsampled_delta = upsampled_delta.reshape(B, 1, P_new, D_new)
-            P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
-            x2 = upsampled_delta.reshape(B, -1, D_new)
+        upsampled_delta = upsampled_delta.reshape(B, 1, P_new, D_new)
+        P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
+        x2 = upsampled_delta.reshape(B, -1, D_new)
 
-            for block in self.decoder2:
-                x2 = block(x2, encoded_flat, noise_embedding)
+        for block in self.decoder2:
+            x2 = block(x2, encoded_flat, noise_embedding)
 
-            delta_pred2 = x2.reshape(B, 1, P_new, D_new)
+        delta_pred2 = x2.reshape(B, 1, P_new, D_new)
 
-            # If latest_state doesn't match the upsampled dimensions, we need to upsample it too
-            if latest_state.shape[2] != P_new:
-                latest_state_upsampled, _, _ = self.upsample(
-                    latest_state.reshape(B, -1, D),
-                    H=new_H,
-                    W=new_W,
-                )
-                latest_state_upsampled = latest_state_upsampled.reshape(
-                    B, 1, P_new, D_new
-                )
-                latest_state = latest_state_upsampled
-
-            # Add delta to latest state to get new state
-            new_state = latest_state + delta_pred2
-
-            # Add new state to outputs
-            outputs.append(new_state)
-
-            # Update latest state
-            latest_state = new_state
-
-            if t == 0:
-                # First iteration after upsampling
-                decoder_input = new_state
-            else:
-                decoder_input = torch.cat([decoder_input, new_state], dim=1)
-
-        # Concatenate all outputs
-        outputs = torch.cat(outputs, dim=1)
-
-        return outputs
+        return delta_pred2
 
     def project_to_image(self, x, noise_embedding):
         """Project latent representation back to image space"""
@@ -321,55 +291,46 @@ class cc2CRPS(nn.Module):
 
         return outputs
 
-    def forward(self, data, forcing, target_len):
+    def forward(self, data, forcing, step):
         assert (
-            data[0].ndim == 5
-        ), "Input data tensor shape should be [B, T, C, H, W], is: {}".format(
-            data[0].shape
+            data.ndim == 6
+        ), "Input data tensor shape should be [B, M, T, C, H, W], is: {}".format(
+            data.shape
+        )
+        assert (
+            forcing.ndim == 6
+        ), "Forcing tensor shape should be [B, M, T, C, H, W], is: {}".format(
+            forcing.shape
         )
 
-        data, padding_info = pad_tensors(data, self.patch_size, 1)
-        forcing, _ = pad_tensors(forcing, self.patch_size, 1)
+        assert forcing.shape[1] == data.shape[1]
+
+        data, padding_info = pad_tensor(data, self.patch_size, 1)
+        forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
         # Expand data and add member dimension
-        B, T, _, H, W = data[0].shape
-        C_data = data[0].shape[2]
-        C_forcing = forcing[0].shape[2]
+        B, M, T, C_data, H, W = data.shape
+        data = data.reshape(B * M, T, C_data, H, W)
 
-        M = self.num_members
-
-        x, y = data
-        xf, yf = forcing
-
-        x = x.unsqueeze(1).expand(B, M, T, C_data, H, W).reshape(B * M, T, C_data, H, W)
-        y = y.unsqueeze(1).expand(B, M, T, C_data, H, W).reshape(B * M, T, C_data, H, W)
-        xf = (
-            xf.unsqueeze(1)
-            .expand(B, M, T, C_forcing, H, W)
-            .reshape(B * M, T, C_forcing, H, W)
-        )
-        yf = (
-            yf.unsqueeze(1)
-            .expand(B, M, T, C_forcing, H, W)
-            .reshape(B * M, T, C_forcing, H, W)
-        )
+        C_forcing = forcing.shape[2]
+        forcing = forcing.reshape(B * M, forcing.shape[2], forcing.shape[3], H, W)
 
         # Generate noise for all members at once
         noise = torch.randn(B * M, self.noise_dim, device=data[0].device)
         noise_embed = self.noise_processor(noise)
 
-        data = (x, y)
-        forcing = (xf, yf)
+        # data, padding_info = pad_tensor(data, self.patch_size, 1)
+        # forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
         encoded = self.encode(data, forcing, noise_embed)
 
-        decoded = self.decode(encoded, target_len, noise_embed)
+        decoded = self.decode(encoded, step, noise_embed)
 
         output = self.project_to_image(decoded, noise_embed)
-        output = depad_tensor(output, padding_info)
+        output = depad_tensor(output, padding_info)  # B * M, T, C, H, W
         H, W = padding_info["original_size"]
 
-        output = output.reshape(B, M, target_len, C_data, H, W)
+        output = output.reshape(B, M, 1, C_data, H, W)
 
         assert list(output.shape[-2:]) == list(
             self.real_input_resolution

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-def loss_fn(y_true, y_pred):
+def loss_fn(y_pred, y_true):
     return AlmostFairCRPSLoss()(y_pred, y_true)
 
 
@@ -21,7 +21,7 @@ class AlmostFairCRPSLoss(nn.Module):
         assert (
             predictions.ndim == 5
         ), "predictions shape needs to be: B, M, C, H, W: {}".format(predictions.shape)
-        assert target.ndim == 4, "target shape needs to be: B, C, H, W: {}".format(
+        assert target.ndim == 4, "y_true shape needs to be: B, C, H, W: {}".format(
             target.shape
         )
 
