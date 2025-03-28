@@ -269,9 +269,8 @@ def effective_parameters(num_devices, batch_size, lr, total_iterations):
 
     effective_bs = batch_size * num_devices
     effective_lr = lr * num_devices
-    effective_total_iterations = total_iterations * num_devices
 
-    return batch_size, effective_lr, effective_total_iterations
+    return batch_size, effective_lr
 
 
 def create_directory_structure(base_directory):
