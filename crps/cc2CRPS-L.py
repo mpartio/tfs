@@ -170,7 +170,7 @@ class cc2CRPSModel(model_class, L.LightningModule):
             weight_decay=0.05,
         )
 
-        T_max = it - config.warmup_iterations
+        T_max = config.num_iterations - config.warmup_iterations
 
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
@@ -213,6 +213,19 @@ class cc2CRPSModel(model_class, L.LightningModule):
         }
 
 
+def get_strategy(strategy):
+    if strategy == "deep_speed":
+        from pytorch_lightning.strategies import DeepSpeedStrategy
+
+        return DeepSpeedStrategy(
+            stage=3,  # Stage 3 enables full parameter, gradient, and optimizer sharding
+            offload_optimizer=True,  # Offload optimizer states to CPU
+            offload_parameters=True,  # Offload parameters to CPU
+        )
+
+    return strategy
+
+
 rank = get_rank()
 args = get_args()
 
@@ -229,7 +242,7 @@ print(
     )
 )
 
-bs, lr, it = effective_parameters(
+bs, lr = effective_parameters(
     config.num_devices, config.batch_size, config.learning_rate, config.num_iterations
 )
 
@@ -238,10 +251,11 @@ cc2Data = cc2DataModule(config)
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()
 
-max_steps = it
+max_steps = config.num_iterations
 
 if args.only_config:
     max_steps -= config.current_iteration
+
 
 trainer = L.Trainer(
     max_steps=max_steps,
@@ -249,7 +263,7 @@ trainer = L.Trainer(
     accelerator="cuda",
     devices=config.num_devices,
     num_nodes=config.num_nodes,
-    strategy=config.strategy,
+    strategy=get_strategy(config.strategy),
     callbacks=[
         PredictionPlotterCallback(train_loader, val_loader, config),
         DiagnosticCallback(config),
