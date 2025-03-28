@@ -166,11 +166,15 @@ class AnemoiDataset(Dataset):
         T, C, H, W = tensor.shape
 
         methods = [self.normalization_methods[k] for k in params]
+        indices = [self.data.name_to_index[x] for x in params]
 
-        mins = self.statistics["minimum"].reshape(1, C, 1, 1)
-        maxs = self.statistics["maximum"].reshape(1, C, 1, 1)
-        means = self.statistics["mean"].reshape(1, C, 1, 1)
-        stds = self.statistics["stdev"].reshape(1, C, 1, 1) + 1e-8
+        if len(methods) == 1 and methods[0] == "none":
+            return tensor
+
+        mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
+        maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
+        means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
+        stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
 
         dtype = tensor.dtype
         device = tensor.device
@@ -216,6 +220,7 @@ class AnemoiDataset(Dataset):
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         data = torch.tensor(data)
+        data = self.normalize(data, self.prognostic_params)
 
         forcing = self.data[
             actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
