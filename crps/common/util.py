@@ -265,7 +265,7 @@ def string_to_type(type_str: str) -> type:
 def effective_parameters(num_devices, batch_size, lr, total_iterations):
     if num_devices == 1:
         # keep current batch size
-        return batch_size, lr, total_iterations
+        return batch_size, lr
 
     effective_bs = batch_size * num_devices
     effective_lr = lr * num_devices
