@@ -283,7 +283,7 @@ class cc2CRPS(nn.Module):
 
         return outputs
 
-    def forward(self, data, forcing, target_len):
+    def forward(self, data, forcing, step):
         assert (
             data.ndim == 5
         ), "Input data tensor shape should be [B, T, C, H, W], is: {}".format(
@@ -298,7 +298,7 @@ class cc2CRPS(nn.Module):
             forcing,
         )
 
-        decoded = self.decode(encoded, target_len)
+        decoded = self.decode(encoded, step)
 
         output = self.project_to_image(decoded)
         output = depad_tensor(output, padding_info)
