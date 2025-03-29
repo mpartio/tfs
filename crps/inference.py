@@ -1,13 +1,47 @@
 import torch
 import xarray as xr
-import config
 import rioxarray
 import os
-from cc2CRPS import cc2CRPS
-from cc2util import get_latest_run_dir, read_checkpoint, roll_forecast
-from cc2CRPS_data import gaussian_smooth
+from dataloader.cc2CRPS_data import gaussian_smooth
+import importlib
+import sys
 
-outfile = "predictions.zarr"
+package = os.environ.get("MODEL_FAMILY", "pgu_ens")
+
+
+def dynamic_import(items):
+    for item in items:
+        path_name = ".".join(item.split(".")[:-1])
+        item_name = item.split(".")[-1]
+        print("Importing {}".format(item))
+
+        _module = importlib.import_module(path_name)
+        globals()[item_name] = getattr(_module, item_name)
+
+
+imports = [
+    "common.util.read_checkpoint",
+    "common.util.string_to_type",
+    "common.util.get_latest_run_dir",
+]
+
+dynamic_import(imports)
+
+sys.path.append(os.path.abspath(package))
+
+imports = [
+    "util.roll_forecast",
+    "config.get_config",
+    "config.get_args",
+    "config.TrainingConfig",
+]
+
+imports = [f"{package}.{x}" for x in imports]
+
+dynamic_import(imports)
+dynamic_import([f"{package}.cc2.cc2CRPS"])
+model_class = string_to_type(f"{package}.cc2.cc2CRPS")
+
 
 def prepare_data():
 
@@ -28,23 +62,26 @@ def prepare_data():
 
     return ds, x, y
 
-def prepare_model():
-    assert conf.run_name is not None, "--run_name is missing"
-    run_dir = get_latest_run_dir(f"runs/{conf.run_name}")
 
-    assert run_dir is not None, "run_dir not found for {}".format(conf.run_name)
+def prepare_model(args):
+    assert args.run_name is not None, "--run_name is missing"
+    latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
 
-    model = cc2CRPS(conf)
+    assert latest_dir is not None, "run directory not found for {}".format(
+        args.run_name
+    )
 
-    model = read_checkpoint(f"{run_dir}/models", model)
+    config = TrainingConfig.load(f"{latest_dir}/run-info.json")
+    model = cc2CRPSModel(config)
+    model = read_checkpoint(f"{latest_dir}/models", model)
     model.eval()
 
-    return model
+    return config, model
 
 
-conf = config.get_config()
+args = get_args()
+config, model = prepare_model(args)
 
-model = prepare_model()
 ds, x, _ = prepare_data()
 
 with torch.no_grad():
