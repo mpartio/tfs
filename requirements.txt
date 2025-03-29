@@ -11,3 +11,4 @@ lightning
 PyWavelets
 dask
 anemoi-datasets
+rioxarray
