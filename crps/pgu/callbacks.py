@@ -33,34 +33,39 @@ colors = [
 ]
 
 
+
 def analyze_gradients(model):
-    # Group gradients by network section
-    gradient_stats = {
-        "encoder1": [],
-        "encoder2": [],
-        "upsample": [],
-        "downsample": [],
-        "decoder1": [],
-        "decoder2": [],
-        "expand": [],
-    }
+    # Pre-compile patterns to check once
+    sections = [
+        "encoder1",
+        "encoder2",
+        "upsample",
+        "downsample",
+        "decoder1",
+        "decoder2",
+        "expand",
+    ]
+    gradient_stats = {k: [] for k in sections}
 
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            for k in gradient_stats.keys():
-                if k in name:
-                    grad_norm = param.grad.abs().mean().item()
-                    gradient_stats[k].append(grad_norm)
+    # Batch all gradient stats by section in a single pass
+    with torch.no_grad():  # Avoid tracking history for these operations
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                continue
 
-    # Compute statistics for each section
+            for section in sections:
+                if section in name:
+                    gradient_stats[section].append(param.grad.abs().mean())
+                    break  # Parameter can only belong to one section
+
+    # Calculate statistics using PyTorch operations
     stats = {}
     for section, grads in gradient_stats.items():
         if grads:
+            grads_tensor = torch.stack(grads)
             stats[section] = {
-                "mean": np.mean(grads).item(),
-                "std": np.std(grads).item(),
-                # "min": np.min(grads),
-                # "max": np.max(grads),
+                "mean": grads_tensor.mean().item(),
+                "std": grads_tensor.std().item(),
             }
 
     return stats
@@ -174,7 +179,7 @@ class PredictionPlotterCallback(L.Callback):
                 )
             elif i > num_hist:
                 start_pred = max(0, i - num_hist)
-                input_field = predictions[start_pred:start_pred+num_hist].squeeze()
+                input_field = predictions[start_pred : start_pred + num_hist].squeeze()
 
             for j in range(num_hist):
                 num = i - num_hist + j + 1
@@ -243,7 +248,7 @@ class DiagnosticCallback(L.Callback):
             return
 
         # a) train loss
-        self.train_loss.append(outputs["loss"].detach().cpu().item())
+        self.train_loss.append(outputs["loss"].item())
         pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
 
         for k, v in outputs["loss_components"].items():
@@ -255,7 +260,6 @@ class DiagnosticCallback(L.Callback):
                 self.train_loss_components[k] = [v.cpu()]
 
         # b) learning rate
-        assert len(trainer.optimizers) > 0, "No optimizer found"
         self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
 
         # c) gradients
