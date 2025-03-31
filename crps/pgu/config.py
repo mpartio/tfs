@@ -5,7 +5,7 @@ import randomname
 import sys
 import time
 from dataclasses import dataclass, asdict, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 from common.util import get_latest_run_dir, get_rank
 
 
@@ -43,6 +43,7 @@ class TrainingConfig:
     prognostic_params: tuple = ("tcc",)
     forcing_params: tuple = ("insolation",)
     data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
+    normalization: Dict[str, str] = field(default_factory=dict)
 
     # Current training state
     current_iteration: int = 0
@@ -72,6 +73,14 @@ class TrainingConfig:
 
 
 def get_args():
+    def parse_key_value_pair(string):
+        try:
+            key, value = string.split("=", 1)
+            return key, value
+        except ValueError:
+            msg = f"'{string}' is not a valid key=value pair"
+            raise argparse.ArgumentTypeError(msg)
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--input_resolution", type=int, nargs=2)
@@ -99,6 +108,7 @@ def get_args():
     parser.add_argument("--prognostic_params", type=str, nargs="+")
     parser.add_argument("--forcing_params", type=str, nargs="+")
     parser.add_argument("--data_path", type=str)
+    parser.add_argument("--normalization", type=parse_key_value_pair, action="append")
 
     # Compute environment
     parser.add_argument("--num_devices", type=int)
@@ -112,6 +122,10 @@ def get_args():
     parser.add_argument("--start_from", type=str)
 
     args = parser.parse_args()
+
+    args_dict = vars(args)
+    if args_dict["normalization"] is not None:
+        args_dict["normalization"] = dict(args_dict["normalization"])
 
     return args
 
