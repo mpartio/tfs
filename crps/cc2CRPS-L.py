@@ -276,6 +276,7 @@ trainer = L.Trainer(
         LazyLoggerCallback(config),
     ],
     gradient_clip_val=1.0,
+    accumulate_grad_batches=config.accumulate_grad_batches
 )
 
 torch.set_float32_matmul_precision("high")

@@ -31,6 +31,7 @@ class TrainingConfig:
     num_iterations: int = 100000
     warmup_iterations: int = 1000
     precision: str = "16-mixed"
+    accumulate_grad_batches: int = 1
 
     # Compute environment
     num_nodes: int = 1
@@ -101,6 +102,7 @@ def get_args():
     parser.add_argument("--num_iterations", type=int)
     parser.add_argument("--warmup_iterations", type=int)
     parser.add_argument("--precision", type=str)
+    parser.add_argument("--accumulate_grad_batches", type=int)
 
     # Data params
     parser.add_argument("--apply_smoothing", action=argparse.BooleanOptionalAction)
