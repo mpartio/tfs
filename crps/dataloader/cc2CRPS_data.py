@@ -153,6 +153,8 @@ class AnemoiDataset(Dataset):
 
         self.normalization_methods = normalization_methods
 
+        self._setup_normalization_tensors()
+
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
             if i in self.missing_indices:
@@ -162,48 +164,95 @@ class AnemoiDataset(Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
-    def normalize(self, tensor: torch.tensor, params: list):
-        T, C, H, W = tensor.shape
+    def _setup_normalization_tensors(self):
+        # Pre-calculate these tensors once
 
-        methods = [self.normalization_methods[k] for k in params]
-        indices = [self.data.name_to_index[x] for x in params]
+        C = len(self.prognostic_params)
+        indices = [self.data.name_to_index[x] for x in self.prognostic_params]
+        methods = [self.normalization_methods[k] for k in self.prognostic_params]
 
-        if len(methods) == 1 and methods[0] == "none":
-            return tensor
+        self.prog_mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
+        self.prog_maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
+        self.prog_means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
+        self.prog_stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
 
-        mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
-        maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
-        means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
-        stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
-
-        dtype = tensor.dtype
-        device = tensor.device
-
-        # Create masks for each normalization type
-        minmax_mask = torch.tensor(
-            [m == "minmax" for m in methods], dtype=dtype, device=device
-        ).view(1, C, 1, 1)
-        std_mask = torch.tensor(
-            [m == "standard" for m in methods], dtype=dtype, device=device
-        ).view(1, C, 1, 1)
-        none_mask = torch.tensor(
-            [m == "none" for m in methods], dtype=dtype, device=device
-        ).view(1, C, 1, 1)
-
-        # Apply normalizations to all data
-        minmax_normalized = (tensor - mins) / (maxs - mins)
-        std_normalized = (tensor - means) / stds
-
-        # Combine results using masks (with no normalization option)
-        result = (
-            minmax_mask * minmax_normalized
-            + std_mask * std_normalized
-            + none_mask * tensor
+        # Pre-compute masks too
+        self.prog_minmax_mask = torch.tensor([m == "minmax" for m in methods]).view(
+            1, C, 1, 1
+        )
+        self.prog_std_mask = torch.tensor([m == "standard" for m in methods]).view(
+            1, C, 1, 1
+        )
+        self.prog_none_mask = torch.tensor([m == "none" for m in methods]).view(
+            1, C, 1, 1
         )
 
-        result = result.to(dtype)
+        C = len(self.forcing_params)
+        indices = [self.data.name_to_index[x] for x in self.forcing_params]
+        methods = [self.normalization_methods[k] for k in self.forcing_params]
 
-        return result
+        self.forc_mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
+        self.forc_maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
+        self.forc_means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
+        self.forc_stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
+
+        self.forc_minmax_mask = torch.tensor([m == "minmax" for m in methods]).view(
+            1, C, 1, 1
+        )
+        self.forc_std_mask = torch.tensor([m == "standard" for m in methods]).view(
+            1, C, 1, 1
+        )
+        self.forc_none_mask = torch.tensor([m == "none" for m in methods]).view(
+            1, C, 1, 1
+        )
+
+    def normalize_prog(self, tensor: torch.tensor, params: list):
+        T, C, H, W = tensor.shape
+
+        if (
+            len(self.prognostic_params) == 1
+            and self.normalization_methods[self.prognostic_params[0]] == "none"
+        ):
+            return tensor
+
+        # Calculate normalized tensors
+        minmax_normalized = (tensor - self.prog_mins) / (
+            self.prog_maxs - self.prog_mins
+        )
+        std_normalized = (tensor - self.prog_means) / self.prog_stds
+
+        # Combine with pre-computed masks
+        result = (
+            self.prog_minmax_mask * minmax_normalized
+            + self.prog_std_mask * std_normalized
+            + self.prog_none_mask * tensor
+        )
+
+        return result.to(tensor.dtype)
+
+    def normalize_forc(self, tensor: torch.tensor, params: list):
+        T, C, H, W = tensor.shape
+
+        if (
+            len(self.forcing_params) == 1
+            and self.normalization_methods[self.forcing_params[0]] == "none"
+        ):
+            return tensor
+
+        # Calculate normalized tensors
+        minmax_normalized = (tensor - self.forc_mins) / (
+            self.forc_maxs - self.forc_mins
+        )
+        std_normalized = (tensor - self.forc_means) / self.forc_stds
+
+        # Combine with pre-computed masks
+        result = (
+            self.prog_minmax_mask * minmax_normalized
+            + self.prog_std_mask * std_normalized
+            + self.prog_none_mask * tensor
+        )
+
+        return result.to(tensor.dtype)
 
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
@@ -212,15 +261,13 @@ class AnemoiDataset(Dataset):
             actual_idx : actual_idx + self.group_size, self.data_indexes, ...
         ]
 
-        # (3, 1, 1, 16384)
-
         T, C, E, HW = data.shape
 
         data = data.reshape(
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         data = torch.tensor(data)
-        data = self.normalize(data, self.prognostic_params)
+        data = self.normalize_prog(data, self.prognostic_params)
 
         forcing = self.data[
             actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
@@ -230,7 +277,7 @@ class AnemoiDataset(Dataset):
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         forcing = torch.tensor(forcing)
-        forcing = self.normalize(forcing, self.forcing_params)
+        forcing = self.normalize_forc(forcing, self.forcing_params)
 
         return data, forcing
 

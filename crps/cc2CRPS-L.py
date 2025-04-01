@@ -90,18 +90,25 @@ def create_model(args):
         config = TrainingConfig.load(f"{latest_dir}/run-info.json")
         config.run_name = TrainingConfig.generate_run_name()
 
+        old_patch_size = config.patch_size
         old_resolution = get_padded_size(*config.input_resolution, config.patch_size)
-        old_resolution = (old_resolution[0] // 4, old_resolution[1] // 4)
+        old_resolution = (
+            old_resolution[0] // old_patch_size,
+            old_resolution[1] // old_patch_size,
+        )
 
         config.apply_args(args)
         new_resolution = get_padded_size(*config.input_resolution, config.patch_size)
-        new_resolution = (new_resolution[0] // 4, new_resolution[1] // 4)
+        new_resolution = (
+            new_resolution[0] // config.patch_size,
+            new_resolution[1] // config.patch_size,
+        )
 
         model = cc2CRPSModel(config)
         model = read_checkpoint(
             f"{latest_dir}/models",
             model,
-            interpolate_positional_embeddings=True,
+            adapt_model_to_checkpoint=True,
             old_size=old_resolution,
             new_size=new_resolution,
         )
@@ -258,7 +265,7 @@ if args.only_config:
 
 
 trainer = L.Trainer(
-    max_steps=max_steps,
+    max_steps=max_steps * config.accumulate_grad_batches,
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,
@@ -276,6 +283,7 @@ trainer = L.Trainer(
         LazyLoggerCallback(config),
     ],
     gradient_clip_val=1.0,
+    accumulate_grad_batches=config.accumulate_grad_batches,
 )
 
 torch.set_float32_matmul_precision("high")

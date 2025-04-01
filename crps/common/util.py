@@ -10,7 +10,24 @@ from scipy.signal import medfilt2d
 from glob import glob
 
 
-def interpolate_pos_embed(pos_embed, new_grid_size, old_grid_size, num_extra_tokens=0):
+def adapt_patch_embed(old_weight, new_weight_shape):
+    # Zero-pad the weights to match new kernel size
+    new_weight = torch.zeros(
+        new_weight_shape, device=old_weight.device, dtype=old_weight.dtype
+    )
+
+    # Center the old weights in the new tensor
+    pad_h = (new_weight_shape[2] - old_weight.shape[2]) // 2
+    pad_w = (new_weight_shape[3] - old_weight.shape[3]) // 2
+
+    new_weight[
+        :, :, pad_h : pad_h + old_weight.shape[2], pad_w : pad_w + old_weight.shape[3]
+    ] = old_weight
+
+    return new_weight
+
+
+def adapt_pos_embed(pos_embed, new_grid_size, old_grid_size, num_extra_tokens=0):
     embed_dim = pos_embed.shape[-1]
 
     # Separate extra tokens (like a class token) from the regular positional tokens.
@@ -43,7 +60,7 @@ def interpolate_pos_embed(pos_embed, new_grid_size, old_grid_size, num_extra_tok
 def read_checkpoint(
     file_path,
     model,
-    interpolate_positional_embeddings=False,
+    adapt_model_to_checkpoint=False,
     old_size=None,
     new_size=None,
 ):
@@ -62,22 +79,61 @@ def read_checkpoint(
         old_pos_embed_shape = state_dict["pos_embed"].shape
         new_pos_embed_shape = model.state_dict()["pos_embed"].shape
 
-        if (
-            interpolate_positional_embeddings
-            and old_pos_embed_shape != new_pos_embed_shape
-        ):
+        # Positional embeddings are sized differently when input data resolution
+        # is changed
+
+        if adapt_model_to_checkpoint and old_pos_embed_shape != new_pos_embed_shape:
             print(
                 "Different resolutions for pos_embed: checkpoint: {} vs model: {}, interpolating to match".format(
                     list(old_pos_embed_shape),
                     list(new_pos_embed_shape),
                 )
             )
-            new_pos_embed = interpolate_pos_embed(
-                state_dict["pos_embed"], new_size, old_size
-            )
+            new_pos_embed = adapt_pos_embed(state_dict["pos_embed"], new_size, old_size)
 
             # Update the checkpoint.
             state_dict["pos_embed"] = new_pos_embed
+
+        print(model)
+        # Patch embeddings are changed if patch size is changed
+
+        keys = ["patch_embed.data_proj.weight", "patch_embed.forcing_proj.weight"]
+        old_patch_embed_shape = state_dict[keys[0]].shape
+        new_patch_embed_shape = model.state_dict()[keys[0]].shape
+
+        if old_patch_embed_shape != new_patch_embed_shape:
+            print(
+                f"Different kernel sizes for {keys[0]}: checkpoint: {list(old_patch_embed_shape)} vs model: {list(new_patch_embed_shape)}, adapting to match"
+            )
+
+            for k in keys:
+                new_patch_embed = adapt_patch_embed(
+                    state_dict[k], model.state_dict()[k].shape
+                )
+                state_dict[k] = new_patch_embed
+
+        keys = ["final_expand.0.weight", "final_expand.0.bias"]
+        old_param = state_dict[keys[0]]
+        new_param_shape = model.state_dict()[keys[0]].shape
+
+        if old_param.shape != new_param_shape:
+            print(
+                f"Different dimensions for {keys[0]}: checkpoint: {list(old_param.shape)} vs model: {list(new_param_shape)}, adapting to match"
+            )
+
+            for k in keys:
+                old_param = state_dict[k]
+                new_param_shape = model.state_dict()[k].shape
+
+                scale_factor = new_param_shape[0] // old_param.shape[0]
+                if (
+                    scale_factor > 0
+                    and new_param_shape[0] == old_param.shape[0] * scale_factor
+                ):
+                    # Repeat weights to match new size
+                    new_param = old_param.repeat_interleave(scale_factor, dim=0)
+
+                state_dict[k] = new_param
 
         model.load_state_dict(state_dict)
 
