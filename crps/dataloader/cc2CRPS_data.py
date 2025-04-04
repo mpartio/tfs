@@ -153,6 +153,32 @@ class AnemoiDataset(Dataset):
 
         self.normalization_methods = normalization_methods
 
+        self._setup_normalization()
+
+    def _setup_normalization(self):
+        # Pre-compute combined indexes and params
+        self.combined_indexes = self.data_indexes + self.forcings_indexes
+        self.combined_params = self.prognostic_params + self.forcing_params
+        self.total_channels = len(
+            self.combined_indexes
+        )  # Number of channels before E multiplication
+
+        device = "cpu"
+        # Pre-reshape statistics for all combined channels
+        C = self.total_channels  # This will be multiplied by E in __getitem__
+        self.mins = torch.tensor(
+            self.statistics["minimum"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.maxs = torch.tensor(
+            self.statistics["maximum"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.means = torch.tensor(
+            self.statistics["mean"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.stds = torch.tensor(
+            self.statistics["stdev"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
             if i in self.missing_indices:
@@ -164,55 +190,79 @@ class AnemoiDataset(Dataset):
 
     def normalize(self, tensor: torch.tensor, params: list):
         T, C, H, W = tensor.shape
-
         methods = [self.normalization_methods[k] for k in params]
         indices = [self.data.name_to_index[x] for x in params]
 
+        # Early return for "none" case
         if len(methods) == 1 and methods[0] == "none":
             return tensor
 
-        mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
-        maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
-        means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
-        stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
-
-        dtype = tensor.dtype
-        device = tensor.device
-
-        # Create masks for each normalization type
-        minmax_mask = torch.tensor(
-            [m == "minmax" for m in methods], dtype=dtype, device=device
-        ).view(1, C, 1, 1)
-        std_mask = torch.tensor(
-            [m == "standard" for m in methods], dtype=dtype, device=device
-        ).view(1, C, 1, 1)
-        none_mask = torch.tensor(
-            [m == "none" for m in methods], dtype=dtype, device=device
+        # Create a single method tensor for indexing
+        method_tensor = torch.tensor(
+            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods],
+            dtype=torch.long,
+            device=tensor.device,
         ).view(1, C, 1, 1)
 
-        # Apply normalizations to all data
-        minmax_normalized = (tensor - mins) / (maxs - mins)
-        std_normalized = (tensor - means) / stds
+        # Compute normalizations only where needed
+        result = tensor.clone()  # Avoid modifying input tensor directly
+        minmax_mask = method_tensor == 1
+        std_mask = method_tensor == 2
 
-        # Combine results using masks (with no normalization option)
-        result = (
-            minmax_mask * minmax_normalized
-            + std_mask * std_normalized
-            + none_mask * tensor
-        )
+        if minmax_mask.any():
+            result = torch.where(
+                minmax_mask,
+                (tensor - self.mins)
+                / (self.maxs - self.mins + 1e-8),  # Add epsilon for stability
+                result,
+            )
+        if std_mask.any():
+            result = torch.where(
+                std_mask,
+                (tensor - self.means) / (self.stds + 1e-8),  # Add epsilon only for std
+                result,
+            )
 
-        result = result.to(dtype)
-
-        return result
+        return result.to(tensor.dtype)
 
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
 
+        # Extract the full slice (data + forcings) from self.data
+        combined_indexes = (
+            self.data_indexes + self.forcings_indexes
+        )  # Concatenate index lists
+        combined_params = (
+            self.prognostic_params + self.forcing_params
+        )  # Concatenate normalization params
+
+        # Get the combined data
+        combined = self.data[
+            actual_idx : actual_idx + self.group_size, combined_indexes, ...
+        ]
+
+        T, C, E, HW = combined.shape
+
+        assert E == 1
+
+        combined = combined.reshape(
+            T, C * E, self.input_resolution[0], self.input_resolution[1]
+        )
+        combined = torch.tensor(combined)
+
+        # Normalize the combined tensor
+        combined = self.normalize(combined, combined_params)
+
+        # Split into data and forcings based on original channel counts
+        data_channels = len(self.data_indexes) * E
+        data = combined[:, :data_channels, :, :]
+        forcing = combined[:, data_channels:, :, :]
+
+        return data, forcing
+
         data = self.data[
             actual_idx : actual_idx + self.group_size, self.data_indexes, ...
         ]
-
-        # (3, 1, 1, 16384)
 
         T, C, E, HW = data.shape
 

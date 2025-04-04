@@ -129,6 +129,8 @@ def get_args():
     if args_dict["normalization"] is not None:
         args_dict["normalization"] = dict(args_dict["normalization"])
 
+    if args.forcing_params:
+        args.forcing_params = tuple(args.forcing_params)
     return args
 
 
