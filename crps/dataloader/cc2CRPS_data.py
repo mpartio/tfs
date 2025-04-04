@@ -153,7 +153,31 @@ class AnemoiDataset(Dataset):
 
         self.normalization_methods = normalization_methods
 
-        self._setup_normalization_tensors()
+        self._setup_normalization()
+
+    def _setup_normalization(self):
+        # Pre-compute combined indexes and params
+        self.combined_indexes = self.data_indexes + self.forcings_indexes
+        self.combined_params = self.prognostic_params + self.forcing_params
+        self.total_channels = len(
+            self.combined_indexes
+        )  # Number of channels before E multiplication
+
+        device = "cpu"
+        # Pre-reshape statistics for all combined channels
+        C = self.total_channels  # This will be multiplied by E in __getitem__
+        self.mins = torch.tensor(
+            self.statistics["minimum"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.maxs = torch.tensor(
+            self.statistics["maximum"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.means = torch.tensor(
+            self.statistics["mean"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
+        self.stds = torch.tensor(
+            self.statistics["stdev"][self.combined_indexes].reshape(1, C, 1, 1)
+        ).to(device)
 
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
@@ -164,98 +188,77 @@ class AnemoiDataset(Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
-    def _setup_normalization_tensors(self):
-        # Pre-calculate these tensors once
-
-        C = len(self.prognostic_params)
-        indices = [self.data.name_to_index[x] for x in self.prognostic_params]
-        methods = [self.normalization_methods[k] for k in self.prognostic_params]
-
-        self.prog_mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
-        self.prog_maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
-        self.prog_means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
-        self.prog_stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
-
-        # Pre-compute masks too
-        self.prog_minmax_mask = torch.tensor([m == "minmax" for m in methods]).view(
-            1, C, 1, 1
-        )
-        self.prog_std_mask = torch.tensor([m == "standard" for m in methods]).view(
-            1, C, 1, 1
-        )
-        self.prog_none_mask = torch.tensor([m == "none" for m in methods]).view(
-            1, C, 1, 1
-        )
-
-        C = len(self.forcing_params)
-        indices = [self.data.name_to_index[x] for x in self.forcing_params]
-        methods = [self.normalization_methods[k] for k in self.forcing_params]
-
-        self.forc_mins = self.statistics["minimum"][indices].reshape(1, C, 1, 1)
-        self.forc_maxs = self.statistics["maximum"][indices].reshape(1, C, 1, 1)
-        self.forc_means = self.statistics["mean"][indices].reshape(1, C, 1, 1)
-        self.forc_stds = self.statistics["stdev"][indices].reshape(1, C, 1, 1) + 1e-8
-
-        self.forc_minmax_mask = torch.tensor([m == "minmax" for m in methods]).view(
-            1, C, 1, 1
-        )
-        self.forc_std_mask = torch.tensor([m == "standard" for m in methods]).view(
-            1, C, 1, 1
-        )
-        self.forc_none_mask = torch.tensor([m == "none" for m in methods]).view(
-            1, C, 1, 1
-        )
-
-    def normalize_prog(self, tensor: torch.tensor, params: list):
+    def normalize(self, tensor: torch.tensor, params: list):
         T, C, H, W = tensor.shape
+        methods = [self.normalization_methods[k] for k in params]
+        indices = [self.data.name_to_index[x] for x in params]
 
-        if (
-            len(self.prognostic_params) == 1
-            and self.normalization_methods[self.prognostic_params[0]] == "none"
-        ):
+        # Early return for "none" case
+        if len(methods) == 1 and methods[0] == "none":
             return tensor
 
-        # Calculate normalized tensors
-        minmax_normalized = (tensor - self.prog_mins) / (
-            self.prog_maxs - self.prog_mins
-        )
-        std_normalized = (tensor - self.prog_means) / self.prog_stds
+        # Create a single method tensor for indexing
+        method_tensor = torch.tensor(
+            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods],
+            dtype=torch.long,
+            device=tensor.device,
+        ).view(1, C, 1, 1)
 
-        # Combine with pre-computed masks
-        result = (
-            self.prog_minmax_mask * minmax_normalized
-            + self.prog_std_mask * std_normalized
-            + self.prog_none_mask * tensor
-        )
+        # Compute normalizations only where needed
+        result = tensor.clone()  # Avoid modifying input tensor directly
+        minmax_mask = method_tensor == 1
+        std_mask = method_tensor == 2
 
-        return result.to(tensor.dtype)
-
-    def normalize_forc(self, tensor: torch.tensor, params: list):
-        T, C, H, W = tensor.shape
-
-        if (
-            len(self.forcing_params) == 1
-            and self.normalization_methods[self.forcing_params[0]] == "none"
-        ):
-            return tensor
-
-        # Calculate normalized tensors
-        minmax_normalized = (tensor - self.forc_mins) / (
-            self.forc_maxs - self.forc_mins
-        )
-        std_normalized = (tensor - self.forc_means) / self.forc_stds
-
-        # Combine with pre-computed masks
-        result = (
-            self.prog_minmax_mask * minmax_normalized
-            + self.prog_std_mask * std_normalized
-            + self.prog_none_mask * tensor
-        )
+        if minmax_mask.any():
+            result = torch.where(
+                minmax_mask,
+                (tensor - self.mins)
+                / (self.maxs - self.mins + 1e-8),  # Add epsilon for stability
+                result,
+            )
+        if std_mask.any():
+            result = torch.where(
+                std_mask,
+                (tensor - self.means) / (self.stds + 1e-8),  # Add epsilon only for std
+                result,
+            )
 
         return result.to(tensor.dtype)
 
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
+
+        # Extract the full slice (data + forcings) from self.data
+        combined_indexes = (
+            self.data_indexes + self.forcings_indexes
+        )  # Concatenate index lists
+        combined_params = (
+            self.prognostic_params + self.forcing_params
+        )  # Concatenate normalization params
+
+        # Get the combined data
+        combined = self.data[
+            actual_idx : actual_idx + self.group_size, combined_indexes, ...
+        ]
+
+        T, C, E, HW = combined.shape
+
+        assert E == 1
+
+        combined = combined.reshape(
+            T, C * E, self.input_resolution[0], self.input_resolution[1]
+        )
+        combined = torch.tensor(combined)
+
+        # Normalize the combined tensor
+        combined = self.normalize(combined, combined_params)
+
+        # Split into data and forcings based on original channel counts
+        data_channels = len(self.data_indexes) * E
+        data = combined[:, :data_channels, :, :]
+        forcing = combined[:, data_channels:, :, :]
+
+        return data, forcing
 
         data = self.data[
             actual_idx : actual_idx + self.group_size, self.data_indexes, ...
@@ -267,7 +270,7 @@ class AnemoiDataset(Dataset):
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         data = torch.tensor(data)
-        data = self.normalize_prog(data, self.prognostic_params)
+        data = self.normalize(data, self.prognostic_params)
 
         forcing = self.data[
             actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
@@ -277,7 +280,7 @@ class AnemoiDataset(Dataset):
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
         forcing = torch.tensor(forcing)
-        forcing = self.normalize_forc(forcing, self.forcing_params)
+        forcing = self.normalize(forcing, self.forcing_params)
 
         return data, forcing
 
