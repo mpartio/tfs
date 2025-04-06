@@ -199,8 +199,8 @@ class cc2CRPSModel(model_class, L.LightningModule):
                     initial_lr,
                     current_lr,
                     config.current_iteration,
-                    it,
-                    (100 * config.current_iteration / it),
+                    config.num_iterations,
+                    (100 * config.current_iteration / config.num_iterations),
                 )
             )
             scheduler = cosine_scheduler
