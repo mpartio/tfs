@@ -66,7 +66,13 @@ class TrainingConfig:
             for k in ("only_config", "generate_run_name", "start_from"):
                 config.pop(k, None)
 
-            return cls(**config)
+            instance = cls(**config)
+            # When read from json, default type for these is list
+            instance.prognostic_params = tuple(instance.prognostic_params)
+            instance.forcing_params = tuple(instance.forcing_params)
+            instance.input_resolution = tuple(instance.input_resolution)
+
+            return instance
 
     @classmethod
     def generate_run_name(cls):
@@ -129,8 +135,12 @@ def get_args():
     if args_dict["normalization"] is not None:
         args_dict["normalization"] = dict(args_dict["normalization"])
 
+    if args.prognostic_params:
+        args.prognostic_params = tuple(args.prognostic_params)
+
     if args.forcing_params:
         args.forcing_params = tuple(args.forcing_params)
+
     return args
 
 

@@ -124,13 +124,16 @@ class AnemoiDataset(Dataset):
         zarr_path: str,
         group_size: int,
         input_resolution: tuple,
-        prognostic_params: list,
-        forcing_params: list,
+        prognostic_params: tuple,
+        forcing_params: tuple,
         normalization_methods: dict,
     ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
         self.time_steps = len(self.data.dates)
+
+        assert type(prognostic_params) == tuple
+        assert type(forcing_params) == tuple
 
         self.prognostic_params = prognostic_params
         self.forcing_params = forcing_params
