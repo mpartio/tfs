@@ -134,6 +134,7 @@ class AnemoiDataset(Dataset):
         prognostic_params: tuple,
         forcing_params: tuple,
         normalization_methods: dict,
+        disable_normalization: bool,
     ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
@@ -159,11 +160,13 @@ class AnemoiDataset(Dataset):
             if not self._sequence_has_missing_data(i)
         ]
 
-        self.statistics = self.data.statistics
+        self.disable_normalization = disable_normalization
 
-        self.normalization_methods = normalization_methods
+        if self.disable_normalization is False:
+            self.normalization_methods = normalization_methods
+            assert self.normalization_methods is not None
 
-        self._setup_normalization()
+            self._setup_normalization()
 
     def _setup_normalization(self):
         # Pre-compute combined indexes and params
@@ -173,21 +176,33 @@ class AnemoiDataset(Dataset):
             self.combined_indexes
         )  # Number of channels before E multiplication
 
-        device = "cpu"
+        # default:
+        dtype = torch.float32
+        methods = [self.normalization_methods[k] for k in self.combined_params]
+
         # Pre-reshape statistics for all combined channels
         C = self.total_channels  # This will be multiplied by E in __getitem__
         self.mins = torch.tensor(
-            self.statistics["minimum"][self.combined_indexes].reshape(1, C, 1, 1)
-        ).to(device)
+            self.data.statistics["minimum"][self.combined_indexes].reshape(1, C, 1, 1),
+            dtype=dtype,
+        )
         self.maxs = torch.tensor(
-            self.statistics["maximum"][self.combined_indexes].reshape(1, C, 1, 1)
-        ).to(device)
+            self.data.statistics["maximum"][self.combined_indexes].reshape(1, C, 1, 1),
+            dtype=dtype,
+        )
         self.means = torch.tensor(
-            self.statistics["mean"][self.combined_indexes].reshape(1, C, 1, 1)
-        ).to(device)
+            self.data.statistics["mean"][self.combined_indexes].reshape(1, C, 1, 1),
+            dtype=dtype,
+        )
         self.stds = torch.tensor(
-            self.statistics["stdev"][self.combined_indexes].reshape(1, C, 1, 1)
-        ).to(device)
+            self.data.statistics["stdev"][self.combined_indexes].reshape(1, C, 1, 1),
+            dtype=dtype,
+        )
+        # Create a single method tensor for indexing
+        self.method_tensor = torch.tensor(
+            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods],
+            dtype=torch.long,
+        ).view(1, C, 1, 1)
 
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
@@ -207,17 +222,10 @@ class AnemoiDataset(Dataset):
         if len(methods) == 1 and methods[0] == "none":
             return tensor
 
-        # Create a single method tensor for indexing
-        method_tensor = torch.tensor(
-            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods],
-            dtype=torch.long,
-            device=tensor.device,
-        ).view(1, C, 1, 1)
-
         # Compute normalizations only where needed
         result = tensor.clone()  # Avoid modifying input tensor directly
-        minmax_mask = method_tensor == 1
-        std_mask = method_tensor == 2
+        minmax_mask = self.method_tensor == 1
+        std_mask = self.method_tensor == 2
 
         if minmax_mask.any():
             result = torch.where(
@@ -239,12 +247,8 @@ class AnemoiDataset(Dataset):
         actual_idx = self.valid_indices[idx]
 
         # Extract the full slice (data + forcings) from self.data
-        combined_indexes = (
-            self.data_indexes + self.forcings_indexes
-        )  # Concatenate index lists
-        combined_params = (
-            self.prognostic_params + self.forcing_params
-        )  # Concatenate normalization params
+        combined_indexes = self.data_indexes + self.forcings_indexes
+        combined_params = self.prognostic_params + self.forcing_params
 
         # Get the combined data
         combined = self.data[
@@ -261,36 +265,13 @@ class AnemoiDataset(Dataset):
         combined = torch.tensor(combined)
 
         # Normalize the combined tensor
-        combined = self.normalize(combined, combined_params)
+        if self.disable_normalization is False:
+            combined = self.normalize(combined, combined_params)
 
         # Split into data and forcings based on original channel counts
         data_channels = len(self.data_indexes) * E
         data = combined[:, :data_channels, :, :]
         forcing = combined[:, data_channels:, :, :]
-
-        return data, forcing
-
-        data = self.data[
-            actual_idx : actual_idx + self.group_size, self.data_indexes, ...
-        ]
-
-        T, C, E, HW = data.shape
-
-        data = data.reshape(
-            T, C * E, self.input_resolution[0], self.input_resolution[1]
-        )
-        data = torch.tensor(data)
-        data = self.normalize(data, self.prognostic_params)
-
-        forcing = self.data[
-            actual_idx : actual_idx + self.group_size, self.forcings_indexes, ...
-        ]
-        T, C, E, HW = forcing.shape
-        forcing = forcing.reshape(
-            T, C * E, self.input_resolution[0], self.input_resolution[1]
-        )
-        forcing = torch.tensor(forcing)
-        forcing = self.normalize(forcing, self.forcing_params)
 
         return data, forcing
 
@@ -402,6 +383,7 @@ class cc2DataModule(L.LightningDataModule):
             normalization_methods=get_default_normalization_methods(
                 self.config.normalization
             ),
+            disable_normalization=self.config.disable_normalization,
         )
         indices = np.arange(len(ds))
 

@@ -45,6 +45,7 @@ class TrainingConfig:
     forcing_params: tuple = ("insolation",)
     data_path: str = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
     normalization: Dict[str, str] = field(default_factory=dict)
+    disable_normalization: bool = False
 
     # Current training state
     current_iteration: int = 0
@@ -117,6 +118,9 @@ def get_args():
     parser.add_argument("--forcing_params", type=str, nargs="+")
     parser.add_argument("--data_path", type=str)
     parser.add_argument("--normalization", type=parse_key_value_pair, action="append")
+    parser.add_argument(
+        "--disable_normalization", action=argparse.BooleanOptionalAction
+    )
 
     # Compute environment
     parser.add_argument("--num_devices", type=int)
