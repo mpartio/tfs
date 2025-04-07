@@ -12,8 +12,8 @@ from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 
 
-def get_default_normalization_methods():
-    return {
+def get_default_normalization_methods(custom_methods):
+    default_methods = {
         "insolation": "none",
         "t_1000": "standard",
         "t_500": "standard",
@@ -37,6 +37,13 @@ def get_default_normalization_methods():
         "z_850": "standard",
         "z_925": "standard",
     }
+
+    if custom_methods is not None:
+        default_methods.update(custom_methods)
+
+    print(f"normalization methods: {default_methods}")
+
+    return default_methods
 
 
 def augment_data(x, y):
@@ -392,7 +399,9 @@ class cc2DataModule(L.LightningDataModule):
             input_resolution=self.config.input_resolution,
             prognostic_params=self.config.prognostic_params,
             forcing_params=self.config.forcing_params,
-            normalization_methods=get_default_normalization_methods(),
+            normalization_methods=get_default_normalization_methods(
+                self.config.normalization
+            ),
         )
         indices = np.arange(len(ds))
 
