@@ -262,7 +262,7 @@ class AnemoiDataset(Dataset):
         combined = combined.reshape(
             T, C * E, self.input_resolution[0], self.input_resolution[1]
         )
-        combined = torch.tensor(combined)
+        combined = torch.from_numpy(combined)
 
         # Normalize the combined tensor
         if self.disable_normalization is False:
