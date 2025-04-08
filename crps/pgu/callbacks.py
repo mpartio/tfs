@@ -33,7 +33,6 @@ colors = [
 ]
 
 
-
 def analyze_gradients(model):
     # Pre-compile patterns to check once
     sections = [
@@ -381,7 +380,9 @@ class DiagnosticCallback(L.Callback):
         for k in self.config.__dict__.keys():
             D["config"][k] = self.config.__dict__[k]
 
-        D["config"]["current_iteration"] = trainer.global_step
+        D["config"]["current_iteration"] = (
+            self.config.current_iteration + trainer.global_step
+        )
 
         filename = f"{self.config.run_dir}/run-info.json"
 

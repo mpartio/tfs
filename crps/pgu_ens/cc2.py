@@ -59,9 +59,6 @@ class cc2CRPS(nn.Module):
         # Spatial position embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.embed_dim))
 
-        # Variable embedding (optional, for multi-variable forecasting)
-        self.var_embed = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
-
         # Input layer norm and dropout
         self.norm_input = ConditionalLayerNorm(self.embed_dim, config.noise_dim)
         self.dropout = nn.Dropout(drop_rate)
