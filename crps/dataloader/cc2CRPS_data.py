@@ -360,10 +360,10 @@ class SplitWrapper:
 
 
 class cc2DataModule(L.LightningDataModule):
-    def __init__(self, config):
+    def __init__(self, config, val_split: float = 0.1):
         self.n_x = config.history_length
         self.n_y = config.rollout_length
-        self.val_split = 0.1
+        self.val_split = val_split
 
         self.cc2_train = None
         self.cc2_val = None
@@ -411,8 +411,8 @@ class cc2DataModule(L.LightningDataModule):
             prefetch_factor=3,
         )
 
-    def train_dataloader(self):
-        return self._get_dataloader(self.cc2_train, shuffle=True)
+    def train_dataloader(self, shuffle: bool = True):
+        return self._get_dataloader(self.cc2_train, shuffle=shuffle)
 
     def val_dataloader(self):
         return self._get_dataloader(self.cc2_val)
