@@ -266,7 +266,7 @@ if args.only_config:
 
 
 trainer = L.Trainer(
-    max_steps=max_steps * config.accumulate_grad_batches,
+    max_steps=max_steps,
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,
