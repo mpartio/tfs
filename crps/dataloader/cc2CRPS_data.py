@@ -168,6 +168,14 @@ class AnemoiDataset(Dataset):
 
             self._setup_normalization()
 
+        y, x = self.data.field_shape
+
+        assert (
+            x == input_resolution[1] and y == input_resolution[0]
+        ), "Model input resolution {}x{} does not match with data resolution {}x{}; is model trained with different data?".format(
+            input_resolution[0], input_resolution[1], y, x
+        )
+
     def _setup_normalization(self):
         # Pre-compute combined indexes and params
         self.combined_indexes = self.data_indexes + self.forcings_indexes
