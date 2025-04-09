@@ -130,6 +130,7 @@ class cc2CRPSModel(model_class, L.LightningModule):
         )
         self.loss_fn = loss_fn
         self.config = config
+        self.save_hyperparameters()
 
     def training_step(self, batch, batch_idx):
         data, forcing = batch
