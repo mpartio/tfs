@@ -10,16 +10,12 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
 
-    step_weights = torch.tensor([1, 1.2, 1.5, 1.8, 2.2, 3.0])[:n_step].to(x.device)
-    tendency_weights = torch.tensor([2, 2.2, 2.5, 2.8, 3.2, 4.0])[:n_step].to(x.device)
-
     # Initial state is the last state from input sequence
     current_state = x[:, -1, ...].unsqueeze(1)  # Shape: [B, 1, C, H, W]
     previous_state = x[:, -2, ...].unsqueeze(1)
 
     # Initialize empty lists for multi-step evaluation
-    step_losses = []
-    tendency_losses = []
+    all_losses = []
     all_predictions = []
     all_tendencies = []
 
@@ -51,12 +47,8 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
                 # Second, third, ... step: y - y_prev
                 y_true = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
 
-            step_loss = loss_fn(tendency, y_true)
-            step_losses.append(step_loss)
-
-            tendency_importance = 1.0 + 5.0 * torch.abs(y_true)
-            tendency_loss = torch.mean(tendency_importance * (tendency - y_true) ** 2)
-            tendency_losses.append(tendency_loss)
+            loss = loss_fn(y_true, tendency, t)
+            all_losses.append(loss)
 
     # Stack predictions into a single tensor
     tendencies = torch.cat(all_tendencies, dim=1)
@@ -65,22 +57,25 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     loss = None
 
-    if loss_fn is not None:
-        step_losses = step_weights * torch.stack(step_losses)
-        tendency_losses = tendency_weights * torch.stack(tendency_losses)
+    if len(all_losses) > 0:
+        # aggregate step losses
+        loss = {"loss": []}
+        for l in all_losses:
+            for k, v in l.items():
+                if k == "loss":
+                    loss["loss"].append(v)
+                else:
+                    try:
+                        loss[k].append(v)
+                    except KeyError:
+                        loss[k] = [v]
 
-        step_losses_individual = step_losses.detach()
-        tendency_losses_individual = tendency_losses.detach()
+        loss["loss"] = torch.mean(torch.stack(loss["loss"]))
 
-        loss = torch.sum(step_losses + tendency_losses)
-
-        assert torch.isfinite(loss).all() , "Loss is non-finite"
-
-        loss = {
-            "loss": loss,
-            "step_losses": step_losses_individual,
-            "tendency_losses": tendency_losses_individual,
-        }
+        for k, v in loss.items():
+            if k == "loss":
+                continue
+            loss[k] = torch.stack(loss[k])
 
     assert tendencies.ndim == 5
     return loss, tendencies, predictions
