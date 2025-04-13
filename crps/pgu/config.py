@@ -24,6 +24,7 @@ class TrainingConfig:
     window_size: int = 8
     num_heads: int = 12
     patch_size: int = 4
+    add_skip_connection: bool = False
 
     # Training params
     batch_size: int = 32
@@ -102,6 +103,7 @@ def get_args():
     parser.add_argument("--patch_size", type=int)
     parser.add_argument("--encoder_depth", type=int)
     parser.add_argument("--decoder_depth", type=int)
+    parser.add_argument("--add_skip_connection", action=argparse.BooleanOptionalAction)
 
     # Training params
     parser.add_argument("--batch_size", type=int)

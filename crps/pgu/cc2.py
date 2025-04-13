@@ -149,6 +149,12 @@ class cc2CRPS(nn.Module):
         self.apply(self._init_weights)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
+        self.add_skip_connection = config.add_skip_connection
+
+        if config.add_skip_connection:
+            self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
+            self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -176,6 +182,12 @@ class cc2CRPS(nn.Module):
         for block in self.encoder1:
             x = block(x)
 
+        if self.add_skip_connection:
+            skip = x.clone()  # skip connection, B, T*P, D
+            skip = skip.reshape(B, T, -1, D)
+        else:
+            skip = None
+
         # Downsample
         x = self.downsample(x)
 
@@ -185,9 +197,10 @@ class cc2CRPS(nn.Module):
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
-        return x
 
-    def decode(self, encoded, step):
+        return x, skip
+
+    def decode(self, encoded, step, skip):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -239,6 +252,13 @@ class cc2CRPS(nn.Module):
         P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
         x2 = upsampled_delta.reshape(B, -1, D_new)
 
+        if self.add_skip_connection:
+            skip_token = skip[:, -1, :, :]  # shape: [B, num_tokens, embed_dim]
+            assert skip_token.ndim == 3
+            skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
+            x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
+            x2 = self.skip_fusion(x2)
+
         for block in self.decoder2:
             x2 = block(x2, encoded_flat)
 
@@ -249,7 +269,7 @@ class cc2CRPS(nn.Module):
     def project_to_image(self, x):
         """Project latent representation back to image space"""
         B, T, P, D = x.shape
-
+        assert T == 1
         # Apply final norm
         x = self.norm_final(x)
 
@@ -290,12 +310,12 @@ class cc2CRPS(nn.Module):
         data, padding_info = pad_tensor(data, self.patch_size, 1)
         forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
-        encoded = self.encode(
+        encoded, skip = self.encode(
             data,
             forcing,
         )
 
-        decoded = self.decode(encoded, step)
+        decoded = self.decode(encoded, step, skip)
 
         output = self.project_to_image(decoded)
         output = depad_tensor(output, padding_info)
