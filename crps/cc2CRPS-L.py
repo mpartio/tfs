@@ -35,11 +35,12 @@ imports = [
     "common.util.calculate_wavelet_snr",
     "common.util.get_latest_run_dir",
     "common.util.get_next_run_number",
-    "common.util.read_checkpoint",
+    "common.util.adapt_checkpoint_to_model",
     "common.util.get_rank",
     "common.util.string_to_type",
     "common.util.effective_parameters",
     "common.util.create_directory_structure",
+    "common.util.find_latest_checkpoint_path",
 ]
 
 dynamic_import(imports)
@@ -66,14 +67,25 @@ loss_fn = string_to_type(f"{package}.loss.loss_fn")
 
 
 def create_model(args):
-    if args.run_name is not None:
-        latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
-        if not latest_dir:
-            raise ValueError(f"No existing runs found with name: {args.run_name}")
+    ckpt_path = None
 
+    if args.run_name is not None and args.only_config:
+        # resuming a run with the same options as earlier
+        latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
         config = TrainingConfig.load(f"{latest_dir}/run-info.json")
         model = cc2CRPSModel(config)
-        model = read_checkpoint(f"{latest_dir}/models", model)
+        if args.only_config is False:
+            config.apply_args(args)
+
+        if args.run_name is not None:
+            config.run_name = args.run_name
+
+        ckpt_path = find_latest_checkpoint_path(latest_dir)
+
+    elif args.run_name is not None:
+        # resuming a run with new options and clean optimizer state
+        latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
+        config = TrainingConfig.load(f"{latest_dir}/run-info.json")
 
         if args.only_config is False:
             config.apply_args(args)
@@ -81,14 +93,19 @@ def create_model(args):
         if args.run_name is not None:
             config.run_name = args.run_name
 
-    elif args.start_from:
-        latest_dir = get_latest_run_dir(f"runs/{args.start_from}")
+        ckpt_path = find_latest_checkpoint_path(latest_dir)
 
-        if not latest_dir:
-            raise ValueError(f"No existing runs found with name: {args.start_from}")
+        model = cc2CRPSModel.load_from_checkpoint(ckpt_path, config=config)
+
+    elif args.start_from:
+        # start high-resolution training from low-resolution checkpoint
+        latest_dir = get_latest_run_dir(f"runs/{args.start_from}")
+        ckpt_path = find_latest_checkpoint_path(latest_dir)
 
         config = TrainingConfig.load(f"{latest_dir}/run-info.json")
         config.run_name = TrainingConfig.generate_run_name()
+
+        model = cc2CRPSModel(config)
 
         old_patch_size = config.patch_size
         old_resolution = get_padded_size(*config.input_resolution, config.patch_size)
@@ -104,21 +121,23 @@ def create_model(args):
             new_resolution[1] // config.patch_size,
         )
 
-        model = cc2CRPSModel(config)
-        model = read_checkpoint(
-            f"{latest_dir}/models",
-            model,
-            adapt_model_to_checkpoint=True,
-            old_size=old_resolution,
-            new_size=new_resolution,
+        assert args.adapt_model_to_checkpoint
+
+        ckpt = torch.load(ckpt_path, weights_only=False)
+        state_dict = ckpt["state_dict"]
+
+        state_dict = adapt_checkpoint_to_model(
+            state_dict, model.state_dict(), old_size, new_size
         )
+        model.load_state_dict(state_dict)
 
     else:
+        # start a totally new run
         assert args.generate_run_name, "Must provide a run name or generate one"
         config = get_config()
         model = cc2CRPSModel(config)
 
-    return model, config
+    return model, config, ckpt_path
 
 
 class cc2CRPSModel(model_class, L.LightningModule):
@@ -178,7 +197,12 @@ class cc2CRPSModel(model_class, L.LightningModule):
             weight_decay=0.05,
         )
 
-        T_max = config.num_iterations - config.warmup_iterations
+        if config.num_iterations == -1:
+            steps_per_epoch = len(train_dataloader)
+            num_iterations = steps_per_epoch * config.num_epochs
+            T_max = num_iterations - config.warmup_iterations
+        else:
+            T_max = config.num_iterations - config.warmup_iterations
 
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
@@ -186,34 +210,14 @@ class cc2CRPSModel(model_class, L.LightningModule):
             eta_min=1e-7,
         )
 
-        if args.only_config and config.current_iteration > 0:
-            initial_lr = cosine_scheduler.get_last_lr()[0]
-            steps_after_warmup = config.current_iteration - config.warmup_iterations
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=config.warmup_iterations,
+        )
 
-            for _ in range(steps_after_warmup):
-                cosine_scheduler.step()
-
-            current_lr = cosine_scheduler.get_last_lr()[0]
-
-            print(
-                "Learning rate set from {:.1e} to {:.1e} when starting from iteration {}/{} ({:.1f}% done)".format(
-                    initial_lr,
-                    current_lr,
-                    config.current_iteration,
-                    config.num_iterations,
-                    (100 * config.current_iteration / config.num_iterations),
-                )
-            )
-            scheduler = cosine_scheduler
-        else:
-            warmup_scheduler = LinearLR(
-                optimizer,
-                start_factor=0.01,
-                end_factor=1.0,
-                total_iters=config.warmup_iterations,
-            )
-
-            scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
+        scheduler = ChainedScheduler([warmup_scheduler, cosine_scheduler])
 
         return {
             "optimizer": optimizer,
@@ -237,7 +241,7 @@ def get_strategy(strategy):
 rank = get_rank()
 args = get_args()
 
-model, config = create_model(args)
+model, config, ckpt_path = create_model(args)
 
 new_run_number = get_next_run_number(f"runs/{config.run_name}")
 
@@ -259,14 +263,11 @@ cc2Data = cc2DataModule(config)
 train_loader = cc2Data.train_dataloader()
 val_loader = cc2Data.val_dataloader()
 
-max_steps = config.num_iterations
-
-if args.only_config:
-    max_steps -= config.current_iteration
-
+latest_dir = get_latest_run_dir(f"runs/{args.run_name}")
 
 trainer = L.Trainer(
-    max_steps=max_steps,
+    max_steps=config.num_iterations,
+    max_epochs=config.num_epochs,
     precision=config.precision,
     accelerator="cuda",
     devices=config.num_devices,
@@ -289,6 +290,6 @@ trainer = L.Trainer(
 
 torch.set_float32_matmul_precision("high")
 
-trainer.fit(model, train_loader, val_loader)
+trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
 
 print("rank {} finished at {}".format(rank, datetime.now()))
