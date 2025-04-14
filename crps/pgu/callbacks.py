@@ -466,6 +466,12 @@ class DiagnosticCallback(L.Callback):
         plt.close()
 
     def plot_history(self, epoch, sanity_checking=False):
+        def clip_to_quantile(tensor: torch.tensor, quantile: float = 0.99):
+            if tensor.numel() == 0:
+                return tensor
+            threshold = torch.quantile(tensor, quantile)
+            return torch.clamp(tensor, max=threshold)
+
         warnings.filterwarnings(
             "ignore", message="No artists with labels found to put in legend"
         )
@@ -489,6 +495,7 @@ class DiagnosticCallback(L.Callback):
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
 
+        train_loss = clip_to_quantile(train_loss)
         plt.subplot(331)
         plt.title("Training loss")
         plt.plot(train_loss, color="blue", alpha=0.3)
@@ -507,6 +514,8 @@ class DiagnosticCallback(L.Callback):
         ax2.legend(loc="upper right")
 
         val_loss = torch.tensor(self.val_loss)
+        val_loss = clip_to_quantile(val_loss)
+
         if len(val_loss) > 500:
             val_loss = val_loss[20:]
 
@@ -562,8 +571,8 @@ class DiagnosticCallback(L.Callback):
 
         plt.subplot(337)
         val_snr = np.array(self.val_snr).T
-        snr_real = torch.tensor(val_snr[0])
-        snr_pred = torch.tensor(val_snr[1])
+        snr_real = clip_to_quantile(torch.tensor(val_snr[0]))
+        snr_pred = clip_to_quantile(torch.tensor(val_snr[1]))
         plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 30),
