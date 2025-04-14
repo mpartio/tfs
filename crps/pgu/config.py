@@ -29,7 +29,8 @@ class TrainingConfig:
     # Training params
     batch_size: int = 32
     learning_rate: float = 1e-3
-    num_iterations: int = 100000
+    num_iterations: int = -1
+    num_epochs: int = 10
     warmup_iterations: int = 1000
     precision: str = "16-mixed"
     accumulate_grad_batches: int = 1
@@ -109,6 +110,7 @@ def get_args():
     parser.add_argument("--batch_size", type=int)
     parser.add_argument("--learning_rate", type=float)
     parser.add_argument("--num_iterations", type=int)
+    parser.add_argument("--num_epochs", type=int)
     parser.add_argument("--warmup_iterations", type=int)
     parser.add_argument("--precision", type=str)
     parser.add_argument("--accumulate_grad_batches", type=int)
@@ -146,6 +148,9 @@ def get_args():
 
     if args.forcing_params:
         args.forcing_params = tuple(args.forcing_params)
+
+    if args.num_epochs and args.num_iterations:
+        raise ValueError("both --num_epochs and --num_iterations cannot be used")
 
     return args
 
