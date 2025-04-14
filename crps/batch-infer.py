@@ -44,7 +44,6 @@ def dynamic_import(items):
 
 
 imports = [
-    "common.util.read_checkpoint",
     "common.util.string_to_type",
     "common.util.get_latest_run_dir",
 ]
@@ -89,7 +88,11 @@ def prepare_model_old_school(args):
     config.rollout_length = args.rollout_length
 
     if config.run_name != args.run_name:
-        print("Warning: config run name ({}) is different from args run name ({})".format(config.run_name, args.run_name))
+        print(
+            "Warning: config run name ({}) is different from args run name ({})".format(
+                config.run_name, args.run_name
+            )
+        )
 
     model = cc2CRPSModel(config)
     file_path = f"{latest_dir}/models"
