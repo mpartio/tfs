@@ -163,11 +163,10 @@ class PredictionPlotterCallback(L.Callback):
 
         truth = y[0]
 
-        x = x[0]
+        x = x[0] # T, C, H, W
         predictions = predictions[0]  # T, C, H, W (B removed)
         num_truth = truth.shape[0]
-
-        num_hist = y.shape[1]
+        num_hist = x.shape[0]
 
         rows = num_truth
         cols = num_hist + 1 + 1  # input fields, +1 for prediction, +1 for truth
