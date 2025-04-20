@@ -10,6 +10,7 @@ import numpy as np
 import zarr
 from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
+from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
 def get_default_normalization_methods(custom_methods):
@@ -41,7 +42,7 @@ def get_default_normalization_methods(custom_methods):
     if custom_methods is not None:
         default_methods.update(custom_methods)
 
-    print(f"normalization methods: {default_methods}")
+    rank_zero_info(f"normalization methods: {default_methods}")
 
     return default_methods
 
@@ -130,18 +131,18 @@ class AnemoiDataset(Dataset):
         self,
         zarr_path: str,
         group_size: int,
-        input_resolution: tuple,
-        prognostic_params: tuple,
-        forcing_params: tuple,
+        prognostic_params: list[str],
+        forcing_params: list[str],
         normalization_methods: dict,
         disable_normalization: bool,
+        input_resolution: tuple[int, int],
     ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
         self.time_steps = len(self.data.dates)
 
-        assert type(prognostic_params) == tuple
-        assert type(forcing_params) == tuple
+        assert type(prognostic_params) == list
+        assert type(forcing_params) == list
 
         self.prognostic_params = prognostic_params
         self.forcing_params = forcing_params
@@ -168,13 +169,7 @@ class AnemoiDataset(Dataset):
 
             self._setup_normalization()
 
-        y, x = self.data.field_shape
-
-        assert (
-            x == input_resolution[1] and y == input_resolution[0]
-        ), "Model input resolution {}x{} does not match with data resolution {}x{}; is model trained with different data?".format(
-            input_resolution[0], input_resolution[1], y, x
-        )
+        self.input_resolution = self.data.field_shape  # H, W
 
     def _setup_normalization(self):
         # Pre-compute combined indexes and params
@@ -306,40 +301,6 @@ class HourlyZarrDataset(Dataset):
         return samples
 
 
-class HourlyStreamZarrDataset(Dataset):
-    def __init__(self, zarr_path, group_size):
-        # Open the zarr array without loading data
-        self.data = zarr.open(zarr_path, mode="r")
-        self.num_streams, self.time_steps, _, _, _ = self.data.shape
-
-        assert self.num_streams == 4, "Only 4 streams are supported"
-
-        self.group_size = group_size
-
-        self.valid_starts = self._get_valid_starts()
-
-    def _get_valid_starts(self):
-        # We need enough room for group_size consecutive samples
-        max_start = self.time_steps - self.group_size + 1
-        return np.arange(0, max_start)
-
-    def __len__(self):
-        return len(self.valid_starts) * self.num_streams
-
-    def __getitem__(self, idx):
-        # Convert flat index to (stream_idx, start_idx)
-        stream_idx = idx % self.num_streams
-        start_pos = self.valid_starts[idx // self.num_streams]
-
-        # Get consecutive samples for this stream
-        samples = self.data[stream_idx, start_pos : start_pos + self.group_size]
-
-        # Convert to tensor
-        samples = torch.from_numpy(samples)
-
-        return samples
-
-
 class SplitWrapper:
     def __init__(self, dataset, n_x, apply_smoothing=False):
         self.dataset = dataset
@@ -368,59 +329,152 @@ class SplitWrapper:
 
 
 class cc2DataModule(L.LightningDataModule):
-    def __init__(self, config, val_split: float = 0.1):
-        self.n_x = config.history_length
-        self.n_y = config.rollout_length
-        self.val_split = val_split
+    def __init__(
+        self,
+        data_path: str,
+        input_resolution: tuple[int, int],
+        prognostic_params: tuple[str, ...],
+        forcing_params: tuple[str, ...],
+        history_length: int = 2,
+        rollout_length: int = 1,
+        val_split: float = 0.1,
+        test_split: float = 0.0,
+        seed: int = 0,
+        batch_size: int = 32,
+        num_workers: int = 6,
+        persistent_workers: bool = True,
+        prefetch_factor: int | None = 3,
+        pin_memory: bool = True,
+        normalization: dict[str, str] | None = None,
+        disable_normalization: bool = False,
+        apply_smoothing: bool = False,
+    ):
+        super().__init__()
 
-        self.cc2_train = None
-        self.cc2_val = None
-        self.cc2_test = None
+        self.save_hyperparameters()
 
-        self.config = config
-        print("Reading data from {}".format(config.data_path))
-        self.setup(config.data_path)
+        self.ds_train: Subset | None = None
+        self.ds_val: Subset | None = None
+        self.ds_test: Subset | None = None
+        self._full_dataset: AnemoiDataset | None = None  # Cache the full dataset
 
-    def setup(self, zarr_path):
-        ds = AnemoiDataset(
-            zarr_path,
-            group_size=self.n_x + self.n_y,
-            input_resolution=self.config.input_resolution,
-            prognostic_params=self.config.prognostic_params,
-            forcing_params=self.config.forcing_params,
-            normalization_methods=get_default_normalization_methods(
-                self.config.normalization
-            ),
-            disable_normalization=self.config.disable_normalization,
-        )
-        indices = np.arange(len(ds))
+    def _get_or_create_full_dataset(self) -> AnemoiDataset:
+        if self._full_dataset is None:
+            norm_methods = None
+            if not self.hparams.disable_normalization:
+                norm_methods = get_default_normalization_methods(
+                    self.hparams.normalization
+                )
 
-        if self.config.limit_data_to is not None:
-            indices = indices[: self.config.limit_data_to]
-        rng = np.random.RandomState(0)
+            self._full_dataset = AnemoiDataset(
+                zarr_path=self.hparams.data_path,
+                group_size=self.hparams.history_length
+                + self.hparams.rollout_length,  # n_x + n_y
+                input_resolution=self.hparams.input_resolution,
+                prognostic_params=self.hparams.prognostic_params,
+                forcing_params=self.hparams.forcing_params,
+                normalization_methods=norm_methods,
+                disable_normalization=self.hparams.disable_normalization,
+            )
+        return self._full_dataset
+
+    def setup(self, stage: str | None = None):
+        if stage == "fit" and self.ds_train is not None and self.ds_val is not None:
+            return
+        if stage == "test" and self.ds_test is not None:
+            return
+        if stage == "predict" and hasattr(self, "ds_predict"):
+            return  # Use test for predict if no specific ds_predict
+
+        ds_full = self._get_or_create_full_dataset()
+        num_total_valid_samples = len(
+            ds_full
+        )  # AnemoiDataset __len__ uses valid_indices
+
+        indices = np.arange(num_total_valid_samples)
+        num_samples_to_split = num_total_valid_samples
+
+        # Shuffle indices before splitting
+        rng = np.random.RandomState(self.hparams.seed)
         rng.shuffle(indices)
 
-        val_size = int(self.val_split * len(indices))
-        train_indices, val_indices = indices[val_size:], indices[:val_size]
+        # Calculate split sizes based on the potentially limited number of samples
+        val_size = int(self.hparams.val_split * num_samples_to_split)
+        test_size = int(self.hparams.test_split * num_samples_to_split)
+        train_size = num_samples_to_split - val_size - test_size
 
-        self.cc2_train = Subset(ds, train_indices)
-        self.cc2_val = Subset(ds, val_indices)
+        if train_size < 0:
+            raise ValueError(
+                f"Dataset size {num_samples_to_split} (after limit/validation) is too small for val_split={self.hparams.val_split} and test_split={self.hparams.test_split}"
+            )
 
-    def _get_dataloader(self, dataset, shuffle=False):
-        return DataLoader(
-            SplitWrapper(
-                dataset, n_x=self.n_x, apply_smoothing=self.config.apply_smoothing
-            ),
-            batch_size=self.config.batch_size,
-            num_workers=6,
-            pin_memory=True,
-            persistent_workers=True,
-            shuffle=shuffle,
-            prefetch_factor=3,
+        rank_zero_info(
+            f"Dataset split sizes (based on {num_samples_to_split} samples): Train={train_size}, Validation={val_size}, Test={test_size}"
         )
 
-    def train_dataloader(self, shuffle: bool = True):
-        return self._get_dataloader(self.cc2_train, shuffle=shuffle)
+        # Get the actual indices corresponding to the shuffled array segments
+        train_indices = indices[val_size + test_size :]
+        val_indices = indices[:val_size]
+        test_indices = indices[val_size : val_size + test_size]
+
+        # Create Subset datasets based on the stage
+        # stage='fit' or stage=None will setup train and val
+        if stage == "fit" or stage is None:
+            self.ds_train = Subset(ds_full, train_indices)
+            self.ds_val = Subset(ds_full, val_indices)
+
+        # stage='test' or stage=None will setup test
+        if stage == "test" or stage is None:
+            self.ds_test = Subset(ds_full, test_indices)
+
+        # stage='predict' or stage=None will setup predict (using test set here)
+        if stage == "predict" or stage is None:
+            if (
+                self.ds_test is None
+            ):  # Ensure test set is created if only predict stage runs
+                self.ds_test = Subset(ds_full, test_indices)
+            self.ds_predict = self.ds_test  # Assign test dataset to predict dataset
+
+    def _get_dataloader(
+        self, dataset: Subset | None, shuffle: bool = False
+    ) -> DataLoader:
+        if dataset is None:
+            raise ValueError(
+                "Dataset not available. Ensure setup() has been called for the correct stage."
+            )
+
+        # Wrap the Subset with SplitWrapper before passing to DataLoader
+        wrapped_dataset = SplitWrapper(
+            dataset=dataset,
+            n_x=self.hparams.history_length,  # Use hparams
+            apply_smoothing=self.hparams.apply_smoothing,  # Use hparams
+        )
+
+        return DataLoader(
+            wrapped_dataset,
+            batch_size=self.hparams.batch_size,
+            num_workers=self.hparams.num_workers,
+            shuffle=shuffle,
+            pin_memory=self.hparams.pin_memory,
+            persistent_workers=self.hparams.persistent_workers
+            and self.hparams.num_workers > 0,
+            prefetch_factor=self.hparams.prefetch_factor
+            if self.hparams.num_workers > 0
+            else None,
+        )
+
+    def train_dataloader(self):
+        return self._get_dataloader(self.ds_train, shuffle=True)
 
     def val_dataloader(self):
-        return self._get_dataloader(self.cc2_val)
+        return self._get_dataloader(self.ds_val, shuffle=False)
+
+    def test_dataloader(self):
+        return self._get_dataloader(self.ds_test, shuffle=False)
+
+    def predict_dataloader(self):
+        if hasattr(self, "ds_predict"):
+            return self._get_dataloader(self.ds_predict, shuffle=False)
+        else:  # Fallback if predict stage wasn't explicitly setup
+            print("Predict dataset not explicitly set up, using test dataset.")
+            return self._get_dataloader(self.ds_test, shuffle=False)

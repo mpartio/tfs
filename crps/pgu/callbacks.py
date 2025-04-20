@@ -7,13 +7,13 @@ import matplotlib.colors as mcolors
 import platform
 import lightning as L
 import sys
-import config
+import os
 import json
 import warnings
-from util import roll_forecast
+import shutil
+from pgu.util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
-from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.utilities import rank_zero_only
@@ -31,6 +31,14 @@ colors = [
     "grey",
     "magenta",
 ]
+
+
+def run_info():
+    run_name = os.environ["CC2_RUN_NAME"]
+    run_number = os.environ["CC2_RUN_NUMBER"]
+    run_dir = os.environ["CC2_RUN_DIR"]
+
+    return run_name, run_number, run_dir
 
 
 def analyze_gradients(model):
@@ -71,19 +79,21 @@ def analyze_gradients(model):
 
 
 class PredictionPlotterCallback(L.Callback):
-    def __init__(self, train_loader, val_loader, config):
-        self.train_dataloader = train_loader
-        self.val_dataloader = val_loader
-        self.config = config
+    def __init__(self):
+        pass
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
+        train_dataloader = trainer.train_dataloader
+
         # Get a single batch from the dataloader
-        data, forcing = next(iter(self.train_dataloader))
+        data, forcing = next(iter(train_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
+
+        rollout_length = data[1].shape[1]
 
         # Perform a prediction
         with torch.no_grad():
@@ -91,7 +101,7 @@ class PredictionPlotterCallback(L.Callback):
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 None,
             )
 
@@ -113,9 +123,13 @@ class PredictionPlotterCallback(L.Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
-        data, forcing = next(iter(self.val_dataloader))
+        val_dataloader = trainer.val_dataloaders
+
+        data, forcing = next(iter(val_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
+
+        rollout_length = data[1].shape[1]
 
         # Perform a prediction
         with torch.no_grad():
@@ -123,7 +137,7 @@ class PredictionPlotterCallback(L.Callback):
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 None,
             )
 
@@ -144,15 +158,16 @@ class PredictionPlotterCallback(L.Callback):
     def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # y shape: [B, T, 1, 128, 128]
         # prediction shape: [B, T, 1, 128, 128]
-
         # input_field = x[0].squeeze()
+        run_name, run_number, run_dir = run_info()
+
         truth = y[0]
 
         x = x[0]
         predictions = predictions[0]  # T, C, H, W (B removed)
         num_truth = truth.shape[0]
 
-        num_hist = self.config.history_length
+        num_hist = y.shape[1]
 
         rows = num_truth
         cols = num_hist + 1 + 1  # input fields, +1 for prediction, +1 for truth
@@ -200,18 +215,18 @@ class PredictionPlotterCallback(L.Callback):
 
         title = "{} for {} num={} at epoch {} (host={}, time={})".format(
             title,
-            self.config.run_name,
-            self.config.run_number,
+            run_name,
+            run_number,
             epoch,
             platform.node(),
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
         filename = "{}/figures/{}_{}_{}_epoch_{:03d}_{}.png".format(
-            self.config.run_dir,
+            run_dir,
             platform.node(),
-            self.config.run_name,
-            self.config.run_number,
+            run_name,
+            run_number,
             epoch,
             stage,
         )
@@ -224,7 +239,7 @@ class PredictionPlotterCallback(L.Callback):
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, config, freq=50):
+    def __init__(self, check_frequency: int = 50):
         (
             self.train_loss,
             self.val_loss,
@@ -237,8 +252,7 @@ class DiagnosticCallback(L.Callback):
         self.gradients_mean = {}
         self.gradients_std = {}
 
-        self.freq = freq
-        self.config = config
+        self.check_frequency = check_frequency
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -262,7 +276,7 @@ class DiagnosticCallback(L.Callback):
         self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
 
         # c) gradients
-        if batch_idx % self.freq == 0:
+        if batch_idx % self.check_frequency == 0:
             grads = analyze_gradients(pl_module)
 
             for k in grads.keys():
@@ -292,7 +306,7 @@ class DiagnosticCallback(L.Callback):
             except KeyError as e:
                 self.val_loss_components[k] = [v.cpu()]
 
-        if batch_idx % self.freq == 0:
+        if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
             predictions = outputs["predictions"]
 
@@ -320,13 +334,15 @@ class DiagnosticCallback(L.Callback):
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
 
+        rollout_length = data[1].shape[1]
+
         # Perform a prediction
         with torch.no_grad():
             _, tendencies, predictions = roll_forecast(
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 loss_fn=None,
             )
 
@@ -349,52 +365,14 @@ class DiagnosticCallback(L.Callback):
 
         self.plot_history(trainer.current_epoch, trainer.sanity_checking)
 
-    @rank_zero_only
-    def on_train_epoch_end(self, trainer, pl_module):
-        # Convert any tensors/numpy arrays to Python types
-        def convert_to_serializable(obj):
-            if hasattr(obj, "tolist"):  # Handle tensors/numpy arrays
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_serializable(i) for i in obj]
-            else:
-                return obj
-
-        D = {"config": {}, "statistics": {}}
-
-        saved_variables = [
-            "train_loss",
-            "val_loss",
-            "val_snr",
-            "lr",
-            "gradients_mean",
-            "gradients_std",
-            "freq",
-        ]
-
-        for k in saved_variables:
-            D["statistics"][k] = self.__dict__[k]
-
-        for k in self.config.__dict__.keys():
-            D["config"][k] = self.config.__dict__[k]
-
-        D["config"]["current_iteration"] = (
-            self.config.current_iteration + trainer.global_step
-        )
-
-        filename = f"{self.config.run_dir}/run-info.json"
-
-        with open(filename, "w") as f:
-            json.dump(D, f, indent=4, default=convert_to_serializable)
-
     def plot_visual(self, input_field, truth, pred, tendencies, epoch, sanity_checking):
+        run_name, run_number, run_dir = run_info()
+
         plt.figure(figsize=(24, 8))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
                 platform.node(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -455,10 +433,10 @@ class DiagnosticCallback(L.Callback):
 
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_analysis.png".format(
-                self.config.run_dir,
+                run_dir,
                 platform.node(),
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
             )
         )
@@ -476,11 +454,13 @@ class DiagnosticCallback(L.Callback):
             "ignore", message="No artists with labels found to put in legend"
         )
 
+        run_name, run_number, run_dir = run_info()
+
         plt.figure(figsize=(16, 16))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
                 platform.node(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -621,10 +601,10 @@ class DiagnosticCallback(L.Callback):
 
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_history.png".format(
-                self.config.run_dir,
+                run_dir,
                 platform.node(),
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
             )
         )
@@ -632,16 +612,49 @@ class DiagnosticCallback(L.Callback):
         plt.close()
 
 
+class CleanupFailedRunCallback(L.Callback):
+    def on_exception(
+        self,
+        trainer: "pl.Trainer",
+        pl_module: "pl.LightningModule",
+        exception: BaseException,
+    ) -> None:
+        # Ensure cleanup only happens on the main process (rank 0) in distributed settings
+        if trainer.is_global_zero:
+            run_dir = os.environ.get("CC2_RUN_DIR")
+
+            if run_dir and os.path.isdir(run_dir):
+                # Check if the directory is empty or contains only minimal files
+                # Adjust this condition based on what you consider "empty"
+                # e.g., allow hparams.yaml, empty logs/ dir?
+                # A simple check is just len(os.listdir()) == 0 or 1 (maybe hparams.yaml)
+                try:
+                    files_in_dir = os.listdir(f"{run_dir}/figures")
+                    # Define what constitutes an "empty" directory that should be removed
+                    # Example: empty or only contains hparams file
+                    if len(files_in_dir) == 0:
+                        shutil.rmtree(run_dir)
+                        print(f"Removed empty run directory: {run_dir}")
+                except OSError as e:
+                    print(f"\nError during cleanup check/removal of {log_dir}: {e}")
+            else:
+                print(
+                    f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
+                )
+
+
 class LazyLoggerCallback(L.Callback):
-    def __init__(self, config):
+    def __init__(self, run_name: str, run_number: int):
         super().__init__()
-        self.config = config
+        self.run_name = run_name
+        self.run_number = run_number
         self.logger_created = False
+        self.run_dir = f"runs/{run_name}/{run_number}"
 
     @rank_zero_only
     def on_train_start(self, trainer, pl_module):
         """This runs after the sanity check is successful."""
         if not self.logger_created and get_rank() == 0:
-            trainer.logger = CSVLogger(f"{self.config.run_dir}/logs")
+            trainer.logger = CSVLogger(f"{self.run_dir}/logs")
             self.logger_created = True  # Prevent multiple reassignments
-            print(f"Logger initialized at {self.config.run_dir}/logs")
+            print(f"Logger initialized at {self.run_dir}/logs")

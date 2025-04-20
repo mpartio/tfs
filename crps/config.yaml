@@ -1,0 +1,45 @@
+seed_everything: 42
+ckpt_path: null # only set if you want to load a checkpoint AND optimizer state
+
+model:
+  class_path: cc2CRPS_L.cc2CRPSModel
+  init_args:
+    input_resolution: &input_resolution_anchor '[97, 86]'
+    hidden_dim: 36
+    prognostic_params: &prognostic_params_anchor
+    - tcc
+    forcing_params: &forcing_params_anchor
+    - insolation
+    # Path to checkpoint for initializing ONLY model weights (starts epoch 0, new optimizer)
+    init_weights_from_ckpt: false # Set path here or via CLI: --model.init_weights_from_ckpt=true
+    # Adapt resolution when using init_weights_path
+    adapt_ckpt_resolution: false # Set true here or via CLI: --model.adapt_ckpt_resolution=true
+
+data:
+  input_resolution: *input_resolution_anchor
+  data_path: ../data/era5-86x97.zarr
+  prognostic_params: *prognostic_params_anchor
+  forcing_params: *forcing_params_anchor
+
+trainer:
+  max_epochs: 1
+  logger: true
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: "val_loss"
+      mode: "min"
+      save_last: true
+      filename: "epoch_{epoch:03d}-vloss_{val_loss:.4f}"
+
+  - class_path: pgu.callbacks.PredictionPlotterCallback
+
+  - class_path: pgu.callbacks.DiagnosticCallback 
+    init_args:
+      check_frequency: 25
+
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+
+  - class_path: pgu.callbacks.CleanupFailedRunCallback

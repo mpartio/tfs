@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from layers import (
+from pgu.layers import (
     FeedForward,
     PatchEmbed,
     PatchMerge,
@@ -14,18 +14,13 @@ from layers import (
     pad_tensor,
     depad_tensor,
 )
-import config
+from types import SimpleNamespace
 
 
 class cc2CRPS(nn.Module):
-    def __init__(
-        self,
-        config,
-        mlp_ratio=4.0,
-        drop_rate=0.1,
-        attn_drop_rate=0.1,
-    ):
+    def __init__(self, config):
         super().__init__()
+        config = SimpleNamespace(**config)
 
         self.patch_size = config.patch_size
         self.embed_dim = config.hidden_dim
@@ -54,7 +49,7 @@ class cc2CRPS(nn.Module):
 
         # Input layer norm and dropout
         self.norm_input = nn.LayerNorm(self.embed_dim)
-        self.dropout = nn.Dropout(drop_rate)
+        self.dropout = nn.Dropout(config.drop_rate)
 
         # Transformer encoder blocks
         self.encoder1 = nn.ModuleList(
@@ -62,10 +57,10 @@ class cc2CRPS(nn.Module):
                 EncoderBlock(
                     dim=self.embed_dim,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
                 for _ in range(config.encoder_depth)
             ]
@@ -84,10 +79,10 @@ class cc2CRPS(nn.Module):
                 EncoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
                 for _ in range(config.encoder_depth)
             ]
@@ -98,10 +93,10 @@ class cc2CRPS(nn.Module):
                 DecoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
                 for _ in range(config.decoder_depth)
             ]
@@ -116,10 +111,10 @@ class cc2CRPS(nn.Module):
                 DecoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
                 for _ in range(config.decoder_depth)
             ]
@@ -136,7 +131,8 @@ class cc2CRPS(nn.Module):
 
         self.final_expand = nn.Sequential(
             nn.Linear(
-                self.embed_dim // 4, self.patch_size**2 * len(config.prognostic_params)
+                self.embed_dim // 4,
+                self.patch_size**2 * len(config.prognostic_params),
             ),
             nn.Tanh(),
         )

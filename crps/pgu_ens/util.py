@@ -67,9 +67,10 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     # Average the losses if we have multiple steps
     if len(losses) > 0:
-        loss = torch.stack(losses).mean()
+        losses = torch.stack(losses)
+        loss = losses.mean()
     else:
         loss = None
 
     assert tendencies.ndim == 6
-    return {"loss": loss}, tendencies, predictions
+    return {"loss": loss, "step_losses": losses}, tendencies, predictions

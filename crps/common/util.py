@@ -126,7 +126,7 @@ def adapt_checkpoint_to_model(ckpt_state_dict, model_state_dict, old_size, new_s
 def find_latest_checkpoint_path(checkpoint_directory):
     try:
         # Find latest checkpoint
-        checkpoints = glob(f"{checkpoint_directory}/models/*.ckpt")
+        checkpoints = glob(f"{checkpoint_directory}/checkpoints/*.ckpt")
         assert checkpoints, "No model checkpoints found in directory {}/models".format(
             checkpoint_directory
         )
@@ -324,6 +324,6 @@ def effective_parameters(num_devices, batch_size, lr, total_iterations):
 
 def create_directory_structure(base_directory):
     os.makedirs(base_directory, exist_ok=True)
-    os.makedirs(f"{base_directory}/models", exist_ok=True)
+    os.makedirs(f"{base_directory}/checkpoints", exist_ok=True)
     os.makedirs(f"{base_directory}/logs", exist_ok=True)
     os.makedirs(f"{base_directory}/figures", exist_ok=True)
