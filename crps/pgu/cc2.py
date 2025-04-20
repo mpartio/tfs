@@ -62,7 +62,7 @@ class cc2CRPS(nn.Module):
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.encoder_depth)
+                for _ in range(config.encoder1_depth)
             ]
         )
 
@@ -84,7 +84,7 @@ class cc2CRPS(nn.Module):
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.encoder_depth)
+                for _ in range(config.encoder2_depth)
             ]
         )
 
@@ -98,7 +98,7 @@ class cc2CRPS(nn.Module):
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.decoder_depth)
+                for _ in range(config.decoder1_depth)
             ]
         )
 
@@ -116,7 +116,7 @@ class cc2CRPS(nn.Module):
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.decoder_depth)
+                for _ in range(config.decoder2_depth)
             ]
         )
 
