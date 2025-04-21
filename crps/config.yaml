@@ -20,23 +20,27 @@ data:
   data_path: ../data/era5-86x97.zarr
   prognostic_params: *prognostic_params_anchor
   forcing_params: *forcing_params_anchor
+  batch_size: 32
 
 trainer:
   max_epochs: 1
   logger: true
+  enable_model_summary: false
+  num_nodes: 1
+  devices: 1
+  strategy: auto
   callbacks:
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
       monitor: "val_loss"
       mode: "min"
       save_last: true
-      filename: "epoch_{epoch:03d}-vloss_{val_loss:.4f}"
 
   - class_path: pgu.callbacks.PredictionPlotterCallback
 
   - class_path: pgu.callbacks.DiagnosticCallback 
     init_args:
-      check_frequency: 25
+      check_frequency: 50
 
   - class_path: lightning.pytorch.callbacks.ModelSummary
     init_args:
