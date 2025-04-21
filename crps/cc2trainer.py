@@ -5,6 +5,7 @@ import traceback
 import pytorch_lightning as pl
 import lightning as L
 import json
+import time
 from lightning.pytorch.cli import LightningCLI
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number
@@ -48,7 +49,7 @@ def setup_run_dir(coord_file, ckpt_path):
     os.environ["CC2_RUN_NUMBER"] = str(version)
     os.environ["CC2_RUN_DIR"] = versioned_dir
 
-    write_coordination_info(run_name, version, versioned_dir)
+    write_coordination_info(coord_file, run_name, version, versioned_dir)
 
     return run_name, version, versioned_dir
 
@@ -117,7 +118,7 @@ class cc2trainer(LightningCLI):
                     coord_info = json.load(f)
 
                 os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
-                os.environ["CC2_RUN_NUMBER"] = coord_info["run_number"]
+                os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
                 os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
 
 
