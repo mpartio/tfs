@@ -4,65 +4,97 @@ import randomname
 import traceback
 import pytorch_lightning as pl
 import lightning as L
+import json
 from lightning.pytorch.cli import LightningCLI
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
+def setup_run_dir(coord_file, ckpt_path):
+    # Generate random name if not already set
+    run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
+    os.environ["CC2_RUN_NAME"] = run_name
+
+    # Get base run directory
+    run_dir = os.path.join("runs", run_name)
+    os.makedirs(run_dir, exist_ok=True)
+
+    version = get_next_run_number(run_dir)
+
+    if ckpt_path is not None:
+        # If a checkpoint path is provided, use the directory of the checkpoint
+        version -= 1
+
+    versioned_dir = os.path.join(run_dir, str(version))
+    figures_dir = os.path.join(versioned_dir, "figures")
+    checkpoints_dir = os.path.join(versioned_dir, "checkpoints")
+    os.makedirs(versioned_dir, exist_ok=True)
+    os.makedirs(figures_dir, exist_ok=True)
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
+    # Make these accessible to callbacks
+    os.environ["CC2_RUN_NUMBER"] = str(version)
+    os.environ["CC2_RUN_DIR"] = versioned_dir
+
+    # Write coordination info to file for other processes
+    coord_info = {
+        "run_name": run_name,
+        "run_number": version,
+        "run_dir": versioned_dir,
+    }
+    with open(coord_file, "w") as f:
+        json.dump(coord_info, f)
+
+    return run_name, version, versioned_dir
+
+
 class cc2trainer(LightningCLI):
     def before_fit(self):
-        # Generate random name if not already set
-        run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
-        os.environ["CC2_RUN_NAME"] = run_name
 
-        # Get base run directory
-        run_dir = os.path.join("runs", run_name)
-        os.makedirs(run_dir, exist_ok=True)
+        coord_file = "ddp_coordination_info.json"
 
-        version = get_next_run_number(run_dir)
+        if self.trainer.global_rank == 0:
+            run_name, run_number, run_dir = setup_run_dir(
+                coord_file, self.config.fit.get("ckpt_path")
+            )
 
-        if self.config.fit.get("ckpt_path") is not None:
-            # If a checkpoint path is provided, use the directory of the checkpoint
-            version -= 1
+            # Update loggers with version
+            for i, logger in enumerate(self.trainer.loggers):
+                if isinstance(logger, L.pytorch.loggers.csv_logs.CSVLogger):
+                    new_logger = pl.loggers.CSVLogger(
+                        save_dir=run_dir,
+                        name="logs" if hasattr(logger, "name") else None,
+                        version=None,
+                    )
+                    self.trainer.loggers[i] = new_logger
 
-        # Create versioned directory
-        versioned_dir = os.path.join(run_dir, str(version))
-        os.makedirs(versioned_dir, exist_ok=True)
+            # Update checkpoint callbacks
+            for callback in self.trainer.callbacks:
+                if callback.__class__.__name__ == "ModelCheckpoint":
+                    callback.dirpath = f"{run_dir}/checkpoints"
 
-        # Update loggers with version
-        for i, logger in enumerate(self.trainer.loggers):
-            if isinstance(logger, L.pytorch.loggers.csv_logs.CSVLogger):
-                new_logger = pl.loggers.CSVLogger(
-                    save_dir=versioned_dir,
-                    name="logs" if hasattr(logger, "name") else None,
-                    version=None,
-                )
-                self.trainer.loggers[i] = new_logger
+            rank_zero_info(f"Run name: {run_name}")
+            rank_zero_info(f"Version: {run_number}")
+            rank_zero_info(f"Versioned directory: {run_dir}")
 
-        # Create subdirectories
-        figures_dir = os.path.join(versioned_dir, "figures")
-        checkpoints_dir = os.path.join(versioned_dir, "checkpoints")
-        os.makedirs(figures_dir, exist_ok=True)
-        os.makedirs(checkpoints_dir, exist_ok=True)
+        else:
+            max_wait = 20  # seconds
+            start_time = time.time()
+            while not os.path.exists(coord_file):
+                time.sleep(0.2)
+                if time.time() - start_time > max_wait:
+                    raise TimeoutError(
+                        f"Coordination file not created after {max_wait} seconds"
+                    )
 
-        # Store for reference
-        self.run_name = run_name
-        self.version = version
-        self.versioned_dir = versioned_dir
+                # Read coordination info
+                with open(coord_file, "r") as f:
+                    coord_info = json.load(f)
 
-        # Make these accessible to callbacks
-        os.environ["CC2_RUN_NUMBER"] = str(version)
-        os.environ["CC2_RUN_DIR"] = versioned_dir
-
-        # Update checkpoint callbacks
-        for callback in self.trainer.callbacks:
-            if callback.__class__.__name__ == "ModelCheckpoint":
-                callback.dirpath = checkpoints_dir
-
-        rank_zero_info(f"Run name: {run_name}")
-        rank_zero_info(f"Version: {version}")
-        rank_zero_info(f"Versioned directory: {versioned_dir}")
+                os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
+                os.environ["CC2_RUN_NUMBER"] = coord_info["run_number"]
+                os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
 
 
 torch.set_float32_matmul_precision("high")
