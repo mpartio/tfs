@@ -103,12 +103,16 @@ class cc2CRPSModel(L.LightningModule):
         self.model = cc2CRPS(config=model_kwargs)
         self.loss_fn = loss_fn
 
-        run_name = os.environ.get("CC2_RUN_NAME", None)
-        run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
-        run_dir = os.environ.get("CC2_RUN_DIR", None)
+        self.run_name = os.environ.get("CC2_RUN_NAME", None)
+        self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
+        self.run_dir = os.environ.get("CC2_RUN_DIR", None)
 
-        if run_dir and self.hparams.init_weights_from_ckpt:
-            prev_run_dir = "/".join(run_dir.split("/")[:-1]) + "/" + str(run_number - 1)
+        assert self.run_name is not None, "CC2_RUN_NAME not set"
+
+        if self.run_dir and self.hparams.init_weights_from_ckpt:
+            prev_run_dir = (
+                "/".join(self.run_dir.split("/")[:-1]) + "/" + str(self.run_number - 1)
+            )
             ckpt_path = find_latest_checkpoint_path(prev_run_dir)
 
             rank_zero_info(f"Initializing weights from: {ckpt_path}")
@@ -156,16 +160,19 @@ class cc2CRPSModel(L.LightningModule):
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.load_state_dict(state_dict, strict=False)
             print("Weight loading results", load_result)
-        new_run_number = get_next_run_number(f"runs/{run_name}")
+        new_run_number = get_next_run_number(f"runs/{self.run_name}")
 
         rank = get_rank()
 
-        if run_name is not None:
+        if self.run_name is not None:
             print(
                 "Rank {} starting at {} using run directory {}".format(
-                    rank, datetime.now(), run_dir
+                    rank, datetime.now(), self.run_dir
                 )
             )
+
+        self.test_predictions = []
+        self.test_truth = []
 
     def forward(self, *args, **kwargs):  # data, forcing, step):
         return self.model(*args, **kwargs)  # data, forcing, step)
@@ -207,6 +214,44 @@ class cc2CRPSModel(L.LightningModule):
             "predictions": predictions,
             "loss_components": loss,
         }
+
+    def test_step(self, batch, batch_idx):
+        data, forcing = batch
+
+        _, tendencies, predictions = roll_forecast(
+            self,
+            data,
+            forcing,
+            self.hparams.rollout_length,  # Access from hparams
+            loss_fn=None,
+        )
+
+        # We want to include the analysis time also
+        analysis_time = data[0][:, -1, ...].unsqueeze(1)
+        predictions = torch.concatenate((analysis_time, predictions), dim=1)
+        self.test_predictions.append(predictions)
+        truth = torch.concatenate((analysis_time, data[1]), dim=1)
+        self.test_truth.append(truth)
+
+        return {
+            "tendencies": tendencies,
+            "predictions": predictions,
+            "source": data[0],
+            "truth": data[1],
+        }
+
+    def on_test_end(self):
+        # Get the run directory from the checkpoint path
+        output_dir = f"{self.run_dir}/test-output/"
+        os.makedirs(output_dir, exist_ok=True)
+
+        predictions = torch.concatenate(self.test_predictions)
+        truth = torch.concatenate(self.test_truth)
+        torch.save(predictions, f"{output_dir}/predictions.pt")
+        torch.save(truth, f"{output_dir}/truth.pt")
+        print(f"Predictions shape: {predictions.shape}")
+        print(f"Truth shape: {truth.shape}")
+        print(f"Wrote files predictions.pt and truth.pt to {output_dir}")
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(

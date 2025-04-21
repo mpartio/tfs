@@ -11,6 +11,17 @@ from common.util import get_next_run_number
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
+def write_coordination_info(coord_file, run_name, run_number, run_dir):
+    # Write coordination info to file for other processes
+    coord_info = {
+        "run_name": run_name,
+        "run_number": run_number,
+        "run_dir": run_dir,
+    }
+    with open(coord_file, "w") as f:
+        json.dump(coord_info, f)
+
+
 def setup_run_dir(coord_file, ckpt_path):
     # Generate random name if not already set
     run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
@@ -37,19 +48,32 @@ def setup_run_dir(coord_file, ckpt_path):
     os.environ["CC2_RUN_NUMBER"] = str(version)
     os.environ["CC2_RUN_DIR"] = versioned_dir
 
-    # Write coordination info to file for other processes
-    coord_info = {
-        "run_name": run_name,
-        "run_number": version,
-        "run_dir": versioned_dir,
-    }
-    with open(coord_file, "w") as f:
-        json.dump(coord_info, f)
+    write_coordination_info(run_name, version, versioned_dir)
 
     return run_name, version, versioned_dir
 
 
 class cc2trainer(LightningCLI):
+    def before_instantiate_classes(self):
+        if self.subcommand == "test":
+            # no before_test() hook
+            ckpt_path = self.config.test.get("ckpt_path")
+            assert ckpt_path is not None
+
+            # runs/x-y/1/checkpoints/file.ckpt
+            # or
+            # /data/runs/era5-big-skip-rollout-1/1/checkpoints/last.ckpt
+
+            parts = ckpt_path.split("/")
+
+            run_dir = "/".join(parts[:-2])
+            run_name = parts[-4]
+            run_number = parts[-3]
+
+            os.environ["CC2_RUN_NAME"] = run_name
+            os.environ["CC2_RUN_NUMBER"] = run_number
+            os.environ["CC2_RUN_DIR"] = run_dir
+
     def before_fit(self):
 
         coord_file = "ddp_coordination_info.json"
