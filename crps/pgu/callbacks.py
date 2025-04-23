@@ -41,6 +41,29 @@ def run_info():
     return run_name, run_number, run_dir
 
 
+def envelope_binning(x: torch.tensor, n_bins: int = 1000):
+    # divide data into bins and calculate min and max from each bin,
+    # and plot those
+    N = x.shape[0]
+    B = min(n_bins, N)  # <-- never more bins than data
+    W = N // B  # now W >= 1
+    trimmed = x[: B * W]
+
+    blocks = trimmed.view(B, W)
+    mins, _ = blocks.min(dim=1)
+    maxs, _ = blocks.max(dim=1)
+    xs = torch.arange(B) * W
+
+    return xs, mn, mx
+
+
+def dynamic_ma(x: torch.tensor, n_bins: int):
+    N = x.shape[0]
+    W = max(1, N // n_bins)
+    # your existing moving_average(x, W) function
+    return moving_average(x, W)
+
+
 def analyze_gradients(model):
     # Pre-compile patterns to check once
     sections = [
@@ -163,7 +186,7 @@ class PredictionPlotterCallback(L.Callback):
 
         truth = y[0]
 
-        x = x[0] # T, C, H, W
+        x = x[0]  # T, C, H, W
         predictions = predictions[0]  # T, C, H, W (B removed)
         num_truth = truth.shape[0]
         num_hist = x.shape[0]
@@ -474,13 +497,20 @@ class DiagnosticCallback(L.Callback):
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
 
+        n_bins = 1000
         train_loss = clip_to_quantile(train_loss)
+        xs, mn, mx = envelope_binning(train_loss, n_bins=n_bins)
+
         plt.subplot(331)
         plt.title("Training loss")
-        plt.plot(train_loss, color="blue", alpha=0.3)
+        plt.fill_between(xs, mn, mx, color="C0", alpha=0.2)
+
+        ma = dynamic_ma(train_loss, n_bins=n_bins)
+
         plt.plot(
-            moving_average(train_loss, 60),
-            color="blue",
+            xs,
+            ma[xs],
+            color="C0",
             label="Train Loss",
         )
         plt.legend(loc="upper left")
