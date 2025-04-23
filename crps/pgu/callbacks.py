@@ -276,6 +276,28 @@ class DiagnosticCallback(L.Callback):
 
         self.check_frequency = check_frequency
 
+    def state_dict(self):
+        return {
+            "gradients_mean": self.gradients_mean,
+            "gradients_std": self.gradients_std,
+            "lr": self.lr,
+            "train_loss": self.train_loss,
+            "train_loss_components": self.train_loss_components,
+            "val_loss": self.val_loss,
+            "val_loss_components": self.val_loss_components,
+            "val_snr": self.val_snr,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.gradients_mean = state_dict["gradients_mean"]
+        self.gradients_std = state_dict["gradients_std"]
+        self.lr = state_dict["lr"]
+        self.train_loss = state_dict["train_loss"]
+        self.train_loss_components = state_dict["train_loss_components"]
+        self.val_loss = state_dict["val_loss"]
+        self.val_loss_components = state_dict["val_loss_components"]
+        self.val_snr = state_dict["val_snr"]
+
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
