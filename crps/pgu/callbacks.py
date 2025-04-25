@@ -45,7 +45,13 @@ def envelope_binning(x: torch.tensor, n_bins: int = 1000):
     # divide data into bins and calculate min and max from each bin,
     # and plot those
     N = x.shape[0]
-    B = min(n_bins, N)  # <-- never more bins than data
+
+    if N == 0:
+        empty = x.new_empty(0)
+        empty = empty.long()
+        return empty, empty, empty
+
+    B = max(1, min(n_bins, N))
     W = N // B  # now W >= 1
     trimmed = x[: B * W]
 
@@ -53,13 +59,13 @@ def envelope_binning(x: torch.tensor, n_bins: int = 1000):
     mins, _ = blocks.min(dim=1)
     maxs, _ = blocks.max(dim=1)
     xs = torch.arange(B) * W
-
-    return xs, mn, mx
+    xs = xs.long()
+    return xs, mins, maxs
 
 
 def dynamic_ma(x: torch.tensor, n_bins: int):
     N = x.shape[0]
-    W = max(1, N // n_bins)
+    W = max(40, N // n_bins)
     # your existing moving_average(x, W) function
     return moving_average(x, W)
 
@@ -257,7 +263,7 @@ class PredictionPlotterCallback(L.Callback):
 
         if sanity_check is False:
             plt.savefig(filename)
-        plt.close()
+        plt.close(fig)
 
 
 class DiagnosticCallback(L.Callback):
@@ -463,7 +469,7 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        plt.close()
+        plt.close(fig)
 
     def plot_history(self, epoch, sanity_checking=False):
         def clip_to_quantile(tensor: torch.tensor, quantile: float = 0.99):
@@ -478,7 +484,7 @@ class DiagnosticCallback(L.Callback):
 
         run_name, run_number, run_dir = run_info()
 
-        plt.figure(figsize=(16, 16))
+        plt.figure(figsize=(24, 16))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
                 run_name,
@@ -497,30 +503,62 @@ class DiagnosticCallback(L.Callback):
             # they contain data messes up the y-axis
             train_loss = train_loss[100:]
 
-        n_bins = 1000
+        N = train_loss.shape[0]
+        n_bins = 300
+
         train_loss = clip_to_quantile(train_loss)
         xs, mn, mx = envelope_binning(train_loss, n_bins=n_bins)
 
-        plt.subplot(331)
+        plt.subplot(341)
         plt.title("Training loss")
-        plt.fill_between(xs, mn, mx, color="C0", alpha=0.2)
+        plt.fill_between(xs, mn, mx, color="blue", alpha=0.2)
 
         ma = dynamic_ma(train_loss, n_bins=n_bins)
 
         plt.plot(
             xs,
             ma[xs],
-            color="C0",
+            color="blue",
             label="Train Loss",
         )
         plt.legend(loc="upper left")
 
-        ax2 = plt.gca().twinx()
-        ax2.plot(torch.tensor(self.lr), label="LR", color="green")
-        ax2.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
-        ax2.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        loss_names = self.train_loss_components.keys()
 
-        ax2.legend(loc="upper right")
+        assert sanity_checking == True or len(loss_names) == 2
+
+        for i, name in enumerate(loss_names):
+            plt.subplot(3, 4, 2 + i)
+
+            plt.title(f"Train {name} per step")
+            all_data = torch.stack(self.train_loss_components[name])
+
+            if all_data.ndim == 1:
+                all_data = all_data.unsqueeze(1)
+
+            for j in range(all_data.shape[1]):
+                color = colors[j]
+                data = clip_to_quantile(all_data[:, j])
+                xs, mn, mx = envelope_binning(data, n_bins=n_bins)
+                plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
+                ma = dynamic_ma(data, n_bins=n_bins)
+                plt.plot(
+                    xs,
+                    ma[xs],
+                    color=color,
+                    label=f"step={j}",
+                )
+            plt.legend()
+
+        plt.subplot(3, 4, 4)
+        lr = torch.tensor(self.lr)
+        plt.plot(lr, label="LR", color="green")
+        ax = plt.gca()
+        ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+        ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        ax.legend(loc="upper right")
+
+        # VALIDATION LOSS
 
         val_loss = torch.tensor(self.val_loss)
         val_loss = clip_to_quantile(val_loss)
@@ -528,99 +566,102 @@ class DiagnosticCallback(L.Callback):
         if len(val_loss) > 500:
             val_loss = val_loss[20:]
 
-        loss_names = self.train_loss_components.keys()
+        xs, mn, mx = envelope_binning(val_loss, n_bins=n_bins)
 
-        assert sanity_checking == True or len(loss_names) == 2
+        plt.subplot(345)
+        plt.fill_between(xs, mn, mx, color="orange", alpha=0.2)
 
-        for i, name in enumerate(loss_names):
-            plt.subplot(3, 3, 2 + i)
+        ma = dynamic_ma(val_loss, n_bins=n_bins)
 
-            plt.title(f"Train {name} per step")
-            data = torch.stack(self.train_loss_components[name])
-
-            if data.ndim == 1:
-                data = data.unsqueeze(1)
-
-            for j in range(data.shape[1]):
-                color = colors[j]
-                plt.plot(data[:, j], color=color, alpha=0.3)
-                plt.plot(moving_average(data[:, j], 60), color=color, label=f"step={j}")
-            plt.legend()
-
-        # VALIDATION LOSS
-
-        plt.subplot(334)
-        plt.plot(val_loss, color="orange", alpha=0.3)
         plt.plot(
-            moving_average(val_loss, 60),
+            xs,
+            ma[xs],
             color="orange",
             label="Val Loss",
         )
+
         plt.title("Validation loss")
         plt.legend(loc="upper left")
 
         loss_names = self.val_loss_components.keys()
 
         for i, name in enumerate(loss_names):
-            plt.subplot(3, 3, 5 + i)
+            plt.subplot(3, 4, 6 + i)
 
             plt.title(f"Validation {name} per step")
-            data = torch.stack(self.val_loss_components[name])
+            all_data = torch.stack(self.val_loss_components[name])
 
-            if data.ndim == 1:
-                data = data.unsqueeze(1)
+            if all_data.ndim == 1:
+                all_data = all_data.unsqueeze(1)
 
-            for j in range(data.shape[1]):
+            for j in range(all_data.shape[1]):
                 color = colors[j]
-                plt.plot(data[:, j], color=color, alpha=0.3)
-                plt.plot(moving_average(data[:, j], 60), color=color, label=f"step={j}")
+                data = clip_to_quantile(all_data[:, j])
+                xs, mn, mx = envelope_binning(data, n_bins=n_bins)
+                plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
+
+                ma = dynamic_ma(data, n_bins=n_bins)
+                plt.plot(xs, ma[xs], color=color, label=f"step={j}")
+
             plt.legend()
 
         # REST
 
-        plt.subplot(337)
+        plt.subplot(348)
         val_snr = np.array(self.val_snr).T
         snr_real = clip_to_quantile(torch.tensor(val_snr[0]))
         snr_pred = clip_to_quantile(torch.tensor(val_snr[1]))
-        plt.plot(snr_real, color="blue", alpha=0.3)
-        plt.plot(
-            moving_average(snr_real, 30),
-            color="blue",
-            label="Real",
-        )
-        plt.plot(snr_pred, color="orange", alpha=0.3)
-        plt.plot(moving_average(snr_pred, 30), color="orange", label="Predicted")
+
+        xs, mn, mx = envelope_binning(snr_real, n_bins=n_bins)
+        plt.fill_between(xs, mn, mx, color="blue", alpha=0.2)
+        xs, mn, mx = envelope_binning(snr_pred, n_bins=n_bins)
+        plt.fill_between(xs, mn, mx, color="orange", alpha=0.2)
+
+        snr_real_ma = dynamic_ma(snr_real, n_bins=n_bins)
+        snr_pred_ma = dynamic_ma(snr_pred, n_bins=n_bins)
+
+        plt.plot(xs, snr_real_ma[xs], color="blue", label="Real")
+        plt.plot(xs, snr_pred_ma[xs], color="orange", label="Predicted")
+
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
         residual = snr_real - snr_pred
+        residual = dynamic_ma(residual, n_bins=n_bins)
 
-        ax2.plot(residual, color="green", alpha=0.3)
-        ax2.plot(moving_average(residual, 30), label="Residual", color="green")
+        ax2.plot(xs, residual[xs], color="green", alpha=0.3)
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
-        plt.subplot(338)
+        plt.subplot(349)
         plt.yscale("log")
         plt.title("Gradients (mean)")
 
         for i, section in enumerate(self.gradients_mean.keys()):
             data = self.gradients_mean[section]
             data = torch.tensor(data)
+            xs, mn, mx = envelope_binning(data, n_bins=n_bins)
+            ma = dynamic_ma(data, n_bins=n_bins)
+
             color = colors[i]
-            plt.plot(data, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 30), color=color, label=section)
+
+            plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
+            plt.plot(xs, ma[xs], color=color, label=section)
         plt.legend()
 
-        plt.subplot(339)
+        plt.subplot(34, 10)
         plt.yscale("log")
         plt.title("Gradients (std)")
         for i, section in enumerate(self.gradients_std.keys()):
             data = self.gradients_std[section]
             data = torch.tensor(data)
+            xs, mn, mx = envelope_binning(data, n_bins=n_bins)
+            ma = dynamic_ma(data, n_bins=n_bins)
+
             color = colors[i]
-            plt.plot(data, color=color, alpha=0.3)
-            plt.plot(moving_average(data, 30), color=color, label=section)
+            plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
+            plt.plot(xs, ma[xs], color=color, label=section)
+
         plt.legend()
 
         plt.tight_layout()
@@ -638,7 +679,7 @@ class DiagnosticCallback(L.Callback):
             )
         )
 
-        plt.close()
+        plt.close(fig)
 
 
 class CleanupFailedRunCallback(L.Callback):
