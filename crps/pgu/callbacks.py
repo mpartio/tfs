@@ -671,7 +671,7 @@ class DiagnosticCallback(L.Callback):
             plt.plot(xs, ma[xs], color=color, label=section)
         plt.legend()
 
-        plt.subplot(34, 10)
+        plt.subplot(3, 4, 10)
         plt.yscale("log")
         plt.title("Gradients (std)")
         for i, section in enumerate(self.gradients_std.keys()):
