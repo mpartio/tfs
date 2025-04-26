@@ -418,7 +418,6 @@ class DiagnosticCallback(L.Callback):
     def plot_visual(self, input_field, truth, pred, tendencies, epoch, sanity_checking):
         run_name, run_number, run_dir = run_info()
 
-        plt.figure(figsize=(24, 8))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
                 run_name,
@@ -506,7 +505,7 @@ class DiagnosticCallback(L.Callback):
 
         run_name, run_number, run_dir = run_info()
 
-        plt.figure(figsize=(24, 16))
+        fig = plt.figure(figsize=(24, 16))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
                 run_name,
