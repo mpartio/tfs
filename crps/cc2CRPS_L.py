@@ -25,6 +25,7 @@ from common.util import (
     get_next_run_number,
     string_to_type,
     find_latest_checkpoint_path,
+    strip_prefix,
 )
 import importlib
 
@@ -117,10 +118,10 @@ class cc2CRPSModel(L.LightningModule):
 
             rank_zero_info(f"Initializing weights from: {ckpt_path}")
 
-            ckpt = torch.load(
-                ckpt_path, map_location="cpu", weights_only=False
-            )  # Load to CPU first
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
             state_dict = ckpt["state_dict"]
+            state_dict = strip_prefix(state_dict)
 
             if self.hparams.adapt_ckpt_resolution:
                 rank_zero_info("Adapting checkpoint resolution...")
@@ -129,37 +130,38 @@ class cc2CRPSModel(L.LightningModule):
                 # the old config associated with the checkpoint.
                 # This part requires careful handling of parameters.
                 # Let's assume old/new size can be calculated or passed via hparams.
-                old_patch_size = self.hparams.config.patch_size
+
+                old_input_resolution = ckpt["hyper_parameters"]["input_resolution"]
+                new_input_resolution = self.hparams.input_resolution
+
+                old_patch_size = ckpt["hyper_parameters"]["patch_size"]
+                new_patch_size = self.hparams.patch_size
+
                 old_resolution = get_padded_size(
-                    *self.hparams.config.input_resolution,
-                    self.hparams.config.patch_size,
+                    *old_input_resolution,
+                    old_patch_size,
                 )
                 old_resolution = (
                     old_resolution[0] // old_patch_size,
                     old_resolution[1] // old_patch_size,
                 )
 
-                config.apply_args(args)
-                new_resolution = get_padded_size(
-                    *config.input_resolution, config.patch_size
-                )
+                new_resolution = get_padded_size(*new_input_resolution, new_patch_size)
                 new_resolution = (
-                    new_resolution[0] // config.patch_size,
-                    new_resolution[1] // config.patch_size,
+                    new_resolution[0] // new_patch_size,
+                    new_resolution[1] // new_patch_size,
                 )
-
-                old_size = calculate_old_size(...)  # Placeholder
-                new_size = calculate_new_size(self.hparams.model_config)  # Placeholder
 
                 # Use your existing adaptation function
                 state_dict = adapt_checkpoint_to_model(
-                    state_dict, self.model.state_dict(), old_size, new_size
+                    state_dict, self.model.state_dict(), old_resolution, new_resolution
                 )
 
             # Load the (potentially adapted) state dict
             # strict=False allows missing/extra keys (e.g., different final layer)
-            load_result = self.load_state_dict(state_dict, strict=False)
-            print("Weight loading results", load_result)
+            load_result = self.model.load_state_dict(state_dict, strict=False)
+            print("Weight loading results:", load_result)
+
         new_run_number = get_next_run_number(f"runs/{self.run_name}")
 
         rank = get_rank()

@@ -10,6 +10,13 @@ from scipy.signal import medfilt2d
 from glob import glob
 
 
+def strip_prefix(state_dict: dict, prefix: str = "model."):
+    return {
+        k[len(prefix) :] if k.startswith(prefix) else k: v
+        for k, v in state_dict.items()
+    }
+
+
 def adapt_patch_embed(old_weight, new_weight_shape):
     # Zero-pad the weights to match new kernel size
     new_weight = torch.zeros(
@@ -71,10 +78,12 @@ def adapt_checkpoint_to_model(ckpt_state_dict, model_state_dict, old_size, new_s
                 list(new_pos_embed_shape),
             )
         )
-        new_pos_embed = adapt_pos_embed(state_dict["pos_embed"], new_size, old_size)
+        new_pos_embed = adapt_pos_embed(
+            ckpt_state_dict["pos_embed"], new_size, old_size
+        )
 
         # Update the checkpoint.
-        state_dict["pos_embed"] = new_pos_embed
+        ckpt_state_dict["pos_embed"] = new_pos_embed
 
     # Patch embeddings are changed if patch size is changed
 
