@@ -26,25 +26,8 @@ from common.util import (
     string_to_type,
     find_latest_checkpoint_path,
     strip_prefix,
+    adapt_checkpoint_to_model,
 )
-import importlib
-
-
-def dynamic_import(items):
-    for item in items:
-        path_name = ".".join(item.split(".")[:-1])
-        item_name = item.split(".")[-1]
-        rank_zero_info("Importing {}".format(item))
-
-        _module = importlib.import_module(path_name)
-        globals()[item_name] = getattr(_module, item_name)
-
-
-imports = [
-    "common.util.adapt_checkpoint_to_model",
-]
-
-dynamic_import(imports)
 
 
 class cc2CRPSModel(L.LightningModule):
