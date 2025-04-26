@@ -8,8 +8,10 @@ import json
 import time
 from lightning.pytorch.cli import LightningCLI
 from dataloader.cc2CRPS_data import cc2DataModule
-from common.util import get_next_run_number
+from common.util import get_next_run_number, get_rank
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
+
+coord_file = "ddp_coordination_info.json"
 
 
 def write_coordination_info(coord_file, run_name, run_number, run_dir):
@@ -56,6 +58,11 @@ def setup_run_dir(coord_file, ckpt_path):
 
 class cc2trainer(LightningCLI):
     def before_instantiate_classes(self):
+        if self.subcommand == "fit" and get_rank() == 0:
+            run_name, run_number, run_dir = setup_run_dir(
+                coord_file, self.config.fit.get("ckpt_path")
+            )
+
         if self.subcommand == "test":
             # no before_test() hook
             ckpt_path = self.config.test.get("ckpt_path")
@@ -76,19 +83,12 @@ class cc2trainer(LightningCLI):
             os.environ["CC2_RUN_DIR"] = run_dir
 
     def before_fit(self):
-
-        coord_file = "ddp_coordination_info.json"
-
         if self.trainer.global_rank == 0:
-            run_name, run_number, run_dir = setup_run_dir(
-                coord_file, self.config.fit.get("ckpt_path")
-            )
-
             # Update loggers with version
             for i, logger in enumerate(self.trainer.loggers):
                 if isinstance(logger, L.pytorch.loggers.csv_logs.CSVLogger):
                     new_logger = pl.loggers.CSVLogger(
-                        save_dir=run_dir,
+                        save_dir=os.environ["CC2_RUN_DIR"],
                         name="logs" if hasattr(logger, "name") else None,
                         version=None,
                     )
@@ -97,11 +97,11 @@ class cc2trainer(LightningCLI):
             # Update checkpoint callbacks
             for callback in self.trainer.callbacks:
                 if callback.__class__.__name__ == "ModelCheckpoint":
-                    callback.dirpath = f"{run_dir}/checkpoints"
+                    callback.dirpath = f"{os.environ['CC2_RUN_DIR']}/checkpoints"
 
-            rank_zero_info(f"Run name: {run_name}")
-            rank_zero_info(f"Version: {run_number}")
-            rank_zero_info(f"Versioned directory: {run_dir}")
+            rank_zero_info(f"Run name: {os.environ['CC2_RUN_NAME']}")
+            rank_zero_info(f"Version: {os.environ['CC2_RUN_NUMBER']}")
+            rank_zero_info(f"Versioned directory: {os.environ['CC2_RUN_DIR']}")
 
         else:
             max_wait = 20  # seconds
