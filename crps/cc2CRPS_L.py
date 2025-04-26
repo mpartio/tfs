@@ -23,7 +23,7 @@ from pgu.loss import loss_fn
 from common.util import (
     get_rank,
     get_next_run_number,
-    string_to_type,
+    get_latest_run_dir,
     find_latest_checkpoint_path,
     strip_prefix,
     adapt_checkpoint_to_model,
@@ -55,6 +55,7 @@ class cc2CRPSModel(L.LightningModule):
         rollout_length: int = 1,
         init_weights_from_ckpt: bool = False,
         adapt_ckpt_resolution: bool = False,
+        branch_from_run: str = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -87,17 +88,21 @@ class cc2CRPSModel(L.LightningModule):
         self.model = cc2CRPS(config=model_kwargs)
         self.loss_fn = loss_fn
 
-        self.run_name = os.environ.get("CC2_RUN_NAME", None)
+        self.run_name = os.environ["CC2_RUN_NAME"]
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
-        self.run_dir = os.environ.get("CC2_RUN_DIR", None)
-
-        assert self.run_name is not None, "CC2_RUN_NAME not set"
+        self.run_dir = os.environ["CC2_RUN_DIR"]
 
         if self.run_dir and self.hparams.init_weights_from_ckpt:
-            prev_run_dir = (
-                "/".join(self.run_dir.split("/")[:-1]) + "/" + str(self.run_number - 1)
-            )
-            ckpt_path = find_latest_checkpoint_path(prev_run_dir)
+
+            if self.hparams.branch_from_run:
+                ckpt_dir = get_latest_run_dir("runs/" + self.hparams.branch_from_run)
+            else:
+                ckpt_dir = (
+                    "/".join(self.run_dir.split("/")[:-1])
+                    + "/"
+                    + str(self.run_number - 1)
+                )
+            ckpt_path = find_latest_checkpoint_path(ckpt_dir)
 
             rank_zero_info(f"Initializing weights from: {ckpt_path}")
 
@@ -107,8 +112,13 @@ class cc2CRPSModel(L.LightningModule):
             state_dict = strip_prefix(state_dict)
 
             if self.hparams.adapt_ckpt_resolution:
-                rank_zero_info("Adapting checkpoint resolution...")
-                # You need the old/new size info here.
+                rank_zero_info("Adapting checkpoint resolution")
+
+                assert (
+                    "hyper_parameters" in ckpt.keys()
+                ), "checkpoint does not have key 'hyper_parameters'"
+
+                # We need the old/new size info here.
                 # It might come from hparams, or you might need to load
                 # the old config associated with the checkpoint.
                 # This part requires careful handling of parameters.
