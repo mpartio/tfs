@@ -56,15 +56,38 @@ def setup_run_dir(coord_file, ckpt_path):
     return run_name, version, versioned_dir
 
 
+def initialize_environment(ckpt_path):
+    rank = get_rank()
+
+    if rank == 0:
+        setup_run_dir(coord_file, ckpt_path)
+    else:
+        time.sleep(0.2)
+        max_wait = 20  # seconds
+        start_time = time.time()
+
+        while not os.path.exists(coord_file):
+            time.sleep(0.2)
+            if time.time() - start_time > max_wait:
+                raise TimeoutError(
+                    f"Coordination file not created after {max_wait} seconds"
+                )
+
+        # Read coordination info
+        with open(coord_file, "r") as f:
+            coord_info = json.load(f)
+
+        os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
+        os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
+        os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
+
+
 class cc2trainer(LightningCLI):
     def before_instantiate_classes(self):
-        if self.subcommand == "fit" and get_rank() == 0:
-            run_name, run_number, run_dir = setup_run_dir(
-                coord_file, self.config.fit.get("ckpt_path")
-            )
+        if self.subcommand == "fit":
+            initialize_environment(self.config.fit.get("ckpt_path"))
 
         if self.subcommand == "test":
-            # no before_test() hook
             ckpt_path = self.config.test.get("ckpt_path")
             assert ckpt_path is not None
 
@@ -102,24 +125,6 @@ class cc2trainer(LightningCLI):
             rank_zero_info(f"Run name: {os.environ['CC2_RUN_NAME']}")
             rank_zero_info(f"Version: {os.environ['CC2_RUN_NUMBER']}")
             rank_zero_info(f"Versioned directory: {os.environ['CC2_RUN_DIR']}")
-
-        else:
-            max_wait = 20  # seconds
-            start_time = time.time()
-            while not os.path.exists(coord_file):
-                time.sleep(0.2)
-                if time.time() - start_time > max_wait:
-                    raise TimeoutError(
-                        f"Coordination file not created after {max_wait} seconds"
-                    )
-
-                # Read coordination info
-                with open(coord_file, "r") as f:
-                    coord_info = json.load(f)
-
-                os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
-                os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
-                os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
 
 
 torch.set_float32_matmul_precision("high")
