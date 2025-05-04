@@ -168,6 +168,7 @@ class cc2CRPSModel(L.LightningModule):
 
         self.test_predictions = []
         self.test_truth = []
+        self.test_dates = []
 
     def forward(self, *args, **kwargs):  # data, forcing, step):
         return self.model(*args, **kwargs)  # data, forcing, step)
@@ -211,7 +212,7 @@ class cc2CRPSModel(L.LightningModule):
         }
 
     def test_step(self, batch, batch_idx):
-        data, forcing = batch
+        data, forcing, dates = batch
 
         _, tendencies, predictions = roll_forecast(
             self,
@@ -224,9 +225,11 @@ class cc2CRPSModel(L.LightningModule):
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
         predictions = torch.concatenate((analysis_time, predictions), dim=1)
+
         self.test_predictions.append(predictions)
         truth = torch.concatenate((analysis_time, data[1]), dim=1)
         self.test_truth.append(truth)
+        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
 
         return {
             "tendencies": tendencies,
@@ -242,11 +245,16 @@ class cc2CRPSModel(L.LightningModule):
 
         predictions = torch.concatenate(self.test_predictions)
         truth = torch.concatenate(self.test_truth)
+        dates = torch.concatenate(self.test_dates)
+
         torch.save(predictions, f"{output_dir}/predictions.pt")
         torch.save(truth, f"{output_dir}/truth.pt")
+        torch.save(dates, f"{output_dir}/dates.pt")
+
         print(f"Predictions shape: {predictions.shape}")
         print(f"Truth shape: {truth.shape}")
-        print(f"Wrote files predictions.pt and truth.pt to {output_dir}")
+        print(f"Dates shape: {dates.shape}")
+        print(f"Wrote files predictions.pt, truth.pt and dates.pt to {output_dir}")
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(

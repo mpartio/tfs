@@ -136,6 +136,7 @@ class AnemoiDataset(Dataset):
         normalization_methods: dict,
         disable_normalization: bool,
         input_resolution: tuple[int, int],
+        return_metadata: bool = False,
     ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
@@ -170,6 +171,9 @@ class AnemoiDataset(Dataset):
             self._setup_normalization()
 
         self.input_resolution = self.data.field_shape  # H, W
+
+        self.return_metadata = return_metadata
+        self.dates = self.data.dates
 
     def _setup_normalization(self):
         # Pre-compute combined indexes and params
@@ -276,6 +280,11 @@ class AnemoiDataset(Dataset):
         data = combined[:, :data_channels, :, :]
         forcing = combined[:, data_channels:, :, :]
 
+        if self.return_metadata:
+            sequence_dates = self.dates[actual_idx : actual_idx + self.group_size]
+
+            return data, forcing, sequence_dates.astype(np.float64)
+
         return data, forcing
 
 
@@ -306,9 +315,16 @@ class SplitWrapper:
         self.dataset = dataset
         self.n_x = n_x
         self.apply_smoothing = apply_smoothing
+        self.return_metadata = getattr(dataset, "return_metadata", False) or getattr(
+            getattr(dataset, "dataset", None), "return_metadata", False
+        )
 
     def __getitem__(self, idx):
-        data, forcing = self.dataset[idx]
+        if self.return_metadata:
+            data, forcing, sequence_dates = self.dataset[idx]
+        else:
+            data, forcing = self.dataset[idx]
+
         # Split into x and y
         data_x = data[: self.n_x]
         data_y = data[self.n_x :]
@@ -321,6 +337,12 @@ class SplitWrapper:
         assert data_x.ndim == 4, "Invalid data_x shape: {}".format(data_x.shape)
         assert data_y.ndim == 4, "Invalid data_y shape: {}".format(data_y.shape)
         assert forcing.ndim == 4, "Invalid forcing shape: {}".format(forcing.shape)
+
+        if self.return_metadata:
+            dates_x = sequence_dates[: self.n_x]
+            dates_y = sequence_dates[self.n_x :]
+
+            return [(data_x, data_y), forcing, (dates_x, dates_y)]
 
         return [(data_x, data_y), forcing]
 
@@ -436,14 +458,18 @@ class cc2DataModule(L.LightningDataModule):
             self.ds_predict = self.ds_test  # Assign test dataset to predict dataset
 
     def _get_dataloader(
-        self, dataset: Subset | None, shuffle: bool = False
+        self, dataset: Subset | None, shuffle: bool = False, stage: str | None = None
     ) -> DataLoader:
         if dataset is None:
             raise ValueError(
                 "Dataset not available. Ensure setup() has been called for the correct stage."
             )
 
-        # Wrap the Subset with SplitWrapper before passing to DataLoader
+        if hasattr(dataset, "dataset") and isinstance(dataset.dataset, AnemoiDataset):
+            # Set flag based on stage
+            is_test_or_predict = stage == "test" or stage == "predict"
+            dataset.dataset.return_metadata = is_test_or_predict
+
         wrapped_dataset = SplitWrapper(
             dataset=dataset,
             n_x=self.hparams.history_length,  # Use hparams
@@ -458,23 +484,23 @@ class cc2DataModule(L.LightningDataModule):
             pin_memory=self.hparams.pin_memory,
             persistent_workers=self.hparams.persistent_workers
             and self.hparams.num_workers > 0,
-            prefetch_factor=self.hparams.prefetch_factor
-            if self.hparams.num_workers > 0
-            else None,
+            prefetch_factor=(
+                self.hparams.prefetch_factor if self.hparams.num_workers > 0 else None
+            ),
         )
 
     def train_dataloader(self):
-        return self._get_dataloader(self.ds_train, shuffle=True)
+        return self._get_dataloader(self.ds_train, shuffle=True, stage="fit")
 
     def val_dataloader(self):
-        return self._get_dataloader(self.ds_val, shuffle=False)
+        return self._get_dataloader(self.ds_val, shuffle=False, stage="fit")
 
     def test_dataloader(self):
-        return self._get_dataloader(self.ds_test, shuffle=False)
+        return self._get_dataloader(self.ds_test, shuffle=False, stage="test")
 
     def predict_dataloader(self):
         if hasattr(self, "ds_predict"):
             return self._get_dataloader(self.ds_predict, shuffle=False)
         else:  # Fallback if predict stage wasn't explicitly setup
             print("Predict dataset not explicitly set up, using test dataset.")
-            return self._get_dataloader(self.ds_test, shuffle=False)
+            return self._get_dataloader(self.ds_test, shuffle=False, stage="predict")
