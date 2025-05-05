@@ -33,6 +33,18 @@ colors = [
 ]
 
 
+def get_gradient_names():
+    return [
+        "encoder1",
+        "encoder2",
+        "upsample",
+        "downsample",
+        "decoder1",
+        "decoder2",
+        "expand",
+    ]
+
+
 def run_info():
     run_name = os.environ["CC2_RUN_NAME"]
     run_number = os.environ["CC2_RUN_NUMBER"]
@@ -72,15 +84,7 @@ def dynamic_ma(x: torch.tensor, n_bins: int):
 
 def analyze_gradients(model):
     # Pre-compile patterns to check once
-    sections = [
-        "encoder1",
-        "encoder2",
-        "upsample",
-        "downsample",
-        "decoder1",
-        "decoder2",
-        "expand",
-    ]
+    sections = get_gradient_names()
     gradient_stats = {k: [] for k in sections}
 
     # Batch all gradient stats by section in a single pass
@@ -268,17 +272,19 @@ class PredictionPlotterCallback(L.Callback):
 
 class DiagnosticCallback(L.Callback):
     def __init__(self, check_frequency: int = 50):
-        (
-            self.train_loss,
-            self.val_loss,
-            self.lr,
-            self.val_snr,
-        ) = ([], [], [], [])
 
-        self.train_loss_components = {}
-        self.val_loss_components = {}
+        self.train_loss = []
+        self.val_loss = []
+        self.lr = []
+        self.val_snr_real = []
+        self.val_snr_pred = []
         self.gradients_mean = {}
         self.gradients_std = {}
+        self.train_loss_components = {}
+        self.val_loss_components = {}
+
+        self.loss_names = []
+        self.grad_names = get_gradient_names()
 
         self.check_frequency = check_frequency
 
@@ -291,7 +297,8 @@ class DiagnosticCallback(L.Callback):
             "train_loss_components": self.train_loss_components,
             "val_loss": self.val_loss,
             "val_loss_components": self.val_loss_components,
-            "val_snr": self.val_snr,
+            "val_snr_real": self.val_snr_real,
+            "val_snr_pred": self.val_snr_pred,
         }
 
     def load_state_dict(self, state_dict):
@@ -302,7 +309,8 @@ class DiagnosticCallback(L.Callback):
         self.train_loss_components = state_dict["train_loss_components"]
         self.val_loss = state_dict["val_loss"]
         self.val_loss_components = state_dict["val_loss_components"]
-        self.val_snr = state_dict["val_snr"]
+        self.val_snr_real = state_dict["val_snr_real"]
+        self.val_snr_pred = state_dict["val_snr_pred"]
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -311,19 +319,28 @@ class DiagnosticCallback(L.Callback):
             return
 
         # a) train loss
-        self.train_loss.append(outputs["loss"].item())
-        pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
+        train_loss = outputs["loss"].item()
+        pl_module.log(
+            "train/loss_step", train_loss, on_step=True, on_epoch=False, prog_bar=True
+        )
+        pl_module.log("train/loss_epoch", train_loss, on_step=False, on_epoch=True)
 
+        _loss_names = []
         for k, v in outputs["loss_components"].items():
             if k == "loss":
                 continue
-            try:
-                self.train_loss_components[k].append(v.cpu())
-            except KeyError as e:
-                self.train_loss_components[k] = [v.cpu()]
+
+            pl_module.log(f"train/{k}", v.cpu(), on_step=True, on_epoch=True)
+
+            if len(self.loss_names) == 0:
+                _loss_names.append(k)
+
+        if len(self.loss_names) == 0:
+            self.loss_names = _loss_names
 
         # b) learning rate
-        self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
+        lr = trainer.optimizers[0].param_groups[0]["lr"]
+        pl_module.log("lr", lr, on_step=True, on_epoch=False)
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -331,12 +348,8 @@ class DiagnosticCallback(L.Callback):
 
             for k in grads.keys():
                 mean, std = grads[k]["mean"], grads[k]["std"]
-                try:
-                    self.gradients_mean[k].append(mean)
-                    self.gradients_std[k].append(std)
-                except KeyError as e:
-                    self.gradients_mean[k] = [mean]
-                    self.gradients_std[k] = [std]
+                pl_module.log(f"train/grad_{k}_mean", mean, on_step=True, on_epoch=True)
+                pl_module.log(f"train/grad_{k}_std", std, on_step=True, on_epoch=True)
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -345,16 +358,16 @@ class DiagnosticCallback(L.Callback):
             return
 
         # a) Validation loss
-        self.val_loss.append(outputs["loss"].detach().cpu())
-        pl_module.log("val_loss", self.val_loss[-1].mean(), prog_bar=True)
+        val_loss = outputs["loss"].item()
+        pl_module.log(
+            "val/loss_epoch", val_loss, on_step=False, on_epoch=True, prog_bar=True
+        )
 
         for k, v in outputs["loss_components"].items():
             if k == "loss":
                 continue
-            try:
-                self.val_loss_components[k].append(v.cpu())
-            except KeyError as e:
-                self.val_loss_components[k] = [v.cpu()]
+
+            pl_module.log(f"val/{k}", v.cpu(), on_step=True, on_epoch=True)
 
         if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
@@ -371,13 +384,71 @@ class DiagnosticCallback(L.Callback):
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
-            self.val_snr.append((snr_real["snr_db"], snr_pred["snr_db"]))
+
+            pl_module.log(
+                "val/snr_real", snr_real["snr_db"], on_step=False, on_epoch=True
+            )
+            pl_module.log(
+                "val/snr_pred", snr_pred["snr_db"], on_step=False, on_epoch=True
+            )
+
+    @rank_zero_only
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+
+        current_train_loss = trainer.logged_metrics.get(
+            "train/loss_epoch", float("nan")
+        )
+        self.train_loss.append(current_train_loss)
+
+        for k in self.loss_names:
+            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
+
+            try:
+                self.train_loss_components[k].append(val)
+            except KeyError:
+                self.train_loss_components[k] = [val]
+
+        for k in self.grad_names:
+            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
+
+            try:
+                self.gradients_mean[k].append(val)
+            except KeyError:
+                self.gradients_mean[k] = [val]
+
+            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
+
+            try:
+                self.gradients_std[k].append(val)
+            except KeyError:
+                self.gradients_std[k] = [val]
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
 
-        if not trainer.is_global_zero:
+        if not trainer.is_global_zero or trainer.sanity_checking:
             return
+
+        current_val_loss = trainer.logged_metrics.get("val/loss_epoch", float("nan"))
+        current_lr = trainer.logged_metrics.get("lr", float("nan"))
+        current_snr_real = trainer.logged_metrics.get("val/snr_real", float("nan"))
+        current_snr_pred = trainer.logged_metrics.get("val/snr_pred", float("nan"))
+
+        # Append to internal history lists
+        self.val_loss.append(current_val_loss)
+        self.lr.append(current_lr)
+        self.val_snr_real.append(current_snr_real)
+        self.val_snr_pred.append(current_snr_pred)
+
+        for k in self.loss_names:
+            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan"))
+
+            try:
+                self.val_loss_components[k].append(val)
+            except KeyError:
+                self.val_loss_components[k] = [val]
 
         # Get a single batch from the dataloader
         data, forcing = next(iter(trainer.val_dataloaders))
@@ -493,19 +564,17 @@ class DiagnosticCallback(L.Callback):
         plt.close(fig)
 
     def plot_history(self, epoch, sanity_checking=False):
-        def clip_to_quantile(tensor: torch.tensor, quantile: float = 0.99):
-            if tensor.numel() == 0:
-                return tensor
-            threshold = torch.quantile(tensor, quantile)
-            return torch.clamp(tensor, max=threshold)
 
         warnings.filterwarnings(
             "ignore", message="No artists with labels found to put in legend"
         )
 
+        if epoch == 0:
+            return
+
         run_name, run_number, run_dir = run_info()
 
-        fig = plt.figure(figsize=(24, 16))
+        fig = plt.figure(figsize=(20, 16))
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
                 run_name,
@@ -518,85 +587,64 @@ class DiagnosticCallback(L.Callback):
 
         # TRAIN LOSS
 
+        # this is our x axis
+        num_epochs_val = len(self.val_loss)
+        epochs_val = range(num_epochs_val)
+        # Training data includes up to epoch N-1 (length N) when plotting after epoch N
+        num_epochs_train = len(self.train_loss)
+        # X-axis for training: 1, 2, ..., N (aligns train_epoch_(i-1) with x=i)
+        epochs_train = range(1, num_epochs_train + 1)
+
+        # Consistent X-limits for all plots based on current epoch
+        consistent_xlim = (-0.5, epoch + 0.5)
+
         train_loss = torch.tensor(self.train_loss)
-        if len(train_loss) > 2000:
-            # Remove first 100 after we have enough data, as they often
-            # they contain data messes up the y-axis
-            train_loss = train_loss[100:]
 
-        N = train_loss.shape[0]
-        n_bins = 300
-
-        train_loss = clip_to_quantile(train_loss)
-        xs, mn, mx = envelope_binning(train_loss, n_bins=n_bins)
-
-        plt.subplot(341)
+        plt.subplot(331)
         plt.title("Training loss")
-        plt.fill_between(xs, mn, mx, color="blue", alpha=0.2)
-
-        ma = dynamic_ma(train_loss, n_bins=n_bins)
 
         plt.plot(
-            xs,
-            ma[xs],
+            epochs_train,
+            train_loss,
             color="blue",
             label="Train Loss",
         )
         plt.legend(loc="upper left")
 
+        ax2 = plt.gca().twinx()
+        lr = torch.tensor(self.lr)
+        ax2.plot(lr.cpu(), color="green", label="LR")
+        ax2.legend(loc="upper right")
+
         loss_names = self.train_loss_components.keys()
 
-        assert sanity_checking == True or len(loss_names) == 2
-
         for i, name in enumerate(loss_names):
-            plt.subplot(3, 4, 2 + i)
+            plt.subplot(3, 3, 2 + i)
 
             plt.title(f"Train {name} per step")
-            all_data = torch.stack(self.train_loss_components[name])
+            all_data = torch.tensor(self.train_loss_components[name])
 
             if all_data.ndim == 1:
                 all_data = all_data.unsqueeze(1)
 
             for j in range(all_data.shape[1]):
                 color = colors[j]
-                data = clip_to_quantile(all_data[:, j])
-                xs, mn, mx = envelope_binning(data, n_bins=n_bins)
-                plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
-                ma = dynamic_ma(data, n_bins=n_bins)
+                data = all_data[:, j]
                 plt.plot(
-                    xs,
-                    ma[xs],
+                    epochs_train,
+                    data,
                     color=color,
                     label=f"step={j}",
                 )
             plt.legend()
 
-        plt.subplot(3, 4, 4)
-        lr = torch.tensor(self.lr)
-        plt.plot(lr, label="LR", color="green")
-        ax = plt.gca()
-        ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
-        ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-        ax.legend(loc="upper right")
-
         # VALIDATION LOSS
 
         val_loss = torch.tensor(self.val_loss)
-        val_loss = clip_to_quantile(val_loss)
 
-        if len(val_loss) > 500:
-            val_loss = val_loss[20:]
-
-        xs, mn, mx = envelope_binning(val_loss, n_bins=n_bins)
-
-        plt.subplot(345)
-        plt.fill_between(xs, mn, mx, color="orange", alpha=0.2)
-
-        ma = dynamic_ma(val_loss, n_bins=n_bins)
-
+        plt.subplot(334)
         plt.plot(
-            xs,
-            ma[xs],
+            val_loss,
             color="orange",
             label="Val Loss",
         )
@@ -607,81 +655,61 @@ class DiagnosticCallback(L.Callback):
         loss_names = self.val_loss_components.keys()
 
         for i, name in enumerate(loss_names):
-            plt.subplot(3, 4, 6 + i)
+            plt.subplot(3, 3, 5 + i)
 
             plt.title(f"Validation {name} per step")
-            all_data = torch.stack(self.val_loss_components[name])
+            all_data = torch.tensor(self.val_loss_components[name])
 
             if all_data.ndim == 1:
                 all_data = all_data.unsqueeze(1)
 
             for j in range(all_data.shape[1]):
                 color = colors[j]
-                data = clip_to_quantile(all_data[:, j])
-                xs, mn, mx = envelope_binning(data, n_bins=n_bins)
-                plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
-
-                ma = dynamic_ma(data, n_bins=n_bins)
-                plt.plot(xs, ma[xs], color=color, label=f"step={j}")
+                data = all_data[:, j]
+                plt.plot(data, color=color, label=f"step={j}")
 
             plt.legend()
 
         # REST
 
-        plt.subplot(348)
-        val_snr = np.array(self.val_snr).T
-        snr_real = clip_to_quantile(torch.tensor(val_snr[0]))
-        snr_pred = clip_to_quantile(torch.tensor(val_snr[1]))
+        plt.subplot(337)
+        snr_real = torch.tensor(self.val_snr_real)
+        snr_pred = torch.tensor(self.val_snr_pred)
 
-        xs, mn, mx = envelope_binning(snr_real, n_bins=n_bins)
-        plt.fill_between(xs, mn, mx, color="blue", alpha=0.2)
-        xs, mn, mx = envelope_binning(snr_pred, n_bins=n_bins)
-        plt.fill_between(xs, mn, mx, color="orange", alpha=0.2)
-
-        snr_real_ma = dynamic_ma(snr_real, n_bins=n_bins)
-        snr_pred_ma = dynamic_ma(snr_pred, n_bins=n_bins)
-
-        plt.plot(xs, snr_real_ma[xs], color="blue", label="Real")
-        plt.plot(xs, snr_pred_ma[xs], color="orange", label="Predicted")
+        plt.plot(snr_real, color="blue", label="Real")
+        plt.plot(snr_pred, color="orange", label="Predicted")
 
         plt.legend(loc="upper left")
 
         ax2 = plt.gca().twinx()
         residual = snr_real - snr_pred
-        residual = dynamic_ma(residual, n_bins=n_bins)
 
-        ax2.plot(xs, residual[xs], color="green", alpha=0.3)
+        ax2.plot(residual, color="green", label="Residual")
         ax2.legend(loc="upper right")
         plt.title("Signal to Noise Ratio")
 
-        plt.subplot(349)
+        plt.subplot(338)
         plt.yscale("log")
         plt.title("Gradients (mean)")
 
         for i, section in enumerate(self.gradients_mean.keys()):
             data = self.gradients_mean[section]
             data = torch.tensor(data)
-            xs, mn, mx = envelope_binning(data, n_bins=n_bins)
-            ma = dynamic_ma(data, n_bins=n_bins)
 
             color = colors[i]
 
-            plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
-            plt.plot(xs, ma[xs], color=color, label=section)
+            plt.plot(epochs_train, data, color=color, label=section)
         plt.legend()
 
-        plt.subplot(3, 4, 10)
+        plt.subplot(3, 3, 9)
         plt.yscale("log")
         plt.title("Gradients (std)")
         for i, section in enumerate(self.gradients_std.keys()):
             data = self.gradients_std[section]
             data = torch.tensor(data)
-            xs, mn, mx = envelope_binning(data, n_bins=n_bins)
-            ma = dynamic_ma(data, n_bins=n_bins)
 
             color = colors[i]
-            plt.fill_between(xs, mn, mx, color=color, alpha=0.2)
-            plt.plot(xs, ma[xs], color=color, label=section)
+            plt.plot(epochs_train, data, color=color, label=section)
 
         plt.legend()
 
