@@ -8,10 +8,12 @@ import seaborn as sns
 from common.util import get_latest_run_dir
 from tqdm import tqdm
 import matplotlib.colors as mcolors
+from verif.mae import mae, mae2d
+from verif.psd import psd
 
 
 def get_scores():
-    return ["mae", "mae2d"]
+    return ["mae", "mae2d", "psd"]
 
 
 def get_args():
@@ -169,61 +171,6 @@ def prepare_data(args):
     return equalize_datasets(args.run_name, all_truth, all_predictions, all_dates)
 
 
-def evaluate_mae(
-    args,
-    all_truth: torch.tensor,
-    all_predictions: torch.tensor,
-    all_dates: torch.tensor,
-):
-    results = []
-
-    for i in range(len(all_predictions)):
-        predictions = all_predictions[i]
-        truth = all_truth[i]
-        mae_score = calculate_mae_per_timestep(predictions, truth)
-
-        # Append results in long format
-        for timestep_index, mae_score in enumerate(mae_score):
-            results.append(
-                {
-                    "model": args.run_name[i],
-                    "timestep": timestep_index,
-                    "mae": mae_score,
-                }
-            )
-
-    results_df = pd.DataFrame(results)
-    if not results_df.empty:
-        results_df = results_df.sort_values(by="mae", ascending=True)
-
-    return results_df
-
-
-def evaluate_mae2d(
-    args,
-    all_truth: torch.tensor,
-    all_predictions: torch.tensor,
-    all_dates: torch.tensor,
-):
-    results = []
-
-    for i in range(len(all_predictions)):
-        y_pred = all_predictions[i]
-        y_true = all_truth[i]
-
-        abs_diff = torch.abs(y_pred - y_true)
-
-        assert len(abs_diff.shape) == 5, "Invalid shape: {}".format(
-            abs_diff.shape
-        )  # B, C, 1, H, W
-
-        mae2d = torch.mean(abs_diff, dim=(0, 2))
-
-        results.append(mae2d)
-
-    return results
-
-
 def plot_mae_timeseries(
     df: pd.DataFrame, save_path="/data/runs/verification/mae_timeseries.png"
 ):
@@ -312,11 +259,11 @@ def plot_mae2d(
 
 
 def plot_stamps(
-    run_name,
+    run_name: list[str],
     all_truth,
     all_predictions,
     all_dates,
-    save_path="/data/runs/verification/example_timeseries.png",
+    save_path: str = "/data/runs/verification/example_timeseries.png",
 ):
 
     truth = all_truth[0][0]
@@ -380,6 +327,44 @@ def plot_stamps(
     plt.close(fig)
 
 
+def plot_psd(
+    run_name: list[str],
+    obs_psd: dict,
+    pred_psds: list[dict],
+    save_path: str = "/data/runs/verification/psd.png",
+):
+
+    plt.figure()
+    plt.xlabel("Horizontal Scale (km)", fontsize=12)
+    plt.ylabel(
+        "PSD", fontsize=12
+    )  # Add units if clear, e.g., '(Cloud Cover Fraction)$^2$ / (km$^{-2}$)'
+    #    plt.xscale("log")
+    #    plt.yscale("log")
+    plt.title("Power Spectral Density Comparison", fontsize=14)
+    plt.grid(True, which="both", ls="-", alpha=0.7)  # Grid for major and minor ticks
+
+    # scales = obs_psd["scales"]
+    sx = obs_psd["sx"]
+    psd = obs_psd["psd"]
+    plt.loglog(sx, psd, label="Observed", linewidth=1, color="black")
+
+    for i in range(len(run_name)):
+        sx = pred_psds[i]["sx"]
+        # sort_indices = np.argsort(scales)[::-1] # Sort scales descending
+        psd = pred_psds[i]["psd"]
+        plt.loglog(sx, psd, label=run_name[i], linewidth=2)
+
+    plt.gca().invert_xaxis()
+
+    plt.legend(fontsize=10)
+    plt.savefig(save_path)
+
+    print(f"Plot saved to {save_path}")
+
+    plt.close()
+
+
 if __name__ == "__main__":
     args = get_args()
     all_truth, all_predictions, all_dates = prepare_data(args)
@@ -387,13 +372,17 @@ if __name__ == "__main__":
     pivot_df = None
     for score in args.score:
         if score == "mae":
-            results = evaluate_mae(args, all_truth, all_predictions, all_dates)
+            results = mae(args.run_name, all_truth, all_predictions)
             plot_mae_timeseries(results)
             pivot_df = results.pivot(index="model", columns="timestep", values="mae")
 
         elif score == "mae2d":
-            results = evaluate_mae2d(args, all_truth, all_predictions, all_dates)
+            results = mae2d(all_truth, all_predictions)
             plot_mae2d(args.run_name, results)
+
+        elif score == "psd":
+            obs_psd, pred_psd = psd(all_truth, all_predictions)
+            plot_psd(args.run_name, obs_psd, pred_psd)
 
     plot_stamps(args.run_name, all_truth, all_predictions, all_dates)
 
