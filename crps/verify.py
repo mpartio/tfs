@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from common.util import get_latest_run_dir
+from tqdm import tqdm
 import matplotlib.colors as mcolors
 
 
@@ -109,7 +110,7 @@ def union(all_truth, all_predictions, all_dates):
 def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
     need_union = False
 
-    for i in range(1, len(all_dates)):
+    for i in tqdm(range(1, len(all_dates)), desc="Equalizing"):
         if all_dates[i - 1].shape != all_dates[i].shape:
             print(
                 "Different shape of dates for {} ({}) and {} ({})".format(
@@ -157,7 +158,7 @@ def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
 def prepare_data(args):
     all_truth, all_predictions, all_dates = [], [], []
 
-    for run_name in args.run_name:
+    for run_name in tqdm(args.run_name, desc="Reading data"):
 
         truth, predictions, dates = read_data(run_name)
 
