@@ -302,15 +302,18 @@ class DiagnosticCallback(L.Callback):
         }
 
     def load_state_dict(self, state_dict):
-        self.gradients_mean = state_dict["gradients_mean"]
-        self.gradients_std = state_dict["gradients_std"]
-        self.lr = state_dict["lr"]
-        self.train_loss = state_dict["train_loss"]
-        self.train_loss_components = state_dict["train_loss_components"]
-        self.val_loss = state_dict["val_loss"]
-        self.val_loss_components = state_dict["val_loss_components"]
-        self.val_snr_real = state_dict["val_snr_real"]
-        self.val_snr_pred = state_dict["val_snr_pred"]
+        try:
+            self.gradients_mean = state_dict["gradients_mean"]
+            self.gradients_std = state_dict["gradients_std"]
+            self.lr = state_dict["lr"]
+            self.train_loss = state_dict["train_loss"]
+            self.train_loss_components = state_dict["train_loss_components"]
+            self.val_loss = state_dict["val_loss"]
+            self.val_loss_components = state_dict["val_loss_components"]
+            self.val_snr_real = state_dict["val_snr_real"]
+            self.val_snr_pred = state_dict["val_snr_pred"]
+        except KeyError as e:
+            print(f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway.")
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
