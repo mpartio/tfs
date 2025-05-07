@@ -129,7 +129,7 @@ def gaussian_smooth(x, sigma=0.8, kernel_size=5):
 class AnemoiDataset(Dataset):
     def __init__(
         self,
-        zarr_path: str,
+        zarr_path: list[str],
         group_size: int,
         prognostic_params: list[str],
         forcing_params: list[str],
@@ -353,7 +353,7 @@ class SplitWrapper:
 class cc2DataModule(L.LightningDataModule):
     def __init__(
         self,
-        data_path: str,
+        data_path: list[str],
         input_resolution: tuple[int, int],
         prognostic_params: tuple[str, ...],
         forcing_params: tuple[str, ...],
@@ -409,9 +409,7 @@ class cc2DataModule(L.LightningDataModule):
             return  # Use test for predict if no specific ds_predict
 
         ds_full = self._get_or_create_full_dataset()
-        num_total_valid_samples = len(
-            ds_full
-        )  # AnemoiDataset __len__ uses valid_indices
+        num_total_valid_samples = len(ds_full)
 
         indices = np.arange(num_total_valid_samples)
         num_samples_to_split = num_total_valid_samples
