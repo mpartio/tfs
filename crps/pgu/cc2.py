@@ -15,6 +15,7 @@ from pgu.layers import (
     depad_tensor,
 )
 from types import SimpleNamespace
+from torch.utils.checkpoint import checkpoint
 
 
 class cc2CRPS(nn.Module):
@@ -151,6 +152,8 @@ class cc2CRPS(nn.Module):
             self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
             self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
 
+        self.use_gradient_checkpointing = config.use_gradient_checkpointing
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -175,8 +178,12 @@ class cc2CRPS(nn.Module):
         x = self.dropout(x)
 
         # Pass through encoder blocks
-        for block in self.encoder1:
-            x = block(x)
+        if self.use_gradient_checkpointing:
+            for block in self.encoder1:
+                x = checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self.encoder1:
+                x = block(x)
 
         if self.add_skip_connection:
             skip = x.clone()  # skip connection, B, T*P, D
@@ -188,8 +195,12 @@ class cc2CRPS(nn.Module):
         x = self.downsample(x)
 
         # Pass through encoder blocks
-        for block in self.encoder2:
-            x = block(x)
+        if self.use_gradient_checkpointing:
+            for block in self.encoder2:
+                x = checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self.encoder2:
+                x = block(x)
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
@@ -227,8 +238,12 @@ class cc2CRPS(nn.Module):
         x = decoder_in_with_id
 
         # Process through decoder blocks
-        for block in self.decoder1:
-            x = block(x, encoded_flat)
+        if self.use_gradient_checkpointing:
+            for block in self.decoder1:
+                x = checkpoint(block, x, encoded_flat, use_reentrant=False)
+        else:
+            for block in self.decoder1:
+                x = block(x, encoded_flat)
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
@@ -255,8 +270,12 @@ class cc2CRPS(nn.Module):
             x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
             x2 = self.skip_fusion(x2)
 
-        for block in self.decoder2:
-            x2 = block(x2, encoded_flat)
+        if self.use_gradient_checkpointing:
+            for block in self.decoder2:
+                x2 = checkpoint(block, x2, encoded_flat, use_reentrant=False)
+        else:
+            for block in self.decoder2:
+                x2 = block(x2, encoded_flat)
 
         delta_pred2 = x2.reshape(B, 1, P_new, D_new)
 
