@@ -133,12 +133,13 @@ def adapt_checkpoint_to_model(ckpt_state_dict, model_state_dict, old_size, new_s
 
 
 def find_latest_checkpoint_path(checkpoint_directory):
+    assert checkpoint_directory is not None, "checkpoint_directory is 'None'"
     try:
         # Find latest checkpoint
         checkpoints = glob(f"{checkpoint_directory}/checkpoints/*.ckpt")
-        assert checkpoints, "No model checkpoints found in directory {}/models".format(
-            checkpoint_directory
-        )
+        assert (
+            checkpoints
+        ), f"No model checkpoints found in directory {checkpoint_directory}/checkpoints"
         latest_ckpt = max(checkpoints, key=os.path.getctime)
         return latest_ckpt
     except ValueError as e:
