@@ -54,21 +54,6 @@ def read_data(run_name):
     return truth, predictions, dates
 
 
-def calculate_mae_per_timestep(y_pred: torch.tensor, y_true: torch.tensor):
-    assert y_pred.shape == y_true.shape
-    assert y_pred.max() < 2, "y pred scaled incorrectly"
-    assert y_true.max() < 2, "y true scaled incorrectly"
-
-    # Calculate absolute difference
-    abs_diff = torch.abs(y_pred - y_true)
-
-    dims_to_average = [i for i in range(y_pred.ndim) if i != 1]
-
-    mae_per_step = torch.mean(abs_diff, dim=dims_to_average)
-
-    return mae_per_step.tolist()
-
-
 def union(all_truth, all_predictions, all_dates):
     # 1. Build union of all forecast sequences
     all_sets = [set(map(tuple, d.numpy())) for d in all_dates]
@@ -172,7 +157,7 @@ def prepare_data(args):
 
 
 def plot_mae_timeseries(
-    df: pd.DataFrame, save_path="/data/runs/verification/mae_timeseries.png"
+    df: pd.DataFrame, save_path="runs/verification/mae_timeseries.png"
 ):
     if df.empty:
         print("No results to plot.")
@@ -209,7 +194,7 @@ def plot_mae_timeseries(
 def plot_mae2d(
     run_name: list[str],
     results: torch.tensor,
-    save_path: str = "/data/runs/verification/mae2d.png",
+    save_path: str = "runs/verification/mae2d.png",
 ):
     # results shape: num_models, steps, height, width
     num_models = len(results)
@@ -263,7 +248,7 @@ def plot_stamps(
     all_truth,
     all_predictions,
     all_dates,
-    save_path: str = "/data/runs/verification/example_timeseries.png",
+    save_path: str = "runs/verification/example_timeseries.png",
 ):
 
     truth = all_truth[0][0]
@@ -331,7 +316,7 @@ def plot_psd(
     run_name: list[str],
     obs_psd: dict,
     pred_psds: list[dict],
-    save_path: str = "/data/runs/verification/psd.png",
+    save_path: str = "runs/verification/psd.png",
 ):
 
     plt.figure()

@@ -1,6 +1,15 @@
 import torch
 import pandas as pd
 
+
+def calculate_mae_per_timestep(y_pred: torch.tensor, y_true: torch.tensor):
+    assert y_pred.shape == y_true.shape
+    assert y_pred.max() < 2, "y pred scaled incorrectly"
+    assert y_true.max() < 2, "y true scaled incorrectly"
+
+    # Calculate absolute difference
+
+
 def mae(
     run_name: list[str],
     all_truth: torch.tensor,
@@ -11,10 +20,14 @@ def mae(
     for i in range(len(all_predictions)):
         predictions = all_predictions[i]
         truth = all_truth[i]
-        mae_score = calculate_mae_per_timestep(predictions, truth)
+
+        abs_diff = torch.abs(predictions - truth)
+        dims_to_average = [i for i in range(predictions.ndim) if i != 1]
+        mae_per_step = torch.mean(abs_diff, dim=dims_to_average)
+        mae_per_step = mae_per_step.tolist()
 
         # Append results in long format
-        for timestep_index, mae_score in enumerate(mae_score):
+        for timestep_index, mae_score in enumerate(mae_per_step):
             results.append(
                 {
                     "model": run_name[i],
