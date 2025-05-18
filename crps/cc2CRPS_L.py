@@ -56,7 +56,7 @@ class cc2CRPSModel(L.LightningModule):
         init_weights_from_ckpt: bool = False,
         adapt_ckpt_resolution: bool = False,
         branch_from_run: str = None,
-        use_gradient_checkpointing: bool = False
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -97,6 +97,7 @@ class cc2CRPSModel(L.LightningModule):
         if self.run_dir and self.hparams.init_weights_from_ckpt:
 
             if self.hparams.branch_from_run:
+                print(f"Branching from run {self.hparams.branch_from_run}")
                 ckpt_dir = get_latest_run_dir("runs/" + self.hparams.branch_from_run)
             else:
                 ckpt_dir = (
