@@ -22,7 +22,6 @@ from pgu.util import roll_forecast
 from pgu.loss import loss_fn
 from common.util import (
     get_rank,
-    get_next_run_number,
     get_latest_run_dir,
     find_latest_checkpoint_path,
     strip_prefix,
@@ -56,7 +55,7 @@ class cc2CRPSModel(L.LightningModule):
         init_weights_from_ckpt: bool = False,
         adapt_ckpt_resolution: bool = False,
         branch_from_run: str = None,
-        use_gradient_checkpointing: bool = False
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -97,7 +96,14 @@ class cc2CRPSModel(L.LightningModule):
         if self.run_dir and self.hparams.init_weights_from_ckpt:
 
             if self.hparams.branch_from_run:
-                ckpt_dir = get_latest_run_dir("runs/" + self.hparams.branch_from_run)
+                if "/" in self.hparams.branch_from_run:
+                    ckpt_dir = "runs/{}".format(self.hparams.branch_from_run)
+                else:
+                    ckpt_dir = get_latest_run_dir(
+                        "runs/" + self.hparams.branch_from_run
+                    )
+                print(f"Branching from {ckpt_dir}")
+
             else:
                 ckpt_dir = (
                     "/".join(self.run_dir.split("/")[:-1])
@@ -156,8 +162,6 @@ class cc2CRPSModel(L.LightningModule):
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
             print("Weight loading results:", load_result)
-
-        new_run_number = get_next_run_number(f"runs/{self.run_name}")
 
         rank = get_rank()
 
