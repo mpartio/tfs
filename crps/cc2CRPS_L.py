@@ -97,8 +97,14 @@ class cc2CRPSModel(L.LightningModule):
         if self.run_dir and self.hparams.init_weights_from_ckpt:
 
             if self.hparams.branch_from_run:
-                print(f"Branching from run {self.hparams.branch_from_run}")
-                ckpt_dir = get_latest_run_dir("runs/" + self.hparams.branch_from_run)
+                if "/" in self.hparams.branch_from_run:
+                    ckpt_dir = "runs/{}".format(self.hparams.branch_from_run)
+                else:
+                    ckpt_dir = get_latest_run_dir(
+                        "runs/" + self.hparams.branch_from_run
+                    )
+                print(f"Branching from {ckpt_dir}")
+
             else:
                 ckpt_dir = (
                     "/".join(self.run_dir.split("/")[:-1])
