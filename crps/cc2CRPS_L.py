@@ -22,7 +22,6 @@ from pgu.util import roll_forecast
 from pgu.loss import loss_fn
 from common.util import (
     get_rank,
-    get_next_run_number,
     get_latest_run_dir,
     find_latest_checkpoint_path,
     strip_prefix,
@@ -163,8 +162,6 @@ class cc2CRPSModel(L.LightningModule):
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
             print("Weight loading results:", load_result)
-
-        new_run_number = get_next_run_number(f"runs/{self.run_name}")
 
         rank = get_rank()
 
