@@ -29,6 +29,11 @@ def get_args():
         default="runs/verification",
         help="Path to save the verification results and plots",
     )
+    parser.add_argument(
+        "--plot_only",
+        action="store_true",
+        help="If set, only plot the results without running the verification.",
+    )
 
     args = parser.parse_args()
 
@@ -240,28 +245,48 @@ def plot_stamps(
 
 if __name__ == "__main__":
     args = get_args()
-    all_truth, all_predictions, all_dates = prepare_data(args)
+
+    if args.plot_only is False:
+        all_truth, all_predictions, all_dates = prepare_data(args)
 
     pivot_df = None
     for score in args.score:
         if score == "mae":
-            results = mae(args.run_name, all_truth, all_predictions, args.save_path)
+            if args.plot_only:
+                results = torch.load(f"{args.save_path}/results/mae.pt")
+            else:
+                results = mae(args.run_name, all_truth, all_predictions, args.save_path)
             plot_mae_timeseries(results, args.save_path)
             pivot_df = results.pivot(index="model", columns="timestep", values="mae")
 
         elif score == "mae2d":
-            results = mae2d(all_truth, all_predictions, args.save_path)
+            if args.plot_only:
+                results = torch.load(f"{args.save_path}/results/mae2d.pt")
+            else:
+                results = mae2d(all_truth, all_predictions, args.save_path)
             plot_mae2d(args.run_name, results, args.save_path)
 
         elif score == "psd":
-            obs_psd, pred_psd = psd(all_truth, all_predictions, args.save_path)
+            if args.plot_only:
+                obs_psd = torch.load(f"{args.save_path}/results/observed_psd.pt")
+                pred_psd = torch.load(f"{args.save_path}/results/predicted_psd.pt")
+            else:
+                obs_psd, pred_psd = psd(all_truth, all_predictions, args.save_path)
             plot_psd(args.run_name, obs_psd, pred_psd, args.save_path)
 
         elif score == "fss":
-            results = fss(all_truth, all_predictions, args.save_path)
+            if args.plot_only:
+                results = torch.load(
+                    f"{args.save_path}/results/fss.pt", weights_only=False
+                )
+            else:
+                results = fss(all_truth, all_predictions, args.save_path)
             plot_fss(args.run_name, results, args.save_path)
 
-    plot_stamps(args.run_name, all_truth, all_predictions, all_dates, args.save_path)
+    if args.plot_only is False:
+        plot_stamps(
+            args.run_name, all_truth, all_predictions, all_dates, args.save_path
+        )
 
     if pivot_df is not None:
         print(pivot_df)

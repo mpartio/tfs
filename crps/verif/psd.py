@@ -1,5 +1,6 @@
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator
 
 
 def calculate_psd(data: torch.Tensor):
@@ -105,8 +106,10 @@ def plot_psd(
         psd = pred_psds[i]["psd"]
         plt.loglog(sx, psd, label=run_name[i], linewidth=2)
 
-    plt.gca().invert_xaxis()
+    plt.gca().yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+    plt.gca().yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
 
+    plt.gca().invert_xaxis()
     plt.legend(fontsize=10)
 
     filename = f"{save_path}/figures/psd.png"

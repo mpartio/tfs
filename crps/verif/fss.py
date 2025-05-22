@@ -1,6 +1,17 @@
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def get_mask_sizes(n: int = 8) -> list[int]:
+    mask_sizes = [2]
+    for i in range(1, n):
+        mask_sizes.append(mask_sizes[-1] + int(round(1.5**i)))
+
+    return torch.tensor(mask_sizes)
 
 
 def compute_fss_per_leadtime(
@@ -24,95 +35,46 @@ def compute_fss_per_leadtime(
     N, T, C, H, W = truth.shape
     n_thresh = len(thresholds)
     n_sizes = len(mask_sizes)
-    device = truth.device
 
     # Prepare output: per lead time
-    fss_scores = torch.zeros((T, n_thresh, n_sizes), device=device)
+    fss_scores = torch.zeros((T, n_thresh, n_sizes), device="cpu")
 
-    # Loop over lead times
-    for t in range(T):
-        truth_t = truth[:, t, :, :, :]  # [N,1,H,W]
-        pred_t = preds[:, t, :, :, :]
+    with tqdm(total=n_thresh * n_sizes, desc="Calculating FSS") as pbar:
+        # Loop over lead times
+        for t in range(T):
+            truth_t = truth[:, t, :, :, :]  # [N,1,H,W]
+            pred_t = preds[:, t, :, :, :]
 
-        # For each category
-        for i, (low, high) in enumerate(thresholds):
-            truth_bin = ((truth_t >= low) & (truth_t < high)).float()
-            pred_bin = ((pred_t >= low) & (pred_t < high)).float()
+            # For each category
+            for i, (low, high) in enumerate(thresholds):
+                truth_bin = ((truth_t >= low) & (truth_t < high)).float()
+                pred_bin = ((pred_t >= low) & (pred_t < high)).float()
 
-            # Loop over mask sizes
-            for j, size in enumerate(mask_sizes):
-                pad = size // 2
-                # Compute local fractions
-                frac_truth = F.avg_pool2d(
-                    truth_bin, kernel_size=size, stride=1, padding=pad
-                )
-                frac_pred = F.avg_pool2d(
-                    pred_bin, kernel_size=size, stride=1, padding=pad
-                )
+                # Loop over mask sizes
+                for j, size in enumerate(mask_sizes):
+                    pad = (size // 2).item()
+                    # Compute local fractions
 
-                # Flatten to vector
-                f_t = frac_truth.view(-1)
-                f_o = frac_pred.view(-1)
+                    frac_truth = F.avg_pool2d(
+                        truth_bin, kernel_size=size.item(), stride=1, padding=pad
+                    )
+                    frac_pred = F.avg_pool2d(
+                        pred_bin, kernel_size=size.item(), stride=1, padding=pad
+                    )
 
-                # Compute FSS
-                mse = torch.mean((f_o - f_t) ** 2)
-                mse_ref = torch.mean(f_o**2 + f_t**2)
-                fss_scores[t, i, j] = 1 - mse / mse_ref
+                    # Flatten to vector
+                    f_t = frac_truth.view(-1)
+                    f_o = frac_pred.view(-1)
 
-    return fss_scores
+                    # Compute FSS
+                    mse = torch.mean((f_o - f_t) ** 2)
+                    mse_ref = torch.mean(f_o**2 + f_t**2)
+                    fss_scores[t, i, j] = (1 - mse / mse_ref).cpu().item()
 
+                    pbar.update(1)
 
-def compute_fss_for_model(
-    truth: torch.Tensor,
-    preds: torch.Tensor,
-    thresholds: list[tuple[float, float]],
-    mask_sizes: list[int],
-) -> torch.Tensor:
-    """
-    Compute Fractions Skill Score (FSS) for a single model prediction against truth.
-
-    Args:
-        truth (torch.Tensor): Ground truth tensor of shape [N, T, 1, H, W], values in [0, 1].
-        preds (torch.Tensor): Prediction tensor of shape [N, T, 1, H, W], values in [0, 1].
-        thresholds (list of (float, float)): List of (lower, upper) thresholds defining categories.
-        mask_sizes (list of int): List of square mask sizes (in pixels) for computing neighborhood fractions.
-
-    Returns:
-        torch.Tensor: FSS scores of shape [len(thresholds), len(mask_sizes)].
-    """
-    n_thresh = len(thresholds)
-    n_sizes = len(mask_sizes)
-    fss_scores = torch.zeros((n_thresh, n_sizes), device=truth.device)
-
-    # Flatten spatial dims only when pooling
-    N, T, C, H, W = truth.shape
-    flat_dims = N * T
-
-    for i, (low, high) in enumerate(thresholds):
-        # Binary fields for this category
-        truth_bin = ((truth >= low) & (truth < high)).float()
-        pred_bin = ((preds >= low) & (preds < high)).float()
-
-        # Reshape to [N*T, 1, H, W] for pooling
-        truth_flat = truth_bin.view(flat_dims, 1, H, W)
-        pred_flat = pred_bin.view(flat_dims, 1, H, W)
-
-        for j, size in enumerate(mask_sizes):
-            pad = size // 2
-            # Local fraction via average pooling
-            frac_truth = F.avg_pool2d(
-                truth_flat, kernel_size=size, stride=1, padding=pad
-            )
-            frac_pred = F.avg_pool2d(pred_flat, kernel_size=size, stride=1, padding=pad)
-
-            # Flatten all values
-            f_t = frac_truth.view(-1)
-            f_o = frac_pred.view(-1)
-
-            # Compute MSE and reference
-            mse = torch.mean((f_o - f_t) ** 2)
-            mse_ref = torch.mean(f_o**2 + f_t**2)
-            fss_scores[i, j] = 1 - mse / mse_ref
+    # leadtimes, categories, masks to categories, masks, leadtimes
+    fss_scores = torch.permute(fss_scores, (1, 2, 0))
 
     return fss_scores
 
@@ -120,8 +82,8 @@ def compute_fss_for_model(
 def fss(
     all_truth: torch.Tensor,
     all_predictions: list[torch.Tensor],
+    save_path: str,
     thresholds: list[tuple[float, float]] = None,
-    mask_sizes: list[int] = None,
 ) -> torch.Tensor:
     """
     Compute Fractions Skill Score (FSS) for multiple model predictions across categories and mask sizes.
@@ -138,18 +100,20 @@ def fss(
     """
     if thresholds is None:
         thresholds = [(0, 0.0625), (0.0625, 0.5625), (0.5625, 0.9375), (0.9375, 1.01)]
-    if mask_sizes is None:
-        mask_sizes = list(range(1, 20, 2))[:6]
+
+    mask_sizes = get_mask_sizes()
 
     n_models = len(all_predictions)
-    device = all_truth[0].device
+
     n_thresh = len(thresholds)
     n_sizes = len(mask_sizes)
 
     results = []
 
     for idx, preds in enumerate(all_predictions):
-        r = compute_fss_per_leadtime(all_truth[idx], preds, thresholds, mask_sizes)
+        truth = all_truth[idx].to(device)
+        preds = preds.to(device)
+        r = compute_fss_per_leadtime(truth, preds, thresholds, mask_sizes)
         results.append(r)
 
     # obs
@@ -165,52 +129,99 @@ def fss(
     observed_categories_frac = [x / observed_sum for x in observed_categories]
     results.append(observed_categories_frac)
 
+    torch.save(results, f"{save_path}/results/fss.pt")
     return results
 
 
 def plot_fss(
     run_name: list[str],
     results: torch.tensor,
-    save_path: str = "runs/verification/fss.png",
+    save_path: str,
+):
+    plot_fss_2d(run_name, results, save_path)
+    plot_fss_1d(run_name, results, save_path)
+
+
+def plot_fss_1d(
+    run_name: list[str],
+    results: torch.tensor,
+    save_path: str,
 ):
     plt.close("all")
-    domain_x = 2370  # km
-    domain_y = 2670
 
-    observed = results.pop()
-
-    # results: list of fss scores, each with shape (num_leadtimes, num_categories, num_masks)
-    num_leadtimes = results[0].shape[0]
-    num_categories = results[0].shape[1]
-    num_masks = results[0].shape[2]
+    num_categories = results[0].shape[0]
+    num_masks = results[0].shape[1]
+    num_leadtimes = results[0].shape[2]
 
     categories = ["Clear", "Partly cloudy", "Mostly cloudy", "Overcast"]
 
+    mask_sizes = get_mask_sizes(num_masks)
+
+    x = torch.arange(num_leadtimes)
+
+    c = 3  # category index = overcast
+    m = 2  # mask index = 6px
+
+    plt.figure(figsize=(8, 4))
     for i, r in enumerate(results):
-        plt.figure(figure(), figsize=(8, 8))
+        plt.plot(x, r[c, m, :], label=run_name[i])
 
-        fss_good = 0.5 + observed[i] * 0.5
+    plt.xlabel("Lead time (h)")
+    plt.ylabel("Fraction Skill Score")
+    plt.title(f"FSS for category {categories[c]} (mask size {mask_sizes[m]*5}km)")
+    plt.legend()
+    filename = f"{save_path}/figures/fss_1d_{categories[c].replace(' ','_')}.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
 
-        dx = int(np.ceil(domain_x / float(img_sizes[i][0])))
-        x = np.arange(num_leadtimes)
-        y = np.arange(num_masks)
 
-        xx, yy = np.meshgrid(x, y)
-        v = np.mean(r, axis=1)
+def plot_fss_2d(
+    run_name: list[str],
+    results: torch.tensor,
+    save_path: str,
+):
+    plt.close("all")
 
-        levels = np.linspace(0.3, 1.0, 21)
-        plt.contourf(xx, yy, v, levels=levels)
-        plt.colorbar()
-        plt.title(
-            "FSS for category '{}' (FSS_good={:.2f}) '{}'".format(
-                categories[i], fss_good, run_name[i]
+    dx = 5  # kilometers
+    observed = results.pop()
+
+    # results: list of fss scores, each with shape (num_leadtimes, num_categories, num_masks)
+    num_leadtimes = results[0].shape[2]
+    num_categories = results[0].shape[0]
+    num_masks = results[0].shape[1]
+
+    categories = ["Clear", "Partly cloudy", "Mostly cloudy", "Overcast"]
+
+    mask_sizes = get_mask_sizes(num_masks)
+
+    x = torch.arange(num_leadtimes)
+    y = mask_sizes * dx
+
+    xx, yy = torch.meshgrid(x, y, indexing="ij")
+    levels = torch.linspace(0.3, 1.0, 21)
+
+    for i, r in enumerate(results):
+        for j, c in enumerate(categories):
+            plt.figure(figsize=(8, 8))
+
+            fss_good = 0.5 + observed[j] * 0.5
+
+            v = torch.permute(r[j], (1, 0))
+
+            plt.contourf(xx, yy, v, levels=levels)
+            plt.colorbar()
+            plt.title(
+                "FSS for category '{}' (FSS_good={:.2f}) '{}'".format(
+                    c, fss_good, run_name[i]
+                )
             )
-        )
-        plt.xlabel("Leadtime (minutes)")
-        plt.ylabel("Mask size (km)")
-        CS = plt.contour(xx, yy, v, [fss_good])
-        plt.clabel(CS, inline=True, fontsize=10)
+            plt.xlabel("Leadtime (hours)")
+            plt.ylabel("Mask size (km)")
+            CS = plt.contour(xx, yy, v, [fss_good])
+            plt.clabel(CS, inline=True, fontsize=10)
 
-        plt.savefig(save_path)
-        print(f"Plot saved to {save_path}")
-        break
+            model_name = run_name[i].replace("/", "_")
+            cat_name = c.replace(" ", "_").lower()
+            filename = f"{save_path}/figures/fss_2d_{model_name}_{cat_name}.png"
+            plt.savefig(filename)
+            print(f"Plot saved to {filename}")
