@@ -1,4 +1,5 @@
 import torch
+import matplotlib.pyplot as plt
 
 
 def calculate_psd(data: torch.Tensor):
@@ -70,3 +71,41 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor):
         predicted_psds.append({"sx": sx, "sy": sy, "psd": psd_q})
 
     return observed_psd, predicted_psds
+
+
+def plot_psd(
+    run_name: list[str],
+    obs_psd: dict,
+    pred_psds: list[dict],
+    save_path: str = "runs/verification/psd.png",
+):
+
+    plt.figure()
+    plt.xlabel("Horizontal Scale (km)", fontsize=12)
+    plt.ylabel(
+        "PSD", fontsize=12
+    )  # Add units if clear, e.g., '(Cloud Cover Fraction)$^2$ / (km$^{-2}$)'
+    #    plt.xscale("log")
+    #    plt.yscale("log")
+    plt.title("Power Spectral Density Comparison", fontsize=14)
+    plt.grid(True, which="both", ls="-", alpha=0.7)  # Grid for major and minor ticks
+
+    # scales = obs_psd["scales"]
+    sx = obs_psd["sx"]
+    psd = obs_psd["psd"]
+    plt.loglog(sx, psd, label="Observed", linewidth=1, color="black")
+
+    for i in range(len(run_name)):
+        sx = pred_psds[i]["sx"]
+        # sort_indices = np.argsort(scales)[::-1] # Sort scales descending
+        psd = pred_psds[i]["psd"]
+        plt.loglog(sx, psd, label=run_name[i], linewidth=2)
+
+    plt.gca().invert_xaxis()
+
+    plt.legend(fontsize=10)
+    plt.savefig(save_path)
+
+    print(f"Plot saved to {save_path}")
+
+    plt.close()

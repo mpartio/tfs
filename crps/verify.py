@@ -2,18 +2,12 @@ import torch
 import os
 import argparse
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from common.util import get_latest_run_dir
 from tqdm import tqdm
-import matplotlib.colors as mcolors
-from verif.mae import mae, mae2d
-from verif.psd import psd
-
-
-def get_scores():
-    return ["mae", "mae2d", "psd"]
+from verif.mae import mae, mae2d, plot_mae_timeseries, plot_mae2d
+from verif.psd import psd, plot_psd
+from verif.fss import fss, plot_fss
 
 
 def get_args():
@@ -25,9 +19,10 @@ def get_args():
         type=str,
         required=False,
         nargs="+",
-        choices=get_scores(),
+        choices=["mae", "mae2d", "psd", "fss"],
         help="Score to produce",
     )
+
     args = parser.parse_args()
 
     if args.score is None:
@@ -36,7 +31,11 @@ def get_args():
 
 
 def read_data(run_name):
-    run_dir = get_latest_run_dir(f"runs/{run_name}")
+    if "/" in run_name:
+        run_dir = f"runs/{run_name}"
+    else:
+        run_dir = get_latest_run_dir(f"runs/{run_name}")
+
     file_path = f"{run_dir}/test-output"
 
     predictions = torch.load(
@@ -153,94 +152,10 @@ def prepare_data(args):
         all_predictions.append(predictions)
         all_dates.append(dates)
 
+    if len(all_dates) == 1:
+        return all_truth, all_predictions, all_dates
+
     return equalize_datasets(args.run_name, all_truth, all_predictions, all_dates)
-
-
-def plot_mae_timeseries(
-    df: pd.DataFrame, save_path="runs/verification/mae_timeseries.png"
-):
-    if df.empty:
-        print("No results to plot.")
-        return
-
-    num_timesteps = df["timestep"].max() + 1
-    num_models = df["model"].nunique()
-
-    plt.figure(figsize=(10, 6))
-
-    sns.lineplot(
-        data=df,
-        x="timestep",
-        y="mae",
-        hue="model",
-        style="model",  # Optional: Different marker/line style for each model (useful for B&W)
-        markers=True,  # Show markers on the points
-        dashes=False,  # Use solid lines unless you have many models
-    )
-
-    plt.xlabel("Forecast Timestep Index")
-    plt.ylabel("Mean Absolute Error (Lower is Better)")
-    plt.title("Model Comparison: MAE per Forecast Timestep")
-    plt.xticks(range(num_timesteps))  # Ensure ticks for each integer timestep
-    plt.legend(title="Model ID", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.grid(True, axis="y", linestyle="--", alpha=0.7)
-    plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust layout to make space for legend
-
-    plt.savefig(save_path)
-    print(f"Plot saved to {save_path}")
-    plt.close()
-
-
-def plot_mae2d(
-    run_name: list[str],
-    results: torch.tensor,
-    save_path: str = "runs/verification/mae2d.png",
-):
-    # results shape: num_models, steps, height, width
-    num_models = len(results)
-    num_timesteps = results[0].shape[0] - 1  # skip first step as mae = 0
-    nrows = num_models
-    ncols = num_timesteps
-
-    fig_width = ncols * 2.5
-    fig_height = nrows * 2.5
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(fig_width, fig_height), sharex=True, sharey=True
-    )
-
-    cmap = mcolors.LinearSegmentedColormap.from_list("white_red", ["white", "red"])
-    vmin, vmax = 0, 1
-
-    fig.suptitle(f"Spatial MAE", fontsize=16)
-
-    axes = axes if axes.ndim == 2 else axes.reshape((nrows, ncols))
-
-    for r in range(nrows):
-        y_pred = results[r]
-        for c in range(ncols):
-            ax = axes[r, c]
-
-            if c == 0:
-                ax.set_ylabel(run_name[r], fontsize=10, rotation=90, labelpad=10)
-
-            if r == 0:
-                ax.set_title(f"Timestep {c+1}h", fontsize=10)
-
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-            im = ax.imshow(y_pred[c + 1], cmap=cmap, vmin=vmin, vmax=vmax)
-
-    # Add colorbar at the far right
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.012, 0.7])  # [left, bottom, width, height]
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    cbar.set_label("MAE", fontsize=10)
-
-    plt.subplots_adjust(wspace=0.1, hspace=0.1, right=0.9)
-
-    plt.savefig(save_path)
-    print(f"Plot saved to {save_path}")
-    plt.close()
 
 
 def plot_stamps(
@@ -312,44 +227,6 @@ def plot_stamps(
     plt.close(fig)
 
 
-def plot_psd(
-    run_name: list[str],
-    obs_psd: dict,
-    pred_psds: list[dict],
-    save_path: str = "runs/verification/psd.png",
-):
-
-    plt.figure()
-    plt.xlabel("Horizontal Scale (km)", fontsize=12)
-    plt.ylabel(
-        "PSD", fontsize=12
-    )  # Add units if clear, e.g., '(Cloud Cover Fraction)$^2$ / (km$^{-2}$)'
-    #    plt.xscale("log")
-    #    plt.yscale("log")
-    plt.title("Power Spectral Density Comparison", fontsize=14)
-    plt.grid(True, which="both", ls="-", alpha=0.7)  # Grid for major and minor ticks
-
-    # scales = obs_psd["scales"]
-    sx = obs_psd["sx"]
-    psd = obs_psd["psd"]
-    plt.loglog(sx, psd, label="Observed", linewidth=1, color="black")
-
-    for i in range(len(run_name)):
-        sx = pred_psds[i]["sx"]
-        # sort_indices = np.argsort(scales)[::-1] # Sort scales descending
-        psd = pred_psds[i]["psd"]
-        plt.loglog(sx, psd, label=run_name[i], linewidth=2)
-
-    plt.gca().invert_xaxis()
-
-    plt.legend(fontsize=10)
-    plt.savefig(save_path)
-
-    print(f"Plot saved to {save_path}")
-
-    plt.close()
-
-
 if __name__ == "__main__":
     args = get_args()
     all_truth, all_predictions, all_dates = prepare_data(args)
@@ -368,6 +245,10 @@ if __name__ == "__main__":
         elif score == "psd":
             obs_psd, pred_psd = psd(all_truth, all_predictions)
             plot_psd(args.run_name, obs_psd, pred_psd)
+
+        elif score == "fss":
+            results = fss(all_truth, all_predictions)
+            plot_fss(args.run_name, results)
 
     plot_stamps(args.run_name, all_truth, all_predictions, all_dates)
 
