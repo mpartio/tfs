@@ -7,7 +7,7 @@ def compute_fss_per_leadtime(
     truth: torch.Tensor,
     preds: torch.Tensor,
     thresholds: list[tuple[float, float]],
-    mask_sizes: list[int]
+    mask_sizes: list[int],
 ) -> torch.Tensor:
     """
     Compute Fractions Skill Score (FSS) separately for each lead time.
@@ -43,8 +43,12 @@ def compute_fss_per_leadtime(
             for j, size in enumerate(mask_sizes):
                 pad = size // 2
                 # Compute local fractions
-                frac_truth = F.avg_pool2d(truth_bin, kernel_size=size, stride=1, padding=pad)
-                frac_pred = F.avg_pool2d(pred_bin, kernel_size=size, stride=1, padding=pad)
+                frac_truth = F.avg_pool2d(
+                    truth_bin, kernel_size=size, stride=1, padding=pad
+                )
+                frac_pred = F.avg_pool2d(
+                    pred_bin, kernel_size=size, stride=1, padding=pad
+                )
 
                 # Flatten to vector
                 f_t = frac_truth.view(-1)
@@ -52,10 +56,11 @@ def compute_fss_per_leadtime(
 
                 # Compute FSS
                 mse = torch.mean((f_o - f_t) ** 2)
-                mse_ref = torch.mean(f_o ** 2 + f_t ** 2)
+                mse_ref = torch.mean(f_o**2 + f_t**2)
                 fss_scores[t, i, j] = 1 - mse / mse_ref
 
     return fss_scores
+
 
 def compute_fss_for_model(
     truth: torch.Tensor,
@@ -152,16 +157,15 @@ def fss(
     observed_categories = []
     observed_sum = 0
 
-    for i, (low, high) in enumerate(thresholds):                         
+    for i, (low, high) in enumerate(thresholds):
         truth_bin = ((truth_t >= low) & (truth_t < high)).float()
         observed_categories.append(torch.sum(truth_bin))
         observed_sum += observed_categories[-1]
-   
+
     observed_categories_frac = [x / observed_sum for x in observed_categories]
     results.append(observed_categories_frac)
 
     return results
-
 
 
 def plot_fss(
@@ -210,4 +214,3 @@ def plot_fss(
         plt.savefig(save_path)
         print(f"Plot saved to {save_path}")
         break
-

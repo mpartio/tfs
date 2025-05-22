@@ -48,7 +48,7 @@ def calculate_psd(data: torch.Tensor):
     return scale_x, scale_y, psd_quadrant
 
 
-def psd(all_truth: torch.tensor, all_predictions: torch.tensor):
+def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
 
     truth = all_truth[0]
 
@@ -70,6 +70,10 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor):
         sx, sy, psd_q = calculate_psd(prediction)
         predicted_psds.append({"sx": sx, "sy": sy, "psd": psd_q})
 
+    # Save the observed and predicted PSDs to a file
+    torch.save(observed_psd, f"{save_path}/results/observed_psd.pt")
+    torch.save(predicted_psds, f"{save_path}/results/predicted_psd.pt")
+
     return observed_psd, predicted_psds
 
 
@@ -77,7 +81,7 @@ def plot_psd(
     run_name: list[str],
     obs_psd: dict,
     pred_psds: list[dict],
-    save_path: str = "runs/verification/psd.png",
+    save_path: str,
 ):
 
     plt.figure()
@@ -104,8 +108,9 @@ def plot_psd(
     plt.gca().invert_xaxis()
 
     plt.legend(fontsize=10)
-    plt.savefig(save_path)
 
-    print(f"Plot saved to {save_path}")
+    filename = f"{save_path}/figures/psd.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
 
     plt.close()

@@ -9,6 +9,7 @@ def mae(
     run_name: list[str],
     all_truth: torch.tensor,
     all_predictions: torch.tensor,
+    save_path: str,
 ):
     results = []
 
@@ -35,8 +36,8 @@ def mae(
 
     base_truth = all_truth[0]  # just pick the first truth
     # persistence forecast = base_truth[0] at every step
-    pers = base_truth[:, 0:1]               # shape (1, C, H, W)
-    pers = pers.expand_as(base_truth)    # shape (num_steps, C, H, W)
+    pers = base_truth[:, 0:1]  # shape (1, C, H, W)
+    pers = pers.expand_as(base_truth)  # shape (num_steps, C, H, W)
 
     abs_diff = torch.abs(pers - base_truth)
 
@@ -55,12 +56,15 @@ def mae(
     if not results_df.empty:
         results_df = results_df.sort_values(by="mae", ascending=True)
 
+    results_df.to_csv(f"{save_path}/results/mae.csv")
+
     return results_df
 
 
 def mae2d(
     all_truth: torch.tensor,
     all_predictions: torch.tensor,
+    save_path: str,
 ):
     results = []
 
@@ -78,6 +82,7 @@ def mae2d(
 
         results.append(mae2d)
 
+    torch.save(results, f"{save_path}/results/mae2d.pt")
     return results
 
 
@@ -111,15 +116,16 @@ def plot_mae_timeseries(
     plt.grid(True, axis="y", linestyle="--", alpha=0.7)
     plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust layout to make space for legend
 
-    plt.savefig(save_path)
-    print(f"Plot saved to {save_path}")
+    filename = f"{save_path}/figures/mae_timeseries.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
     plt.close()
 
 
 def plot_mae2d(
     run_name: list[str],
     results: torch.tensor,
-    save_path: str = "runs/verification/mae2d.png",
+    save_path: str,
 ):
     # results shape: num_models, steps, height, width
     num_models = len(results)
@@ -163,6 +169,7 @@ def plot_mae2d(
 
     plt.subplots_adjust(wspace=0.1, hspace=0.1, right=0.9)
 
-    plt.savefig(save_path)
-    print(f"Plot saved to {save_path}")
+    filename = f"{save_path}/figures/mae2d.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
     plt.close()

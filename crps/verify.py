@@ -3,6 +3,7 @@ import os
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 from common.util import get_latest_run_dir
 from tqdm import tqdm
 from verif.mae import mae, mae2d, plot_mae_timeseries, plot_mae2d
@@ -22,8 +23,17 @@ def get_args():
         choices=["mae", "mae2d", "psd", "fss"],
         help="Score to produce",
     )
+    parser.add_argument(
+        "--save_path",
+        type=str,
+        default="runs/verification",
+        help="Path to save the verification results and plots",
+    )
 
     args = parser.parse_args()
+
+    os.makedirs(f"{args.save_path}/figures", exist_ok=True)
+    os.makedirs(f"{args.save_path}/results", exist_ok=True)
 
     if args.score is None:
         args.score = ["mae"]
@@ -35,6 +45,8 @@ def read_data(run_name):
         run_dir = f"runs/{run_name}"
     else:
         run_dir = get_latest_run_dir(f"runs/{run_name}")
+
+    assert run_dir, f"Run {run_name} not found in runs/"
 
     file_path = f"{run_dir}/test-output"
 
@@ -160,10 +172,10 @@ def prepare_data(args):
 
 def plot_stamps(
     run_name: list[str],
-    all_truth,
-    all_predictions,
-    all_dates,
-    save_path: str = "runs/verification/example_timeseries.png",
+    all_truth: list[torch.Tensor],
+    all_predictions: list[torch.Tensor],
+    all_dates: list[torch.Tensor],
+    save_path: str,
 ):
 
     truth = all_truth[0][0]
@@ -220,10 +232,9 @@ def plot_stamps(
     # Adjust layout to prevent overlap
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust rect to make space for suptitle
 
-    save_dir = os.path.dirname(save_path)
-    os.makedirs(save_dir, exist_ok=True)
-    plt.savefig(save_path)
-    print(f"Example timeseries plot saved to {save_path}")
+    filename = f"{save_path}/figures/stamps.png"
+    plt.savefig(filename)
+    print(f"Example timeseries plot saved to {filename}")
     plt.close(fig)
 
 
@@ -234,23 +245,23 @@ if __name__ == "__main__":
     pivot_df = None
     for score in args.score:
         if score == "mae":
-            results = mae(args.run_name, all_truth, all_predictions)
-            plot_mae_timeseries(results)
+            results = mae(args.run_name, all_truth, all_predictions, args.save_path)
+            plot_mae_timeseries(results, args.save_path)
             pivot_df = results.pivot(index="model", columns="timestep", values="mae")
 
         elif score == "mae2d":
-            results = mae2d(all_truth, all_predictions)
-            plot_mae2d(args.run_name, results)
+            results = mae2d(all_truth, all_predictions, args.save_path)
+            plot_mae2d(args.run_name, results, args.save_path)
 
         elif score == "psd":
-            obs_psd, pred_psd = psd(all_truth, all_predictions)
-            plot_psd(args.run_name, obs_psd, pred_psd)
+            obs_psd, pred_psd = psd(all_truth, all_predictions, args.save_path)
+            plot_psd(args.run_name, obs_psd, pred_psd, args.save_path)
 
         elif score == "fss":
-            results = fss(all_truth, all_predictions)
-            plot_fss(args.run_name, results)
+            results = fss(all_truth, all_predictions, args.save_path)
+            plot_fss(args.run_name, results, args.save_path)
 
-    plot_stamps(args.run_name, all_truth, all_predictions, all_dates)
+    plot_stamps(args.run_name, all_truth, all_predictions, all_dates, args.save_path)
 
     if pivot_df is not None:
         print(pivot_df)
