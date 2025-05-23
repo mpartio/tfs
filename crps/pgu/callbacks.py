@@ -313,7 +313,9 @@ class DiagnosticCallback(L.Callback):
             self.val_snr_real = state_dict["val_snr_real"]
             self.val_snr_pred = state_dict["val_snr_pred"]
         except KeyError as e:
-            print(f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway.")
+            print(
+                f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
+            )
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -333,7 +335,9 @@ class DiagnosticCallback(L.Callback):
             if k == "loss":
                 continue
 
-            pl_module.log(f"train/{k}", v.cpu(), on_step=True, on_epoch=True)
+            pl_module.log(
+                f"train/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+            )
 
             if len(self.loss_names) == 0:
                 _loss_names.append(k)
@@ -351,8 +355,20 @@ class DiagnosticCallback(L.Callback):
 
             for k in grads.keys():
                 mean, std = grads[k]["mean"], grads[k]["std"]
-                pl_module.log(f"train/grad_{k}_mean", mean, on_step=True, on_epoch=True)
-                pl_module.log(f"train/grad_{k}_std", std, on_step=True, on_epoch=True)
+                pl_module.log(
+                    f"train/grad_{k}_mean",
+                    mean,
+                    on_step=True,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+                pl_module.log(
+                    f"train/grad_{k}_std",
+                    std,
+                    on_step=True,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -389,10 +405,18 @@ class DiagnosticCallback(L.Callback):
             snr_real = calculate_wavelet_snr(truth, None)
 
             pl_module.log(
-                "val/snr_real", snr_real["snr_db"], on_step=False, on_epoch=True
+                "val/snr_real",
+                snr_real["snr_db"],
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
             pl_module.log(
-                "val/snr_pred", snr_pred["snr_db"], on_step=False, on_epoch=True
+                "val/snr_pred",
+                snr_pred["snr_db"],
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
 
     @rank_zero_only
