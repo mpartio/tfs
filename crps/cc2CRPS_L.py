@@ -56,6 +56,7 @@ class cc2CRPSModel(L.LightningModule):
         adapt_ckpt_resolution: bool = False,
         branch_from_run: str = None,
         use_gradient_checkpointing: bool = False,
+        add_refinement_head: bool = False
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -83,6 +84,7 @@ class cc2CRPSModel(L.LightningModule):
                 "prognostic_params",
                 "forcing_params",
                 "use_gradient_checkpointing",
+                "add_refinement_head",
             ]
         }
 
