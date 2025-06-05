@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from layers import (
+from pgu_ens.layers import (
     FeedForward,
     PatchEmbed,
     PatchMerge,
@@ -16,18 +16,18 @@ from layers import (
     depad_tensor,
     get_padded_size,
 )
-import config
+from types import SimpleNamespace
+from typing import Optional
+from torch.utils.checkpoint import checkpoint
 
 
 class cc2CRPS(nn.Module):
     def __init__(
         self,
         config,
-        mlp_ratio=4.0,
-        drop_rate=0.1,
-        attn_drop_rate=0.1,
     ):
         super().__init__()
+        config = SimpleNamespace(**config)
 
         self.patch_size = config.patch_size
         self.embed_dim = config.hidden_dim
@@ -61,7 +61,7 @@ class cc2CRPS(nn.Module):
 
         # Input layer norm and dropout
         self.norm_input = ConditionalLayerNorm(self.embed_dim, config.noise_dim)
-        self.dropout = nn.Dropout(drop_rate)
+        self.dropout = nn.Dropout(config.drop_rate)
 
         # Transformer encoder blocks
         self.encoder1 = nn.ModuleList(
@@ -69,12 +69,12 @@ class cc2CRPS(nn.Module):
                 EncoderBlock(
                     dim=self.embed_dim,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.encoder_depth)
+                for _ in range(config.encoder1_depth)
             ]
         )
 
@@ -83,7 +83,7 @@ class cc2CRPS(nn.Module):
             input_resolution[1] // self.patch_size,
         )
         self.downsample = PatchMerge(
-            self.input_resolution_halved, self.embed_dim, time_dim=2
+            self.input_resolution_halved, self.embed_dim, time_dim=config.history_length
         )
 
         self.encoder2 = nn.ModuleList(
@@ -91,12 +91,12 @@ class cc2CRPS(nn.Module):
                 EncoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.encoder_depth)
+                for _ in range(config.encoder2_depth)
             ]
         )
 
@@ -105,12 +105,12 @@ class cc2CRPS(nn.Module):
                 DecoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.decoder_depth)
+                for _ in range(config.decoder1_depth)
             ]
         )
 
@@ -123,12 +123,12 @@ class cc2CRPS(nn.Module):
                 DecoderBlock(
                     dim=self.embed_dim * 2,
                     num_heads=config.num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=config.mlp_ratio,
                     qkv_bias=True,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
+                    drop=config.drop_rate,
+                    attn_drop=config.attn_drop_rate,
                 )
-                for _ in range(config.decoder_depth)
+                for _ in range(config.decoder2_depth)
             ]
         )
 
@@ -156,6 +156,25 @@ class cc2CRPS(nn.Module):
         self.apply(self._init_weights)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
+        self.add_skip_connection = config.add_skip_connection
+
+        if config.add_skip_connection:
+            self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
+            self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
+
+        self.use_gradient_checkpointing = config.use_gradient_checkpointing
+
+        self.add_refinement_head = config.add_refinement_head
+
+        if self.add_refinement_head:
+            self.refinement_head = nn.Sequential(
+                nn.Conv2d(1, 32, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(32, 1, 3, padding=1),
+            )
+        else:
+            self.refinement_head = nn.Identity()
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -180,21 +199,42 @@ class cc2CRPS(nn.Module):
         x = self.dropout(x)
 
         # Pass through encoder blocks
-        for block in self.encoder1:
-            x = block(x, noise_embedding)
+        if self.use_gradient_checkpointing:
+            for block in self.encoder1:
+                x = checkpoint(block, x, noise_embedding, use_reentrant=False)
+        else:
+            for block in self.encoder1:
+                x = block(x, noise_embedding)
+
+        if self.add_skip_connection:
+            skip = x.clone()  # skip connection, B, T*P, D
+            skip = skip.reshape(B, T, -1, D)
+        else:
+            skip = None
 
         # Downsample
         x = self.downsample(x)
 
         # Pass through encoder blocks
-        for block in self.encoder2:
-            x = block(x, noise_embedding)
+        if self.use_gradient_checkpointing:
+            for block in self.encoder2:
+                x = checkpoint(block, x, noise_embedding, use_reentrant=False)
+        else:
+            for block in self.encoder2:
+                x = block(x, noise_embedding)
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
-        return x
 
-    def decode(self, encoded, step: int, noise_embedding):
+        return x, skip
+
+    def decode(
+        self,
+        encoded: torch.tensor,
+        step: int,
+        noise_embedding: torch.tensor,
+        skip: Optional[torch.tensor],
+    ):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -226,8 +266,14 @@ class cc2CRPS(nn.Module):
         # Process through decoder blocks
         x = decoder_in_with_id
 
-        for block in self.decoder1:
-            x = block(x, encoded_flat, noise_embedding)
+        if self.use_gradient_checkpointing:
+            for block in self.decoder1:
+                x = checkpoint(
+                    block, x, encoded_flat, noise_embedding, use_reentrant=False
+                )
+        else:
+            for block in self.decoder1:
+                x = block(x, encoded_flat, noise_embedding)
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
@@ -236,10 +282,9 @@ class cc2CRPS(nn.Module):
         new_H = new_H // 2  # 2 = num_times
         new_W = new_W // 2  # 2 = num_times
 
-        with torch.amp.autocast("cuda", enabled=False):
-            upsampled_delta, P_new, D_new = self.upsample(
-                delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
-            )
+        upsampled_delta, P_new, D_new = self.upsample(
+            delta_pred1.reshape(B, -1, D), H=new_H, W=new_W
+        )
 
         P_new, D_new = upsampled_delta.shape[1], upsampled_delta.shape[2]
 
@@ -247,8 +292,21 @@ class cc2CRPS(nn.Module):
         P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
         x2 = upsampled_delta.reshape(B, -1, D_new)
 
-        for block in self.decoder2:
-            x2 = block(x2, encoded_flat, noise_embedding)
+        if self.add_skip_connection:
+            skip_token = skip[:, -1, :, :]  # shape: [B, num_tokens, embed_dim]
+            assert skip_token.ndim == 3
+            skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
+            x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
+            x2 = self.skip_fusion(x2)
+
+        if self.use_gradient_checkpointing:
+            for block in self.decoder2:
+                x2 = checkpoint(
+                    block, x2, encoded_flat, noise_embedding, use_reentrant=False
+                )
+        else:
+            for block in self.decoder2:
+                x2 = block(x2, encoded_flat, noise_embedding)
 
         delta_pred2 = x2.reshape(B, 1, P_new, D_new)
 
@@ -316,15 +374,18 @@ class cc2CRPS(nn.Module):
         noise = torch.randn(B * M, self.noise_dim, device=data[0].device)
         noise_embed = self.noise_processor(noise)
 
-        # data, padding_info = pad_tensor(data, self.patch_size, 1)
-        # forcing, _ = pad_tensor(forcing, self.patch_size, 1)
+        encoded, skip = self.encode(data, forcing, noise_embed)
 
-        encoded = self.encode(data, forcing, noise_embed)
-
-        decoded = self.decode(encoded, step, noise_embed)
+        decoded = self.decode(encoded, step, noise_embed, skip)
 
         output = self.project_to_image(decoded, noise_embed)
+
+        if self.add_refinement_head:
+            output_ref = self.refinement_head(output.squeeze(2))
+            output = output + output_ref.unsqueeze(2)
+
         output = depad_tensor(output, padding_info)  # B * M, T, C, H, W
+
         H, W = padding_info["original_size"]
 
         output = output.reshape(B, M, 1, C_data, H, W)

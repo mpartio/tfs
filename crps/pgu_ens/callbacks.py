@@ -7,10 +7,10 @@ import matplotlib.colors as mcolors
 import platform
 import lightning as L
 import sys
-import config
-import json
 import warnings
-from util import roll_forecast
+import os
+import shutil
+from pgu_ens.util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from dataclasses import asdict
@@ -32,6 +32,26 @@ colors = [
 ]
 
 
+def get_gradient_names():
+    return [
+        "encoder1",
+        "encoder2",
+        "upsample",
+        "downsample",
+        "decoder1",
+        "decoder2",
+        "expand",
+    ]
+
+
+def run_info():
+    run_name = os.environ["CC2_RUN_NAME"]
+    run_number = os.environ["CC2_RUN_NUMBER"]
+    run_dir = os.environ["CC2_RUN_DIR"]
+
+    return run_name, run_number, run_dir
+
+
 def var_and_mae(predictions, y):
     variance = torch.var(predictions[:, :, -1, ...], dim=2, unbiased=False)
     variance = variance.detach().mean().cpu().numpy().item()
@@ -45,55 +65,50 @@ def var_and_mae(predictions, y):
 
 
 def analyze_gradients(model):
-    # Group gradients by network section
-    gradient_stats = {
-        "encoder1": [],
-        "encoder2": [],
-        "upsample": [],
-        "downsample": [],
-        "decoder1": [],
-        "decoder2": [],
-        "expand": [],
-    }
+    # Pre-compile patterns to check once
+    sections = get_gradient_names()
+    gradient_stats = {k: [] for k in sections}
 
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            for k in gradient_stats.keys():
-                if k in name:
-                    grad_norm = param.grad.abs().mean().item()
-                    gradient_stats[k].append(grad_norm)
+    # Batch all gradient stats by section in a single pass
+    with torch.no_grad():  # Avoid tracking history for these operations
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                continue
 
-    # Compute statistics for each section
+            for section in sections:
+                if section in name:
+                    gradient_stats[section].append(param.grad.abs().mean())
+                    break  # Parameter can only belong to one section
+
+    # Calculate statistics using PyTorch operations
     stats = {}
     for section, grads in gradient_stats.items():
         if grads:
+            grads_tensor = torch.stack(grads)
             stats[section] = {
-                "mean": np.mean(grads).item(),
-                "std": np.std(grads).item(),
-                # "min": np.min(grads),
-                # "max": np.max(grads),
+                "mean": grads_tensor.mean().item(),
+                "std": grads_tensor.std().item(),
             }
 
     return stats
 
 
 class PredictionPlotterCallback(L.Callback):
-    def __init__(self, train_loader, val_loader, config):
-        self.train_dataloader = train_loader
-        self.val_dataloader = val_loader
-        self.config = config
+    def __init__(self):
+        pass
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-
         pl_module.eval()
 
+        train_dataloader = trainer.train_dataloader
+
         # Get a single batch from the dataloader
-        data, forcing = next(iter(self.train_dataloader))
+        data, forcing = next(iter(train_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
+
+        rollout_length = data[1].shape[2]
 
         # Perform a prediction
         with torch.no_grad():
@@ -101,7 +116,7 @@ class PredictionPlotterCallback(L.Callback):
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 None,
             )
 
@@ -113,6 +128,7 @@ class PredictionPlotterCallback(L.Callback):
             predictions.cpu().detach(),
             trainer.current_epoch,
             "train",
+            trainer.sanity_checking,
         )
 
         # Restore model to training mode
@@ -120,14 +136,15 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-
         pl_module.eval()
 
-        data, forcing = next(iter(self.val_dataloader))
+        val_dataloader = trainer.val_dataloaders
+
+        data, forcing = next(iter(val_dataloader))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
+
+        rollout_length = data[1].shape[2]
 
         # Perform a prediction
         with torch.no_grad():
@@ -135,7 +152,7 @@ class PredictionPlotterCallback(L.Callback):
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 None,
             )
 
@@ -147,12 +164,13 @@ class PredictionPlotterCallback(L.Callback):
             predictions.cpu().detach(),
             trainer.current_epoch,
             "val",
+            trainer.sanity_checking,
         )
 
         # Restore model to training mode
         pl_module.train()
 
-    def plot(self, x, y, predictions, epoch, stage):
+    def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # Take first batch member
         # Layout
         # 1. Input field at T-1
@@ -172,6 +190,8 @@ class PredictionPlotterCallback(L.Callback):
 
         # y shape: [B, 1, 1, 128, 128]
         # prediction shape: [B, 3, 1, 128, 128]
+
+        run_name, run_number, run_dir = run_info()
 
         input_field = x[0].squeeze()
         truth = y[0]
@@ -223,46 +243,75 @@ class PredictionPlotterCallback(L.Callback):
 
         title = "{} for {} num={} at epoch {} (host={}, time={})".format(
             title,
-            self.config.run_name,
-            self.config.run_number,
+            run_name,
+            run_number,
             epoch,
             platform.node(),
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
         filename = "{}/figures/{}_{}_{}_epoch_{:03d}_{}.png".format(
-            self.config.run_dir,
+            run_dir,
             platform.node(),
-            self.config.run_name,
-            self.config.run_number,
+            run_name,
+            run_number,
             epoch,
             stage,
         )
 
         plt.suptitle(title)
-        plt.savefig(filename)
+
+        if sanity_check is False:
+            plt.savefig(filename)
 
         plt.close()
 
 
 class DiagnosticCallback(L.Callback):
-    def __init__(self, config, freq=50):
-        (
-            self.train_loss,
-            self.train_mae,
-            self.train_var,
-            self.val_loss,
-            self.lr,
-            self.val_snr,
-            self.val_mae,
-            self.val_var,
-        ) = ([], [], [], [], [], [], [], [])
-
+    def __init__(self, config, check_frequency=50):
+        self.train_loss = []
+        self.val_loss = []
+        self.lr = []
+        self.val_snr_real = []
+        self.val_snr_pred = []
         self.gradients_mean = {}
         self.gradients_std = {}
+        self.train_loss_components = {}
+        self.val_loss_components = {}
 
-        self.freq = freq
-        self.config = config
+        self.loss_names = []
+        self.grad_names = get_gradient_names()
+
+        self.check_frequency = check_frequency
+
+    def state_dict(self):
+        return {
+            "gradients_mean": self.gradients_mean,
+            "gradients_std": self.gradients_std,
+            "lr": self.lr,
+            "train_loss": self.train_loss,
+            "train_loss_components": self.train_loss_components,
+            "val_loss": self.val_loss,
+            "val_loss_components": self.val_loss_components,
+            "val_snr_real": self.val_snr_real,
+            "val_snr_pred": self.val_snr_pred,
+        }
+
+    def load_state_dict(self, state_dict):
+        try:
+            self.gradients_mean = state_dict["gradients_mean"]
+            self.gradients_std = state_dict["gradients_std"]
+            self.lr = state_dict["lr"]
+            self.train_loss = state_dict["train_loss"]
+            self.train_loss_components = state_dict["train_loss_components"]
+            self.val_loss = state_dict["val_loss"]
+            self.val_loss_components = state_dict["val_loss_components"]
+            self.val_snr_real = state_dict["val_snr_real"]
+            self.val_snr_pred = state_dict["val_snr_pred"]
+        except KeyError as e:
+            print(
+                f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
+            )
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -271,25 +320,38 @@ class DiagnosticCallback(L.Callback):
             return
 
         # a) train loss
-        self.train_loss.append(outputs["loss"].detach().cpu().item())
-        pl_module.log("train_loss", self.train_loss[-1], prog_bar=True)
+        train_loss = outputs["loss"].item()
+
+        pl_module.log(
+            "train/loss_step", train_loss, on_step=True, on_epoch=False, prog_bar=True
+        )
+        pl_module.log("train/loss_epoch", train_loss, on_step=False, on_epoch=True)
+
+        _loss_names = []
+        for k, v in outputs["loss_components"].items():
+            if k == "loss":
+                continue
+
+            pl_module.log(f"train/{k}", v.cpu(), on_step=True, on_epoch=True)
+
+            if len(self.loss_names) == 0:
+                _loss_names.append(k)
+
+        if len(self.loss_names) == 0:
+            self.loss_names = _loss_names
 
         # b) learning rate
-        assert len(trainer.optimizers) > 0, "No optimizer found"
-        self.lr.append(trainer.optimizers[0].param_groups[0]["lr"])
+        lr = trainer.optimizers[0].param_groups[0]["lr"]
+        pl_module.log("lr", lr, on_step=True, on_epoch=False)
 
-        if batch_idx % self.freq == 0:
-            # c) gradients
+        # c) gradients
+        if batch_idx % self.check_frequency == 0:
             grads = analyze_gradients(pl_module)
 
             for k in grads.keys():
                 mean, std = grads[k]["mean"], grads[k]["std"]
-                try:
-                    self.gradients_mean[k].append(mean)
-                    self.gradients_std[k].append(std)
-                except KeyError as e:
-                    self.gradients_mean[k] = [mean]
-                    self.gradients_std[k] = [std]
+                pl_module.log(f"train/grad_{k}_mean", mean, on_step=True, on_epoch=True)
+                pl_module.log(f"train/grad_{k}_std", std, on_step=True, on_epoch=True)
 
             # d) variance and l1
 
@@ -299,8 +361,8 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             var, mae = var_and_mae(predictions, y)
-            self.train_var.append(var)
-            self.train_mae.append(mae)
+            pl_module.log("train/variance", var)
+            pl_module.log("train/mae", mae)
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -309,10 +371,19 @@ class DiagnosticCallback(L.Callback):
             return
 
         # a) Validation loss
-        self.val_loss.append(outputs["loss"].detach().cpu().item())
-        pl_module.log("val_loss", self.val_loss[-1], prog_bar=True)
+        val_loss = outputs["loss"].item()
 
-        if batch_idx % self.freq == 0:
+        pl_module.log(
+            "val/loss_epoch", val_loss, on_step=False, on_epoch=True, prog_bar=True
+        )
+
+        for k, v in outputs["loss_components"].items():
+            if k == "loss":
+                continue
+
+            pl_module.log(f"val/{k}", v.cpu(), on_step=True, on_epoch=True)
+
+        if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
             predictions = outputs["predictions"]
 
@@ -327,23 +398,50 @@ class DiagnosticCallback(L.Callback):
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
-            self.val_snr.append((snr_real["snr_db"], snr_pred["snr_db"]))
+
+            pl_module.log(
+                "val/snr_real", snr_real["snr_db"], on_step=False, on_epoch=True
+            )
+            pl_module.log(
+                "val/snr_pred", snr_pred["snr_db"], on_step=False, on_epoch=True
+            )
 
             # d) variance and l1
             var, mae = var_and_mae(predictions, y)
-            self.val_var.append(var)
-            self.val_mae.append(mae)
+            pl_module.log("val/variance", var)
+            pl_module.log("val/mae", mae)
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
 
-        if not trainer.is_global_zero:
+        if not trainer.is_global_zero or trainer.sanity_checking:
             return
+
+        current_val_loss = trainer.logged_metrics.get("val/loss_epoch", float("nan"))
+        current_lr = trainer.logged_metrics.get("lr", float("nan"))
+        current_snr_real = trainer.logged_metrics.get("val/snr_real", float("nan"))
+        current_snr_pred = trainer.logged_metrics.get("val/snr_pred", float("nan"))
+
+        # Append to internal history lists
+        self.val_loss.append(current_val_loss)
+        self.lr.append(current_lr)
+        self.val_snr_real.append(current_snr_real)
+        self.val_snr_pred.append(current_snr_pred)
+
+        for k in self.loss_names:
+            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan"))
+
+            try:
+                self.val_loss_components[k].append(val)
+            except KeyError:
+                self.val_loss_components[k] = [val]
 
         # Get a single batch from the dataloader
         data, forcing = next(iter(trainer.val_dataloaders))
         data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
         forcing = forcing.to(pl_module.device)
+
+        rollout_length = data[1].shape[2]
 
         # Perform a prediction
         with torch.no_grad():
@@ -351,11 +449,16 @@ class DiagnosticCallback(L.Callback):
                 pl_module,
                 data,
                 forcing,
-                self.config.rollout_length,
+                rollout_length,
                 loss_fn=None,
             )
-
         x, y = data
+
+        assert torch.isfinite(x).all()
+        assert torch.isfinite(y).all()
+
+        assert torch.isfinite(tendencies).all(), "non-finite values in tendencies"
+        assert torch.isfinite(predictions).all(), "non-finite values in predictions"
 
         self.plot_visual(
             x[0].cpu().detach(),
@@ -370,45 +473,36 @@ class DiagnosticCallback(L.Callback):
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
-        # Convert any tensors/numpy arrays to Python types
-        def convert_to_serializable(obj):
-            if hasattr(obj, "tolist"):  # Handle tensors/numpy arrays
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_serializable(i) for i in obj]
-            else:
-                return obj
+        if trainer.sanity_checking:
+            return
 
-        D = {"config": {}, "statistics": {}}
+        current_train_loss = trainer.logged_metrics.get(
+            "train/loss_epoch", float("nan")
+        )
+        self.train_loss.append(current_train_loss)
 
-        saved_variables = [
-            "train_loss",
-            "train_mae",
-            "train_var",
-            "val_loss",
-            "val_mae",
-            "val_var",
-            "val_snr",
-            "lr",
-            "gradients_mean",
-            "gradients_std",
-            "freq",
-        ]
+        for k in self.loss_names:
+            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
 
-        for k in saved_variables:
-            D["statistics"][k] = self.__dict__[k]
+            try:
+                self.train_loss_components[k].append(val)
+            except KeyError:
+                self.train_loss_components[k] = [val]
 
-        for k in self.config.__dict__.keys():
-            D["config"][k] = self.config.__dict__[k]
+        for k in self.grad_names:
+            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
 
-        D["config"]["current_iteration"] = trainer.global_step
+            try:
+                self.gradients_mean[k].append(val)
+            except KeyError:
+                self.gradients_mean[k] = [val]
 
-        filename = f"{self.config.run_dir}/run-info.json"
+            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
 
-        with open(filename, "w") as f:
-            json.dump(D, f, indent=4, default=convert_to_serializable)
+            try:
+                self.gradients_std[k].append(val)
+            except KeyError:
+                self.gradients_std[k] = [val]
 
     def plot_visual(
         self, input_field, truth, pred, tendencies, epoch, sanity_checking=False
@@ -417,6 +511,8 @@ class DiagnosticCallback(L.Callback):
         # truth T, C, H, W
         # pred M, T, C, H, W
         # tend M, T, C, H, W
+
+        run_name, run_number, run_dir = run_info()
 
         input_field = input_field.squeeze(1)
         truth = truth.squeeze(1)  # remove channel dim
@@ -466,8 +562,8 @@ class DiagnosticCallback(L.Callback):
 
         plt.suptitle(
             "{} num={} at epoch {} (host={}, time={})".format(
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
                 platform.node(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -476,10 +572,10 @@ class DiagnosticCallback(L.Callback):
 
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_val.png".format(
-                self.config.run_dir,
+                run_dir,
                 platform.node(),
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
             )
         )
@@ -500,6 +596,7 @@ class DiagnosticCallback(L.Callback):
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
         )
+        run_name, run_number, run_dir = run_info()
 
         train_loss = self.train_loss
         if len(train_loss) > 2000:
@@ -626,15 +723,46 @@ class DiagnosticCallback(L.Callback):
 
         plt.savefig(
             "{}/figures/{}_{}_{}_epoch_{:03d}_history.png".format(
-                self.config.run_dir,
+                run_dir,
                 platform.node(),
-                self.config.run_name,
-                self.config.run_number,
+                run_name,
+                run_number,
                 epoch,
             )
         )
 
         plt.close()
+
+
+class CleanupFailedRunCallback(L.Callback):
+    def on_exception(
+        self,
+        trainer: "pl.Trainer",
+        pl_module: "pl.LightningModule",
+        exception: BaseException,
+    ) -> None:
+        # Ensure cleanup only happens on the main process (rank 0) in distributed settings
+        if trainer.is_global_zero:
+            run_dir = os.environ.get("CC2_RUN_DIR")
+
+            if run_dir and os.path.isdir(run_dir):
+                # Check if the directory is empty or contains only minimal files
+                # Adjust this condition based on what you consider "empty"
+                # e.g., allow hparams.yaml, empty logs/ dir?
+                # A simple check is just len(os.listdir()) == 0 or 1 (maybe hparams.yaml)
+                try:
+                    files_in_dir = os.listdir(f"{run_dir}/figures")
+                    # Define what constitutes an "empty" directory that should be removed
+                    # Example: empty or only contains hparams file
+                    if len(files_in_dir) == 0:
+                        shutil.rmtree(run_dir)
+                        print(f"Removed empty run directory: {run_dir}")
+                except OSError as e:
+                    print(f"\nError during cleanup check/removal of {log_dir}: {e}")
+            else:
+                print(
+                    f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
+                )
 
 
 class LazyLoggerCallback(L.Callback):

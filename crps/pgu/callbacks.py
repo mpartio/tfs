@@ -8,7 +8,6 @@ import platform
 import lightning as L
 import sys
 import os
-import json
 import warnings
 import shutil
 from pgu.util import roll_forecast
@@ -313,7 +312,9 @@ class DiagnosticCallback(L.Callback):
             self.val_snr_real = state_dict["val_snr_real"]
             self.val_snr_pred = state_dict["val_snr_pred"]
         except KeyError as e:
-            print(f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway.")
+            print(
+                f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
+            )
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):

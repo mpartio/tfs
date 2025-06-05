@@ -16,10 +16,6 @@ from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     LambdaLR,
 )
-from pgu.cc2 import cc2CRPS
-from pgu.layers import get_padded_size
-from pgu.util import roll_forecast
-from pgu.loss import loss_fn
 from common.util import (
     get_rank,
     get_latest_run_dir,
@@ -27,14 +23,16 @@ from common.util import (
     strip_prefix,
     adapt_checkpoint_to_model,
 )
+from pgu.layers import get_padded_size
+from typing import Optional
 
 
 class cc2CRPSModel(L.LightningModule):
     def __init__(
         self,
         input_resolution: tuple[int, int],
-        prognostic_params: list[str, ...],
-        forcing_params: list[str, ...],
+        prognostic_params: list[str],
+        forcing_params: list[str],
         history_length: int = 2,
         hidden_dim: int = 96,
         patch_size: int = 4,
@@ -56,7 +54,10 @@ class cc2CRPSModel(L.LightningModule):
         adapt_ckpt_resolution: bool = False,
         branch_from_run: str = None,
         use_gradient_checkpointing: bool = False,
-        add_refinement_head: bool = False
+        add_refinement_head: bool = False,
+        model_family: str = "pgu",
+        noise_dim: Optional[int] = None,
+        num_members: Optional[int] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -85,11 +86,24 @@ class cc2CRPSModel(L.LightningModule):
                 "forcing_params",
                 "use_gradient_checkpointing",
                 "add_refinement_head",
+                "noise_dim",
+                "num_members",
             ]
         }
 
+        if model_family == "pgu":
+            from pgu.cc2 import cc2CRPS
+            from pgu.util import roll_forecast
+            from pgu.loss import loss_fn
+        elif model_family == "pgu_ens":
+            from pgu_ens.cc2 import cc2CRPS
+            from pgu_ens.util import roll_forecast
+            from pgu_ens.loss import loss_fn
+
+        self._roll_forecast = roll_forecast
+        self._loss_fn = loss_fn
+
         self.model = cc2CRPS(config=model_kwargs)
-        self.loss_fn = loss_fn
 
         self.run_name = os.environ["CC2_RUN_NAME"]
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
@@ -184,12 +198,12 @@ class cc2CRPSModel(L.LightningModule):
     def training_step(self, batch, batch_idx):
         data, forcing = batch
 
-        loss, tendencies, predictions = roll_forecast(
+        loss, tendencies, predictions = self._roll_forecast(
             self.model,
             data,
             forcing,
             self.hparams.rollout_length,
-            loss_fn=self.loss_fn,
+            loss_fn=self._loss_fn,
         )
 
         self.log("train_loss", loss["loss"], sync_dist=True)
@@ -203,12 +217,12 @@ class cc2CRPSModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
 
-        loss, tendencies, predictions = roll_forecast(
+        loss, tendencies, predictions = self._roll_forecast(
             self.model,
             data,
             forcing,
             self.hparams.rollout_length,
-            loss_fn=self.loss_fn,
+            loss_fn=self._loss_fn,
         )
 
         self.log("val_loss", loss["loss"], sync_dist=True)
