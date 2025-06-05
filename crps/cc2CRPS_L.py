@@ -236,7 +236,7 @@ class cc2CRPSModel(L.LightningModule):
     def test_step(self, batch, batch_idx):
         data, forcing, dates = batch
 
-        _, tendencies, predictions = roll_forecast(
+        _, tendencies, predictions = self._roll_forecast(
             self,
             data,
             forcing,
