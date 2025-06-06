@@ -10,7 +10,6 @@ import sys
 import warnings
 import os
 import shutil
-from pgu_ens.util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from dataclasses import asdict
@@ -101,31 +100,13 @@ class PredictionPlotterCallback(L.Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
-        train_dataloader = trainer.train_dataloader
-
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(train_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_train_predictions
+        x, y = pl_module.latest_train_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "train",
             trainer.sanity_checking,
@@ -138,30 +119,13 @@ class PredictionPlotterCallback(L.Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
-        val_dataloader = trainer.val_dataloaders
-
-        data, forcing = next(iter(val_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "val",
             trainer.sanity_checking,
@@ -360,7 +324,7 @@ class DiagnosticCallback(L.Callback):
             data, _ = batch
             _, y = data
 
-            var, mae = var_and_mae(predictions, y)
+            var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
             pl_module.log("train/variance", var)
             pl_module.log("train/mae", mae)
 
@@ -391,10 +355,10 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze()
+            truth = y[0][-1].cpu().squeeze().to(torch.float32)
 
             # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze()
+            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
@@ -407,7 +371,7 @@ class DiagnosticCallback(L.Callback):
             )
 
             # d) variance and l1
-            var, mae = var_and_mae(predictions, y)
+            var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
             pl_module.log("val/variance", var)
             pl_module.log("val/mae", mae)
 
@@ -436,35 +400,15 @@ class DiagnosticCallback(L.Callback):
             except KeyError:
                 self.val_loss_components[k] = [val]
 
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(trainer.val_dataloaders))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, tendencies, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                loss_fn=None,
-            )
-        x, y = data
-
-        assert torch.isfinite(x).all()
-        assert torch.isfinite(y).all()
-
-        assert torch.isfinite(tendencies).all(), "non-finite values in tendencies"
-        assert torch.isfinite(predictions).all(), "non-finite values in predictions"
+        tendencies = pl_module.latest_val_tendencies
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
 
         self.plot_visual(
-            x[0].cpu().detach(),
-            y[0].cpu().detach(),
-            predictions[0].cpu().detach(),
-            tendencies[0].cpu().detach(),
+            x[0].cpu().detach().to(torch.float32),
+            y[0].cpu().detach().to(torch.float32),
+            predictions[0].cpu().detach().to(torch.float32),
+            tendencies[0].cpu().detach().to(torch.float32),
             trainer.current_epoch,
             trainer.sanity_checking,
         )

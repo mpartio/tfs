@@ -192,6 +192,14 @@ class cc2CRPSModel(L.LightningModule):
         self.test_truth = []
         self.test_dates = []
 
+        self.latest_val_tendencies = None
+        self.latest_val_predictions = None
+        self.latest_val_data = None
+
+        self.latest_train_tendencies = None
+        self.latest_train_predictions = None
+        self.latest_train_data = None
+
     def forward(self, *args, **kwargs):  # data, forcing, step):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
@@ -207,6 +215,12 @@ class cc2CRPSModel(L.LightningModule):
         )
 
         self.log("train_loss", loss["loss"], sync_dist=True)
+
+        if batch_idx == 0:
+            self.latest_train_tendencies = tendencies
+            self.latest_train_predictions = predictions
+            self.latest_train_data = data
+
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
@@ -226,6 +240,12 @@ class cc2CRPSModel(L.LightningModule):
         )
 
         self.log("val_loss", loss["loss"], sync_dist=True)
+
+        if batch_idx == 0:
+            self.latest_val_tendencies = tendencies
+            self.latest_val_predictions = predictions
+            self.latest_val_data = data
+
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
