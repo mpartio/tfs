@@ -8,7 +8,6 @@ import platform
 import lightning as L
 import sys
 import os
-import json
 import warnings
 import shutil
 from pgu.util import roll_forecast

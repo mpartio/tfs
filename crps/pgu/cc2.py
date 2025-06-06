@@ -154,6 +154,17 @@ class cc2CRPS(nn.Module):
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
+        self.add_refinement_head = config.add_refinement_head
+
+        if self.add_refinement_head:
+            self.refinement_head = nn.Sequential(
+                nn.Conv2d(1, 32, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(32, 1, 3, padding=1),
+            )
+        else:
+            self.refinement_head = nn.Identity()
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -333,6 +344,10 @@ class cc2CRPS(nn.Module):
         decoded = self.decode(encoded, step, skip)
 
         output = self.project_to_image(decoded)
+        if self.add_refinement_head:
+            output_ref = self.refinement_head(output.squeeze(2))
+            output = output + output_ref.unsqueeze(2)
+
         output = depad_tensor(output, padding_info)
 
         assert list(output.shape[-2:]) == list(
