@@ -133,33 +133,22 @@ class DecoderBlock(nn.Module):
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
 
     def forward(self, x, context, noise_embedding):
-        assert torch.isfinite(x).all(), "x has nan or inf"
-        assert torch.isfinite(context).all(), "context has nan or inf"
-
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x, noise_embedding)
 
-        with torch.amp.autocast("cuda", enabled=False):
-            x_norm1 = x_norm1.float()
-            self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+        self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
 
         x = x + self_attn
 
         # Cross-attention to encoder outputs
         x_norm2 = self.norm2(x, noise_embedding)
-        with torch.amp.autocast("cuda", enabled=False):
-            cross_attn, _ = self.cross_attn(
-                x_norm2.float(), context.float(), context.float()
-            )
+        cross_attn, _ = self.cross_attn(x_norm2, context, context)
 
         x = x + cross_attn
 
         # Feedforward
-        assert torch.isfinite(x).all(), "before x_norm3 has nan or inf"
-
-        with torch.amp.autocast("cuda", enabled=False):
-            x = self.norm3(x.float(), noise_embedding)
-            x = x + self.mlp(x)
+        x = self.norm3(x, noise_embedding)
+        x = x + self.mlp(x)
 
         return x
 
@@ -176,8 +165,7 @@ class PatchExpand(nn.Module):
         B, L, C = x.shape
         assert L == H * W, "Input feature has wrong size: {} vs {}".format(L, H * W)
 
-        with torch.amp.autocast("cuda", enabled=False):
-            x = self.expand(x.float())  # B, H*W, C*scale_factor^2
+        x = self.expand(x)  # B, H*W, C*scale_factor^2
 
         # Reshape to spatial format for upsampling
         x = x.view(B, H, W, -1)
