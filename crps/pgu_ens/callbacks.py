@@ -287,16 +287,25 @@ class DiagnosticCallback(L.Callback):
         train_loss = outputs["loss"].item()
 
         pl_module.log(
-            "train/loss_step", train_loss, on_step=True, on_epoch=False, prog_bar=True
+            "train/loss_step",
+            train_loss,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=True,
+            sync_dist=True,
         )
-        pl_module.log("train/loss_epoch", train_loss, on_step=False, on_epoch=True)
+        pl_module.log(
+            "train/loss_epoch", train_loss, on_step=False, on_epoch=True, sync_dist=True
+        )
 
         _loss_names = []
         for k, v in outputs["loss_components"].items():
             if k == "loss":
                 continue
 
-            pl_module.log(f"train/{k}", v.cpu(), on_step=True, on_epoch=True)
+            pl_module.log(
+                f"train/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+            )
 
             if len(self.loss_names) == 0:
                 _loss_names.append(k)
@@ -306,7 +315,7 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False)
+        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=True)
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -314,8 +323,20 @@ class DiagnosticCallback(L.Callback):
 
             for k in grads.keys():
                 mean, std = grads[k]["mean"], grads[k]["std"]
-                pl_module.log(f"train/grad_{k}_mean", mean, on_step=True, on_epoch=True)
-                pl_module.log(f"train/grad_{k}_std", std, on_step=True, on_epoch=True)
+                pl_module.log(
+                    f"train/grad_{k}_mean",
+                    mean,
+                    on_step=True,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
+                pl_module.log(
+                    f"train/grad_{k}_std",
+                    std,
+                    on_step=True,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
             # d) variance and l1
 
@@ -325,8 +346,8 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log("train/variance", var)
-            pl_module.log("train/mae", mae)
+            pl_module.log("train/variance", var, sync_dist=True, sync_dist=True)
+            pl_module.log("train/mae", mae, sync_dist=True, sync_dist=True)
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -338,14 +359,21 @@ class DiagnosticCallback(L.Callback):
         val_loss = outputs["loss"].item()
 
         pl_module.log(
-            "val/loss_epoch", val_loss, on_step=False, on_epoch=True, prog_bar=True
+            "val/loss_epoch",
+            val_loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
         )
 
         for k, v in outputs["loss_components"].items():
             if k == "loss":
                 continue
 
-            pl_module.log(f"val/{k}", v.cpu(), on_step=True, on_epoch=True)
+            pl_module.log(
+                f"val/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+            )
 
         if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
@@ -364,16 +392,24 @@ class DiagnosticCallback(L.Callback):
             snr_real = calculate_wavelet_snr(truth, None)
 
             pl_module.log(
-                "val/snr_real", snr_real["snr_db"], on_step=False, on_epoch=True
+                "val/snr_real",
+                snr_real["snr_db"],
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
             pl_module.log(
-                "val/snr_pred", snr_pred["snr_db"], on_step=False, on_epoch=True
+                "val/snr_pred",
+                snr_pred["snr_db"],
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
 
             # d) variance and l1
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log("val/variance", var)
-            pl_module.log("val/mae", mae)
+            pl_module.log("val/variance", var, sync_dist=True)
+            pl_module.log("val/mae", mae, sync_dist=True)
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
