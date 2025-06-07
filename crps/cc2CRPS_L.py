@@ -219,7 +219,7 @@ class cc2CRPSModel(L.LightningModule):
             self.latest_train_predictions = predictions
             self.latest_train_data = data
 
-        self.log("train_loss", loss["loss"], sync_dist=True)
+        self.log("train_loss", loss["loss"], sync_dist=False)
 
         if batch_idx == 0:
             self.latest_train_tendencies = tendencies
