@@ -307,7 +307,7 @@ class DiagnosticCallback(L.Callback):
 
             pl_module.log(
                 f"train/{k}",
-                torch.sum(v.cpu()),
+                torch.sum(v),
                 on_step=True,
                 on_epoch=True,
                 sync_dist=False,
@@ -367,7 +367,7 @@ class DiagnosticCallback(L.Callback):
 
             pl_module.log(
                 f"val/{k}",
-                torch.sum(v.cpu()),
+                torch.sum(v),
                 on_step=True,
                 on_epoch=True,
                 sync_dist=False,
