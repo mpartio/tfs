@@ -6,6 +6,7 @@ import os
 import sys
 import platform
 
+
 def print_env():
     print(f"Python version: {sys.version}")
     print(f"Torch version: {t.__version__}")
@@ -16,28 +17,37 @@ def print_env():
 
     try:
         import subprocess
-        print(subprocess.check_output(['df', '-T', '.']).decode())
+
+        print(subprocess.check_output(["df", "-T", "."]).decode())
     except:
         print("Couldn't get filesystem type")
 
     # Also check ulimit
     try:
         import resource
+
         print(f"Max open files: {resource.getrlimit(resource.RLIMIT_NOFILE)}")
     except:
         print("Couldn't get ulimit info")
 
+
 print_env()
 
-zarr_path = "../data/nwcsaf-128x128-hourly-anemoi.zarr"
-cc2Data = cc2DataModule(zarr_path=zarr_path, batch_size=5, n_x=2, n_y=1)
+zarr_path = "../../data/cerra-475x535-1984-1988.zarr"
+cc2Data = cc2DataModule(
+    data_path=zarr_path,
+    input_resolution=[475, 535],
+    prognostic_params=["tcc"],
+    forcing_params=["insolation"],
+)
+cc2Data.setup("fit")
 
 df = cc2Data.train_dataloader()
 
-for batch in df:
-    x, y = batch
-    print(x.shape)
-    print(y.shape)
+for i, batch in enumerate(df):
+    data, forcing = batch
+    x, y = data
+    print("Batch", i, "X shape", x.shape, "Y shape", y.shape)
 
     x_f = x[0].squeeze()
     y_f = y[0].squeeze()
@@ -53,6 +63,10 @@ for batch in df:
         )
     )
 
+    if i >= 5:
+        break
+
+    continue
     fig, ax = plt.subplots(1, 3, figsize=(10, 4))
     ax[0].imshow(x_f[0])
     ax[1].imshow(x_f[1])
