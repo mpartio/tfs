@@ -287,15 +287,12 @@ class DiagnosticCallback(L.Callback):
         # a) train loss
         train_loss = outputs["loss"]
         pl_module.log(
-            "train/loss_step",
+            "train/loss",
             train_loss,
             on_step=True,
-            on_epoch=False,
+            on_epoch=True,
             prog_bar=True,
-            sync_dist=False,
-        )
-        pl_module.log(
-            "train/loss_epoch", train_loss, on_step=False, on_epoch=True, sync_dist=True
+            sync_dist=True,
         )
 
         _loss_names = []
@@ -308,7 +305,7 @@ class DiagnosticCallback(L.Callback):
                 torch.sum(v),
                 on_step=True,
                 on_epoch=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
             if len(self.loss_names) == 0:
@@ -319,7 +316,7 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
+        pl_module.log("lr", lr, on_step=True, on_epoch=True, sync_dist=True)
         return
 
         # c) gradients
@@ -365,9 +362,9 @@ class DiagnosticCallback(L.Callback):
             pl_module.log(
                 f"val/{k}",
                 torch.sum(v),
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
-                sync_dist=False,
+                sync_dist=True,
             )
 
         if batch_idx % self.check_frequency == 0:
