@@ -280,21 +280,19 @@ class DiagnosticCallback(L.Callback):
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
 
-    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) train loss
-        train_loss = outputs["loss"].item()
+        train_loss = outputs["loss"]
         pl_module.log(
             "train/loss_step",
             train_loss,
             on_step=True,
             on_epoch=False,
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=False,
         )
         pl_module.log(
             "train/loss_epoch", train_loss, on_step=False, on_epoch=True, sync_dist=True
@@ -321,7 +319,8 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=True)
+        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
+        return
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -344,14 +343,12 @@ class DiagnosticCallback(L.Callback):
                     sync_dist=True,
                 )
 
-    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) Validation loss
-        val_loss = outputs["loss"].item()
+        val_loss = outputs["loss"]
         pl_module.log(
             "val/loss_epoch",
             val_loss,
@@ -751,4 +748,3 @@ class CleanupFailedRunCallback(L.Callback):
                 print(
                     f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
                 )
-
