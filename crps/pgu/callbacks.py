@@ -280,24 +280,19 @@ class DiagnosticCallback(L.Callback):
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
 
-    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) train loss
-        train_loss = outputs["loss"].item()
+        train_loss = outputs["loss"]
         pl_module.log(
-            "train/loss_step",
+            "train/loss",
             train_loss,
             on_step=True,
-            on_epoch=False,
+            on_epoch=True,
             prog_bar=True,
             sync_dist=True,
-        )
-        pl_module.log(
-            "train/loss_epoch", train_loss, on_step=False, on_epoch=True, sync_dist=True
         )
 
         _loss_names = []
@@ -306,7 +301,11 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"train/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+                f"train/{k}",
+                torch.sum(v),
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
             )
 
             if len(self.loss_names) == 0:
@@ -317,7 +316,8 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=True)
+        pl_module.log("lr", lr, on_step=True, on_epoch=True, sync_dist=True)
+        return
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -340,14 +340,12 @@ class DiagnosticCallback(L.Callback):
                     sync_dist=True,
                 )
 
-    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) Validation loss
-        val_loss = outputs["loss"].item()
+        val_loss = outputs["loss"]
         pl_module.log(
             "val/loss_epoch",
             val_loss,
@@ -362,7 +360,11 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"val/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+                f"val/{k}",
+                torch.sum(v),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
 
         if batch_idx % self.check_frequency == 0:
@@ -743,20 +745,3 @@ class CleanupFailedRunCallback(L.Callback):
                 print(
                     f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
                 )
-
-
-class LazyLoggerCallback(L.Callback):
-    def __init__(self, run_name: str, run_number: int):
-        super().__init__()
-        self.run_name = run_name
-        self.run_number = run_number
-        self.logger_created = False
-        self.run_dir = f"runs/{run_name}/{run_number}"
-
-    @rank_zero_only
-    def on_train_start(self, trainer, pl_module):
-        """This runs after the sanity check is successful."""
-        if not self.logger_created and get_rank() == 0:
-            trainer.logger = CSVLogger(f"{self.run_dir}/logs")
-            self.logger_created = True  # Prevent multiple reassignments
-            print(f"Logger initialized at {self.run_dir}/logs")
