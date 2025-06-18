@@ -242,6 +242,10 @@ class DiagnosticCallback(L.Callback):
         self.gradients_std = {}
         self.train_loss_components = {}
         self.val_loss_components = {}
+        self.train_var = []
+        self.train_mae = []
+        self.val_var = []
+        self.val_mae = []
 
         self.loss_names = []
         self.grad_names = get_gradient_names()
@@ -277,25 +281,21 @@ class DiagnosticCallback(L.Callback):
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
 
-    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
             return
 
         # a) train loss
-        train_loss = outputs["loss"].item()
+        train_loss = outputs["loss"]
 
         pl_module.log(
-            "train/loss_step",
+            "train/loss",
             train_loss,
             on_step=True,
-            on_epoch=False,
+            on_epoch=True,
             prog_bar=True,
             sync_dist=True,
-        )
-        pl_module.log(
-            "train/loss_epoch", train_loss, on_step=False, on_epoch=True, sync_dist=True
         )
 
         _loss_names = []
@@ -304,7 +304,7 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"train/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+                f"train/{k}", torch.sum(v), on_step=True, on_epoch=True, sync_dist=True
             )
 
             if len(self.loss_names) == 0:
@@ -315,7 +315,7 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=True)
+        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -346,17 +346,20 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log("train/variance", var, sync_dist=True, sync_dist=True)
-            pl_module.log("train/mae", mae, sync_dist=True, sync_dist=True)
+            pl_module.log(
+                "train/variance", var, on_step=False, on_epoch=True, sync_dist=True
+            )
+            pl_module.log(
+                "train/mae", mae, on_step=False, on_epoch=True, sync_dist=True
+            )
 
-    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
             return
 
         # a) Validation loss
-        val_loss = outputs["loss"].item()
+        val_loss = outputs["loss"]
 
         pl_module.log(
             "val/loss_epoch",
@@ -372,7 +375,7 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"val/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+                f"val/{k}", torch.sum(v), on_step=False, on_epoch=True, sync_dist=True
             )
 
         if batch_idx % self.check_frequency == 0:
@@ -408,8 +411,10 @@ class DiagnosticCallback(L.Callback):
 
             # d) variance and l1
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log("val/variance", var, sync_dist=True)
-            pl_module.log("val/mae", mae, sync_dist=True)
+            pl_module.log(
+                "val/variance", var, on_step=True, on_epoch=True, sync_dist=False
+            )
+            pl_module.log("val/mae", mae, on_step=True, on_epoch=True, sync_dist=False)
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -417,19 +422,39 @@ class DiagnosticCallback(L.Callback):
         if not trainer.is_global_zero or trainer.sanity_checking:
             return
 
-        current_val_loss = trainer.logged_metrics.get("val/loss_epoch", float("nan"))
-        current_lr = trainer.logged_metrics.get("lr", float("nan"))
-        current_snr_real = trainer.logged_metrics.get("val/snr_real", float("nan"))
-        current_snr_pred = trainer.logged_metrics.get("val/snr_pred", float("nan"))
+        current_val_loss = (
+            trainer.logged_metrics.get("val/loss_epoch", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_lr = (
+            trainer.logged_metrics.get("lr", float("nan")).to(torch.float32).cpu()
+        )
+        current_snr_real = (
+            trainer.logged_metrics.get("val/snr_real", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_snr_pred = (
+            trainer.logged_metrics.get("val/snr_pred", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_var = trainer.logged_metrics.get("val/variance", float("nan"))
+        current_mae = trainer.logged_metrics.get("val/mae", float("nan"))
 
         # Append to internal history lists
         self.val_loss.append(current_val_loss)
         self.lr.append(current_lr)
         self.val_snr_real.append(current_snr_real)
         self.val_snr_pred.append(current_snr_pred)
+        self.val_var.append(current_var)
+        self.val_mae.append(current_mae)
 
         for k in self.loss_names:
-            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan"))
+            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan")).to(
+                torch.float32
+            )
 
             try:
                 self.val_loss_components[k].append(val)
@@ -456,13 +481,24 @@ class DiagnosticCallback(L.Callback):
         if trainer.sanity_checking:
             return
 
-        current_train_loss = trainer.logged_metrics.get(
-            "train/loss_epoch", float("nan")
+        current_train_loss = (
+            trainer.logged_metrics.get("train/loss_epoch", float("nan"))
+            .to(torch.float32)
+            .cpu()
         )
         self.train_loss.append(current_train_loss)
 
+        current_var = trainer.logged_metrics.get("train/variance", float("nan"))
+        current_mae = trainer.logged_metrics.get("train/mae", float("nan"))
+        self.train_var.append(current_var)
+        self.train_mae.append(current_mae)
+
         for k in self.loss_names:
-            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
+            val = (
+                trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
+                .to(torch.float32)
+                .cpu()
+            )
 
             try:
                 self.train_loss_components[k].append(val)
@@ -470,14 +506,22 @@ class DiagnosticCallback(L.Callback):
                 self.train_loss_components[k] = [val]
 
         for k in self.grad_names:
-            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
+            val = (
+                trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
+                .to(torch.float32)
+                .cpu()
+            )
 
             try:
                 self.gradients_mean[k].append(val)
             except KeyError:
                 self.gradients_mean[k] = [val]
 
-            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
+            val = (
+                trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
+                .to(torch.float32)
+                .cpu()
+            )
 
             try:
                 self.gradients_std[k].append(val)
@@ -616,9 +660,8 @@ class DiagnosticCallback(L.Callback):
         plt.legend(loc="upper left")
 
         plt.subplot(243)
-        val_snr = np.array(self.val_snr).T
-        snr_real = torch.tensor(val_snr[0])
-        snr_pred = torch.tensor(val_snr[1])
+        snr_real = torch.tensor(self.val_snr_real)
+        snr_pred = torch.tensor(self.val_snr_pred)
         plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 30),
@@ -662,38 +705,40 @@ class DiagnosticCallback(L.Callback):
         plt.legend()
 
         plt.subplot(246)
+        train_var = torch.tensor(self.train_var).cpu()
         plt.plot(self.train_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.train_var), 30),
+            moving_average(train_var, 30),
             color="blue",
             label="Variance",
         )
         plt.legend(loc="upper left")
 
+        train_mae = torch.tensor(self.train_mae).cpu()
         ax2 = plt.gca().twinx()
-        ax2.plot(self.train_mae, color="orange", alpha=0.3)
+        ax2.plot(train_mae, color="orange", alpha=0.3)
         ax2.plot(
-            moving_average(torch.tensor(self.train_mae), 30),
+            moving_average(train_mae, 30),
             color="orange",
             label="MAE",
         )
         ax2.legend(loc="upper right")
         plt.title("Train Variance vs MAE")
 
+        val_var = torch.tensor(self.val_var).cpu()
         plt.subplot(247)
-        plt.plot(self.val_var, color="blue", alpha=0.3)
+        plt.plot(val_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.val_var), 30),
+            moving_average(val_var, 30),
             color="blue",
             label="Variance",
         )
         plt.legend(loc="upper left")
 
+        val_mae = torch.tensor(self.val_mae)
         ax2 = plt.gca().twinx()
-        ax2.plot(self.val_mae, color="orange", alpha=0.3)
-        ax2.plot(
-            moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
-        )
+        ax2.plot(val_mae, color="orange", alpha=0.3)
+        ax2.plot(moving_average(val_mae, 30), color="orange", label="MAE")
         ax2.legend(loc="upper right")
         plt.title("Val Variance vs MAE")
 
