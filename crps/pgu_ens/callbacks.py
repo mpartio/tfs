@@ -98,8 +98,6 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
-        pl_module.eval()
-
         predictions = pl_module.latest_train_predictions
         x, y = pl_module.latest_train_data
 
@@ -112,13 +110,9 @@ class PredictionPlotterCallback(L.Callback):
             trainer.sanity_checking,
         )
 
-        # Restore model to training mode
-        pl_module.train()
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        pl_module.eval()
-
         predictions = pl_module.latest_val_predictions
         x, y = pl_module.latest_val_data
 
@@ -131,8 +125,6 @@ class PredictionPlotterCallback(L.Callback):
             trainer.sanity_checking,
         )
 
-        # Restore model to training mode
-        pl_module.train()
 
     def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # Take first batch member
@@ -706,7 +698,7 @@ class DiagnosticCallback(L.Callback):
 
         plt.subplot(246)
         train_var = torch.tensor(self.train_var).cpu()
-        plt.plot(self.train_var, color="blue", alpha=0.3)
+        plt.plot(train_var, color="blue", alpha=0.3)
         plt.plot(
             moving_average(train_var, 30),
             color="blue",
@@ -788,18 +780,3 @@ class CleanupFailedRunCallback(L.Callback):
                 print(
                     f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
                 )
-
-
-class LazyLoggerCallback(L.Callback):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.logger_created = False
-
-    @rank_zero_only
-    def on_train_start(self, trainer, pl_module):
-        """This runs after the sanity check is successful."""
-        if not self.logger_created and get_rank() == 0:
-            trainer.logger = CSVLogger(f"{self.config.run_dir}/logs")
-            self.logger_created = True  # Prevent multiple reassignments
-            print(f"Logger initialized at {self.config.run_dir}/logs")
