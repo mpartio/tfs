@@ -52,10 +52,11 @@ def run_info():
 
 
 def var_and_mae(predictions, y):
-    variance = torch.var(predictions[:, :, -1, ...], dim=2, unbiased=False)
+    # pred shape: B, M, T, C, H, W:  torch.Size([1, 3, 1, 1, 535, 475
+    variance = torch.var(predictions[:, :, -1, ...], dim=1, unbiased=False)
     variance = variance.detach().mean().cpu().numpy().item()
 
-    mean_pred = torch.mean(predictions[:, :, -1, ...], dim=2)
+    mean_pred = torch.mean(predictions[:, :, -1, ...], dim=1)
     y_true = y[:, -1, ...]
 
     mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
@@ -110,7 +111,6 @@ class PredictionPlotterCallback(L.Callback):
             trainer.sanity_checking,
         )
 
-
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
         predictions = pl_module.latest_val_predictions
@@ -124,7 +124,6 @@ class PredictionPlotterCallback(L.Callback):
             "val",
             trainer.sanity_checking,
         )
-
 
     def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # Take first batch member
@@ -241,6 +240,7 @@ class DiagnosticCallback(L.Callback):
 
         self.loss_names = []
         self.grad_names = get_gradient_names()
+        self._current_step_grads = None
 
         self.check_frequency = check_frequency
 
@@ -272,6 +272,10 @@ class DiagnosticCallback(L.Callback):
             print(
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
+
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        if (trainer.global_step + 1) % self.check_frequency == 0:
+            self._current_step_grads = analyze_gradients(pl_module)
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
@@ -310,11 +314,11 @@ class DiagnosticCallback(L.Callback):
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
 
         # c) gradients
-        if batch_idx % self.check_frequency == 0:
-            grads = analyze_gradients(pl_module)
+        if self._current_step_grads:
+            for k in self._current_step_grads.keys():
+                mean = self._current_step_grads[k]["mean"]
+                std = self._current_step_grads[k]["std"]
 
-            for k in grads.keys():
-                mean, std = grads[k]["mean"], grads[k]["std"]
                 pl_module.log(
                     f"train/grad_{k}_mean",
                     mean,
@@ -330,7 +334,10 @@ class DiagnosticCallback(L.Callback):
                     sync_dist=False,
                 )
 
-            # d) variance and l1
+            self._current_step_grads = None
+
+        # d) variance and l1
+        if (batch_idx + 1) % self.check_frequency == 0:
 
             predictions = outputs["predictions"]  # B, M, T, C, H, W
 
@@ -484,10 +491,7 @@ class DiagnosticCallback(L.Callback):
         self.train_mae.append(current_mae)
 
         for k in self.loss_names:
-            val = (
-                trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
-                .cpu()
-            )
+            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan")).cpu()
 
             try:
                 self.train_loss_components[k].append(val)
@@ -495,18 +499,14 @@ class DiagnosticCallback(L.Callback):
                 self.train_loss_components[k] = [val]
 
         for k in self.grad_names:
-            val = (
-                trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
-            )
+            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
 
             try:
                 self.gradients_mean[k].append(val)
             except KeyError:
                 self.gradients_mean[k] = [val]
 
-            val = (
-                trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
-            )
+            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
 
             try:
                 self.gradients_std[k].append(val)
