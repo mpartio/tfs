@@ -287,7 +287,7 @@ class DiagnosticCallback(L.Callback):
             on_step=True,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=False,
         )
 
         _loss_names = []
@@ -296,7 +296,7 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"train/{k}", torch.sum(v), on_step=True, on_epoch=True, sync_dist=True
+                f"train/{k}", torch.sum(v), on_step=True, on_epoch=True, sync_dist=False
             )
 
             if len(self.loss_names) == 0:
@@ -320,14 +320,14 @@ class DiagnosticCallback(L.Callback):
                     mean,
                     on_step=True,
                     on_epoch=True,
-                    sync_dist=True,
+                    sync_dist=False,
                 )
                 pl_module.log(
                     f"train/grad_{k}_std",
                     std,
                     on_step=True,
                     on_epoch=True,
-                    sync_dist=True,
+                    sync_dist=False,
                 )
 
             # d) variance and l1
@@ -339,10 +339,10 @@ class DiagnosticCallback(L.Callback):
 
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
             pl_module.log(
-                "train/variance", var, on_step=False, on_epoch=True, sync_dist=True
+                "train/variance", var, on_step=False, on_epoch=True, sync_dist=False
             )
             pl_module.log(
-                "train/mae", mae, on_step=False, on_epoch=True, sync_dist=True
+                "train/mae", mae, on_step=False, on_epoch=True, sync_dist=False
             )
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -359,7 +359,7 @@ class DiagnosticCallback(L.Callback):
             on_step=False,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=False,
         )
 
         for k, v in outputs["loss_components"].items():
@@ -367,7 +367,7 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"val/{k}", torch.sum(v), on_step=False, on_epoch=True, sync_dist=True
+                f"val/{k}", torch.sum(v), on_step=False, on_epoch=True, sync_dist=False
             )
 
         if batch_idx % self.check_frequency == 0:
@@ -391,27 +391,27 @@ class DiagnosticCallback(L.Callback):
                 snr_real["snr_db"],
                 on_step=False,
                 on_epoch=True,
-                sync_dist=True,
+                sync_dist=False,
             )
             pl_module.log(
                 "val/snr_pred",
                 snr_pred["snr_db"],
                 on_step=False,
                 on_epoch=True,
-                sync_dist=True,
+                sync_dist=False,
             )
 
             # d) variance and l1
             var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
             pl_module.log(
-                "val/variance", var, on_step=True, on_epoch=True, sync_dist=False
+                "val/variance", var, on_step=False, on_epoch=True, sync_dist=False
             )
-            pl_module.log("val/mae", mae, on_step=True, on_epoch=True, sync_dist=False)
+            pl_module.log("val/mae", mae, on_step=False, on_epoch=True, sync_dist=False)
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
 
-        if not trainer.is_global_zero or trainer.sanity_checking:
+        if trainer.sanity_checking:
             return
 
         current_val_loss = (
@@ -444,9 +444,7 @@ class DiagnosticCallback(L.Callback):
         self.val_mae.append(current_mae)
 
         for k in self.loss_names:
-            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan")).to(
-                torch.float32
-            )
+            val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan"))
 
             try:
                 self.val_loss_components[k].append(val)
@@ -488,7 +486,6 @@ class DiagnosticCallback(L.Callback):
         for k in self.loss_names:
             val = (
                 trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
-                .to(torch.float32)
                 .cpu()
             )
 
@@ -500,8 +497,6 @@ class DiagnosticCallback(L.Callback):
         for k in self.grad_names:
             val = (
                 trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
-                .to(torch.float32)
-                .cpu()
             )
 
             try:
@@ -511,8 +506,6 @@ class DiagnosticCallback(L.Callback):
 
             val = (
                 trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
-                .to(torch.float32)
-                .cpu()
             )
 
             try:
