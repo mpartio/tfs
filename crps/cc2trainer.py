@@ -11,11 +11,14 @@ from lightning.pytorch.cli import LightningCLI
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number, get_rank
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch.loggers import MLFlowLogger
 
 coord_file = "ddp_coordination_info.json"
 
 
-def write_coordination_info(coord_file: str, run_name: str, run_number: int, run_dir: str):
+def write_coordination_info(
+    coord_file: str, run_name: str, run_number: int, run_dir: str
+):
     # Write coordination info to file for other processes
     coord_info = {
         "run_name": run_name,
@@ -30,6 +33,7 @@ def setup_run_dir(coord_file: str, ckpt_path: str | None):
     # Generate random name if not already set
     run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
     os.environ["CC2_RUN_NAME"] = run_name
+    os.environ["MLFLOW_RUN_NAME"] = run_name
 
     # Get base run directory
     run_dir = os.path.join("runs", run_name)
@@ -81,6 +85,7 @@ def initialize_environment(ckpt_path: str | None):
         os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
         os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
         os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
+        os.environ["MLFLOW_RUN_NAME"] = coord_info["run_name"]
 
 
 class cc2trainer(LightningCLI):
@@ -107,6 +112,7 @@ class cc2trainer(LightningCLI):
             os.environ["CC2_RUN_NAME"] = run_name
             os.environ["CC2_RUN_NUMBER"] = run_number
             os.environ["CC2_RUN_DIR"] = run_dir
+            os.environ["MLFLOW_RUN_NAME"] = run_name
 
     def before_fit(self):
         if self.trainer.global_rank == 0:
