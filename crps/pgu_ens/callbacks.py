@@ -51,17 +51,20 @@ def run_info():
     return run_name, run_number, run_dir
 
 
-def var_and_mae(predictions, y):
+def rmse_std_ratio(predictions, y):
     # pred shape: B, M, T, C, H, W:  torch.Size([1, 3, 1, 1, 535, 475
-    variance = torch.var(predictions[:, :, -1, ...], dim=1, unbiased=False)
-    variance = variance.detach().mean().cpu().numpy().item()
+    std = torch.std(predictions[:, :, -1, ...], dim=1)
+    std = std.detach().mean().cpu().numpy().item() + 1e-8
 
     mean_pred = torch.mean(predictions[:, :, -1, ...], dim=1)
     y_true = y[:, -1, ...]
 
-    mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
+    rmse = torch.mean((y_true - mean_pred) ** 2)
+    rmse = rmse.detach().cpu().numpy().item()
 
-    return variance, mae
+    ratio = rmse / std
+
+    return std, rmse, ratio
 
 
 def analyze_gradients(model):
@@ -294,21 +297,6 @@ class DiagnosticCallback(L.Callback):
             sync_dist=False,
         )
 
-        _loss_names = []
-        for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
-            pl_module.log(
-                f"train/{k}", torch.sum(v), on_step=True, on_epoch=True, sync_dist=False
-            )
-
-            if len(self.loss_names) == 0:
-                _loss_names.append(k)
-
-        if len(self.loss_names) == 0:
-            self.loss_names = _loss_names
-
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
@@ -323,14 +311,14 @@ class DiagnosticCallback(L.Callback):
                     f"train/grad_{k}_mean",
                     mean,
                     on_step=True,
-                    on_epoch=True,
+                    on_epoch=False,
                     sync_dist=False,
                 )
                 pl_module.log(
                     f"train/grad_{k}_std",
                     std,
                     on_step=True,
-                    on_epoch=True,
+                    on_epoch=False,
                     sync_dist=False,
                 )
 
@@ -344,12 +332,21 @@ class DiagnosticCallback(L.Callback):
             data, _ = batch
             _, y = data
 
-            var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log(
-                "train/variance", var, on_step=False, on_epoch=True, sync_dist=False
+            std, rmse, ratio = rmse_std_ratio(
+                predictions.to(torch.float32), y.to(torch.float32)
             )
             pl_module.log(
-                "train/mae", mae, on_step=False, on_epoch=True, sync_dist=False
+                "train/std", std, on_step=True, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "train/rmse", rmse, on_step=True, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "train/rmse_std_ratio",
+                ratio,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=False,
             )
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -361,21 +358,13 @@ class DiagnosticCallback(L.Callback):
         val_loss = outputs["loss"]
 
         pl_module.log(
-            "val/loss_epoch",
+            "val/loss",
             val_loss,
             on_step=False,
             on_epoch=True,
             prog_bar=True,
             sync_dist=False,
         )
-
-        for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
-            pl_module.log(
-                f"val/{k}", torch.sum(v), on_step=False, on_epoch=True, sync_dist=False
-            )
 
         if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
@@ -396,30 +385,54 @@ class DiagnosticCallback(L.Callback):
             pl_module.log(
                 "val/snr_real",
                 snr_real["snr_db"],
-                on_step=False,
+                on_step=True,
                 on_epoch=True,
                 sync_dist=False,
             )
             pl_module.log(
                 "val/snr_pred",
                 snr_pred["snr_db"],
-                on_step=False,
+                on_step=True,
                 on_epoch=True,
                 sync_dist=False,
             )
 
             # d) variance and l1
-            var, mae = var_and_mae(predictions.to(torch.float32), y.to(torch.float32))
-            pl_module.log(
-                "val/variance", var, on_step=False, on_epoch=True, sync_dist=False
+            std, rmse, ratio = rmse_std_ratio(
+                predictions.to(torch.float32), y.to(torch.float32)
             )
-            pl_module.log("val/mae", mae, on_step=False, on_epoch=True, sync_dist=False)
+            pl_module.log("val/std", std, on_step=False, on_epoch=True, sync_dist=False)
+            pl_module.log(
+                "val/rmse", rmse, on_step=False, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "val/rmse_std_ratio",
+                ratio,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
 
         if trainer.sanity_checking:
             return
+
+        tendencies = pl_module.latest_val_tendencies
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
+
+        self.plot_visual(
+            x[0].cpu().detach().to(torch.float32),
+            y[0].cpu().detach().to(torch.float32),
+            predictions[0].cpu().detach().to(torch.float32),
+            tendencies[0].cpu().detach().to(torch.float32),
+            trainer.current_epoch,
+            trainer.sanity_checking,
+        )
+
+        return
 
         current_val_loss = (
             trainer.logged_metrics.get("val/loss_epoch", float("nan"))
@@ -458,19 +471,6 @@ class DiagnosticCallback(L.Callback):
             except KeyError:
                 self.val_loss_components[k] = [val]
 
-        tendencies = pl_module.latest_val_tendencies
-        predictions = pl_module.latest_val_predictions
-        x, y = pl_module.latest_val_data
-
-        self.plot_visual(
-            x[0].cpu().detach().to(torch.float32),
-            y[0].cpu().detach().to(torch.float32),
-            predictions[0].cpu().detach().to(torch.float32),
-            tendencies[0].cpu().detach().to(torch.float32),
-            trainer.current_epoch,
-            trainer.sanity_checking,
-        )
-
         self.plot_history(trainer.current_epoch, trainer.sanity_checking)
 
     @rank_zero_only
@@ -478,6 +478,7 @@ class DiagnosticCallback(L.Callback):
         if trainer.sanity_checking:
             return
 
+        return
         current_train_loss = (
             trainer.logged_metrics.get("train/loss_epoch", float("nan"))
             .to(torch.float32)
