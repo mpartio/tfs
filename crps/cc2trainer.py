@@ -8,6 +8,7 @@ import lightning as L
 import json
 import time
 from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.loggers import MLFlowLogger
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number, get_rank
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
@@ -33,7 +34,6 @@ def setup_run_dir(coord_file: str, ckpt_path: str | None):
     # Generate random name if not already set
     run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
     os.environ["CC2_RUN_NAME"] = run_name
-    os.environ["MLFLOW_RUN_NAME"] = run_name
 
     # Get base run directory
     run_dir = os.path.join("runs", run_name)
@@ -85,7 +85,24 @@ def initialize_environment(ckpt_path: str | None):
         os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
         os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
         os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
-        os.environ["MLFLOW_RUN_NAME"] = coord_info["run_name"]
+
+
+def setup_mlflow_logger(trainer):
+    # setup run name for mlflow logger
+    run_name = os.environ["CC2_RUN_NAME"]
+
+    for i, logger in enumerate(trainer.loggers):
+        if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
+            new_logger = pl.loggers.MLFlowLogger(
+                experiment_name=logger._experiment_name,
+                run_name=run_name,
+                save_dir=logger.save_dir,
+                log_model=logger._log_model,
+                checkpoint_path_prefix=logger._checkpoint_path_prefix,
+            )
+            trainer.loggers[i] = new_logger
+
+            rank_zero_info(f"MLFlowLogger run_name set to: {run_name}")
 
 
 class cc2trainer(LightningCLI):
@@ -112,10 +129,11 @@ class cc2trainer(LightningCLI):
             os.environ["CC2_RUN_NAME"] = run_name
             os.environ["CC2_RUN_NUMBER"] = run_number
             os.environ["CC2_RUN_DIR"] = run_dir
-            os.environ["MLFLOW_RUN_NAME"] = run_name
 
     def before_fit(self):
         if self.trainer.global_rank == 0:
+            setup_mlflow_logger(self.trainer)
+
             # Update loggers with version
             for i, logger in enumerate(self.trainer.loggers):
                 if isinstance(logger, L.pytorch.loggers.csv_logs.CSVLogger):
