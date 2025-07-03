@@ -199,8 +199,6 @@ def get_rank():
     # 2) torchrun / Lightning will set RANK and LOCAL_RANK
     if "RANK" in os.environ:
         return int(os.environ["RANK"])
-    #if "LOCAL_RANK" in os.environ:
-    #    return int(os.environ["LOCAL_RANK"])
 
     # 3) SLURM’s local‐id (if you still need it for sbatch)
     if "SLURM_PROCID" in os.environ:
