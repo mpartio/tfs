@@ -29,6 +29,7 @@ class cc2CRPS(nn.Module):
         super().__init__()
         config = SimpleNamespace(**config)
 
+        self.model_class = "pgu_ens"
         self.patch_size = config.patch_size
         self.embed_dim = config.hidden_dim
         self.num_members = config.num_members
@@ -52,7 +53,8 @@ class cc2CRPS(nn.Module):
             input_resolution=input_resolution,
             patch_size=self.patch_size,
             data_channels=len(config.prognostic_params),
-            forcing_channels=len(config.forcing_params) + len(config.static_forcing_params),
+            forcing_channels=len(config.forcing_params)
+            + len(config.static_forcing_params),
             embed_dim=self.embed_dim,
         )
 
