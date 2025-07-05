@@ -15,13 +15,19 @@ from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 def get_default_normalization_methods(custom_methods):
     default_methods = {
-        "insolation": "none",
+        # prognostic parameters
+        "tcc": "none",
+        # dynamic forcings
+        "r_1000": "none",
+        "r_500": "none",
+        "r_700": "none",
+        "r_850": "none",
+        "r_925": "none",
         "t_1000": "standard",
         "t_500": "standard",
         "t_700": "standard",
         "t_850": "standard",
         "t_925": "standard",
-        "tcc": "none",
         "u_1000": "standard",
         "u_500": "standard",
         "u_700": "standard",
@@ -37,6 +43,16 @@ def get_default_normalization_methods(custom_methods):
         "z_700": "standard",
         "z_850": "standard",
         "z_925": "standard",
+        # environment forcings
+        "insolation": "none",
+        "cos_julian_day": "none",
+        "sin_julian_day": "none",
+        "cos_latitude": "none",
+        "sin_latitude": "none",
+        "cos_longitude": "none",
+        "sin_longitude": "none",
+        "cos_local_time": "none",
+        "sin_local_time": "none",
         # static forcings
         "lsm": "none",
         "z": "minmax",
