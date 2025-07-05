@@ -102,6 +102,7 @@ class cc2CRPSModel(L.LightningModule):
             from pgu_ens.util import roll_forecast
             from pgu_ens.loss import loss_fn
 
+        self.model_class = model_family
         self._roll_forecast = roll_forecast
         self._loss_fn = loss_fn
 
@@ -273,10 +274,24 @@ class cc2CRPSModel(L.LightningModule):
 
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
-        predictions = torch.concatenate((analysis_time, predictions), dim=1)
+
+        if self.model_class == "pgu_ens":
+            B, T, C, H, W = analysis_time.shape
+            analysis_time = analysis_time.unsqueeze(1).expand(
+                -1, self.hparams.num_members, -1, -1, -1, -1
+            )
+            predictions = torch.concatenate((analysis_time, predictions), dim=2)
+            y = (
+                data[1]
+                .unsqueeze(1)
+                .expand(-1, self.hparams.num_members, -1, -1, -1, -1)
+            )
+            truth = torch.concatenate((analysis_time, y), dim=2)
+        else:
+            predictions = torch.concatenate((analysis_time, predictions), dim=1)
+            truth = torch.concatenate((analysis_time, data[1]), dim=1)
 
         self.test_predictions.append(predictions)
-        truth = torch.concatenate((analysis_time, data[1]), dim=1)
         self.test_truth.append(truth)
         self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
 
