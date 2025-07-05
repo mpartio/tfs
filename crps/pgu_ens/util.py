@@ -72,5 +72,5 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
     else:
         loss = None
 
-    assert tendencies.ndim == 6
+    assert predictions.ndim == tendencies.ndim == 6
     return {"loss": loss, "step_losses": losses}, tendencies, predictions
