@@ -132,18 +132,14 @@ class DecoderBlock(nn.Module):
     def forward(self, x, context):
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x)
-
-        with torch.amp.autocast("cuda", enabled=False):
-            x_norm1 = x_norm1.float()
-            self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
+        self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
 
         x = x + self_attn
 
         # Cross-attention to encoder outputs
         x_norm2 = self.norm2(x)
 
-        with torch.amp.autocast("cuda", enabled=False):
-            cross_attn, _ = self.cross_attn(x_norm2.float(), context.float(), context.float())
+        cross_attn, _ = self.cross_attn(x_norm2, context, context)
 
         x = x + cross_attn
 
@@ -319,8 +315,12 @@ class PatchEmbed(nn.Module):
         self.fusion = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, data, forcing):
-        assert data.ndim == 5, "x dims should be B, T, C, H, W, found: {}".format(data.shape)
-        assert forcing.ndim == 5, "forcing dims should be B, T, C, H, W, found: {}".format(forcing.shape)
+        assert data.ndim == 5, "x dims should be B, T, C, H, W, found: {}".format(
+            data.shape
+        )
+        assert (
+            forcing.ndim == 5
+        ), "forcing dims should be B, T, C, H, W, found: {}".format(forcing.shape)
         B, T, C_data, H, W = data.shape
         _, _, C_forcing, _, _ = forcing.shape
 

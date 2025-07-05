@@ -139,7 +139,7 @@ def find_latest_checkpoint_path(checkpoint_directory):
         checkpoints = glob(f"{checkpoint_directory}/checkpoints/*.ckpt")
         assert (
             checkpoints
-        ), f"No model checkpoints found in directory {checkpoint_directory}/checkpoints"
+        ), f"No model checkpoints found in directory {checkpoint_directory}/checkpoints, cwd={os.getcwd()}"
         latest_ckpt = max(checkpoints, key=os.path.getctime)
         return latest_ckpt
     except ValueError as e:
@@ -192,11 +192,24 @@ def get_latest_run_dir(base_dir):
 
 
 def get_rank():
-    # If distributed is initialized, use its rank
+    # 1) If DDP/FSDP has already inited, use it
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank()
-    # Otherwise, try SLURM_PROCID first, then LOCAL_RANK, default to 0.
-    return int(os.environ.get("SLURM_PROCID", os.environ.get("LOCAL_RANK", 0)))
+
+    # 2) torchrun / Lightning will set RANK and LOCAL_RANK
+    if "RANK" in os.environ:
+        return int(os.environ["RANK"])
+    #if "LOCAL_RANK" in os.environ:
+    #    return int(os.environ["LOCAL_RANK"])
+
+    # 3) SLURM’s local‐id (if you still need it for sbatch)
+    if "SLURM_PROCID" in os.environ:
+        return int(os.environ["SLURM_PROCID"])
+    if "SLURM_LOCALID" in os.environ:
+        return int(os.environ["SLURM_LOCALID"])
+
+    # 4) last‐resort
+    return 0
 
 
 def moving_average(arr, window_size):

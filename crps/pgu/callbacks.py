@@ -10,7 +10,6 @@ import sys
 import os
 import warnings
 import shutil
-from pgu.util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from matplotlib.ticker import ScalarFormatter
@@ -118,31 +117,13 @@ class PredictionPlotterCallback(L.Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
-        train_dataloader = trainer.train_dataloader
-
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(train_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[1]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_train_predictions
+        x, y = pl_module.latest_train_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "train",
             trainer.sanity_checking,
@@ -155,30 +136,13 @@ class PredictionPlotterCallback(L.Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         pl_module.eval()
 
-        val_dataloader = trainer.val_dataloaders
-
-        data, forcing = next(iter(val_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[1]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "val",
             trainer.sanity_checking,
@@ -316,18 +280,20 @@ class DiagnosticCallback(L.Callback):
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
 
-    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) train loss
-        train_loss = outputs["loss"].item()
+        train_loss = outputs["loss"]
         pl_module.log(
-            "train/loss_step", train_loss, on_step=True, on_epoch=False, prog_bar=True
+            "train/loss",
+            train_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
         )
-        pl_module.log("train/loss_epoch", train_loss, on_step=False, on_epoch=True)
 
         _loss_names = []
         for k, v in outputs["loss_components"].items():
@@ -335,7 +301,11 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"train/{k}", v.cpu(), on_step=True, on_epoch=True, sync_dist=True
+                f"train/{k}",
+                torch.sum(v),
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
             )
 
             if len(self.loss_names) == 0:
@@ -346,7 +316,8 @@ class DiagnosticCallback(L.Callback):
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False)
+        pl_module.log("lr", lr, on_step=True, on_epoch=True, sync_dist=True)
+        return
 
         # c) gradients
         if batch_idx % self.check_frequency == 0:
@@ -369,23 +340,32 @@ class DiagnosticCallback(L.Callback):
                     sync_dist=True,
                 )
 
-    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-
         if not trainer.is_global_zero:
             return
 
         # a) Validation loss
-        val_loss = outputs["loss"].item()
+        val_loss = outputs["loss"]
         pl_module.log(
-            "val/loss_epoch", val_loss, on_step=False, on_epoch=True, prog_bar=True
+            "val/loss_epoch",
+            val_loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
         )
 
         for k, v in outputs["loss_components"].items():
             if k == "loss":
                 continue
 
-            pl_module.log(f"val/{k}", v.cpu(), on_step=True, on_epoch=True)
+            pl_module.log(
+                f"val/{k}",
+                torch.sum(v),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
 
         if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
@@ -395,10 +375,10 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze()
+            truth = y[0][-1].cpu().squeeze().to(torch.float32)
 
             # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze()
+            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
@@ -476,36 +456,15 @@ class DiagnosticCallback(L.Callback):
             except KeyError:
                 self.val_loss_components[k] = [val]
 
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(trainer.val_dataloaders))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[1]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, tendencies, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                loss_fn=None,
-            )
-
-        x, y = data
-
-        assert torch.isfinite(x).all()
-        assert torch.isfinite(y).all()
-
-        assert torch.isfinite(tendencies).all(), "non-finite values in tendencies"
-        assert torch.isfinite(predictions).all(), "non-finite values in predictions"
+        tendencies = pl_module.latest_val_tendencies
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
 
         self.plot_visual(
-            x[0].cpu().detach(),
-            y[0].cpu().detach(),
-            predictions[0].cpu().detach(),
-            tendencies[0].cpu().detach(),
+            x[0].cpu().detach().to(torch.float32),
+            y[0].cpu().detach().to(torch.float32),
+            predictions[0].cpu().detach().to(torch.float32),
+            tendencies[0].cpu().detach().to(torch.float32),
             trainer.current_epoch,
             trainer.sanity_checking,
         )
@@ -786,20 +745,3 @@ class CleanupFailedRunCallback(L.Callback):
                 print(
                     f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
                 )
-
-
-class LazyLoggerCallback(L.Callback):
-    def __init__(self, run_name: str, run_number: int):
-        super().__init__()
-        self.run_name = run_name
-        self.run_number = run_number
-        self.logger_created = False
-        self.run_dir = f"runs/{run_name}/{run_number}"
-
-    @rank_zero_only
-    def on_train_start(self, trainer, pl_module):
-        """This runs after the sanity check is successful."""
-        if not self.logger_created and get_rank() == 0:
-            trainer.logger = CSVLogger(f"{self.run_dir}/logs")
-            self.logger_created = True  # Prevent multiple reassignments
-            print(f"Logger initialized at {self.run_dir}/logs")

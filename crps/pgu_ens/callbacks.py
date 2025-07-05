@@ -10,7 +10,6 @@ import sys
 import warnings
 import os
 import shutil
-from pgu_ens.util import roll_forecast
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from dataclasses import asdict
@@ -52,16 +51,20 @@ def run_info():
     return run_name, run_number, run_dir
 
 
-def var_and_mae(predictions, y):
-    variance = torch.var(predictions[:, :, -1, ...], dim=2, unbiased=False)
-    variance = variance.detach().mean().cpu().numpy().item()
+def rmse_std_ratio(predictions, y):
+    # pred shape: B, M, T, C, H, W:  torch.Size([1, 3, 1, 1, 535, 475
+    std = torch.std(predictions[:, :, -1, ...], dim=1)
+    std = std.detach().mean().cpu().numpy().item() + 1e-8
 
-    mean_pred = torch.mean(predictions[:, :, -1, ...], dim=2)
+    mean_pred = torch.mean(predictions[:, :, -1, ...], dim=1)
     y_true = y[:, -1, ...]
 
-    mae = torch.mean(torch.abs(y_true - mean_pred)).detach().cpu().numpy().item()
+    rmse = torch.mean((y_true - mean_pred) ** 2)
+    rmse = rmse.detach().cpu().numpy().item()
 
-    return variance, mae
+    ratio = rmse / std
+
+    return std, rmse, ratio
 
 
 def analyze_gradients(model):
@@ -99,76 +102,31 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
-        pl_module.eval()
-
-        train_dataloader = trainer.train_dataloader
-
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(train_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_train_predictions
+        x, y = pl_module.latest_train_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "train",
             trainer.sanity_checking,
         )
 
-        # Restore model to training mode
-        pl_module.train()
-
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        pl_module.eval()
-
-        val_dataloader = trainer.val_dataloaders
-
-        data, forcing = next(iter(val_dataloader))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, _, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                None,
-            )
-
-        x, y = data
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
 
         self.plot(
-            x.cpu().detach(),
-            y.cpu().detach(),
-            predictions.cpu().detach(),
+            x.cpu().detach().to(torch.float32),
+            y.cpu().detach().to(torch.float32),
+            predictions.cpu().detach().to(torch.float32),
             trainer.current_epoch,
             "val",
             trainer.sanity_checking,
         )
-
-        # Restore model to training mode
-        pl_module.train()
 
     def plot(self, x, y, predictions, epoch, stage, sanity_check=False):
         # Take first batch member
@@ -278,9 +236,14 @@ class DiagnosticCallback(L.Callback):
         self.gradients_std = {}
         self.train_loss_components = {}
         self.val_loss_components = {}
+        self.train_var = []
+        self.train_mae = []
+        self.val_var = []
+        self.val_mae = []
 
         self.loss_names = []
         self.grad_names = get_gradient_names()
+        self._current_step_grads = None
 
         self.check_frequency = check_frequency
 
@@ -313,75 +276,95 @@ class DiagnosticCallback(L.Callback):
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
 
-    @rank_zero_only
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        if (trainer.global_step + 1) % self.check_frequency == 0:
+            self._current_step_grads = analyze_gradients(pl_module)
+
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
             return
 
         # a) train loss
-        train_loss = outputs["loss"].item()
+        train_loss = outputs["loss"]
 
         pl_module.log(
-            "train/loss_step", train_loss, on_step=True, on_epoch=False, prog_bar=True
+            "train/loss",
+            train_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=False,
         )
-        pl_module.log("train/loss_epoch", train_loss, on_step=False, on_epoch=True)
-
-        _loss_names = []
-        for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
-            pl_module.log(f"train/{k}", v.cpu(), on_step=True, on_epoch=True)
-
-            if len(self.loss_names) == 0:
-                _loss_names.append(k)
-
-        if len(self.loss_names) == 0:
-            self.loss_names = _loss_names
 
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
-        pl_module.log("lr", lr, on_step=True, on_epoch=False)
+        pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
 
         # c) gradients
-        if batch_idx % self.check_frequency == 0:
-            grads = analyze_gradients(pl_module)
+        if self._current_step_grads:
+            for k in self._current_step_grads.keys():
+                mean = self._current_step_grads[k]["mean"]
+                std = self._current_step_grads[k]["std"]
 
-            for k in grads.keys():
-                mean, std = grads[k]["mean"], grads[k]["std"]
-                pl_module.log(f"train/grad_{k}_mean", mean, on_step=True, on_epoch=True)
-                pl_module.log(f"train/grad_{k}_std", std, on_step=True, on_epoch=True)
+                pl_module.log(
+                    f"train/grad_{k}_mean",
+                    mean,
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=False,
+                )
+                pl_module.log(
+                    f"train/grad_{k}_std",
+                    std,
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=False,
+                )
 
-            # d) variance and l1
+            self._current_step_grads = None
+
+        # d) variance and l1
+        if (batch_idx + 1) % self.check_frequency == 0:
 
             predictions = outputs["predictions"]  # B, M, T, C, H, W
 
             data, _ = batch
             _, y = data
 
-            var, mae = var_and_mae(predictions, y)
-            pl_module.log("train/variance", var)
-            pl_module.log("train/mae", mae)
+            std, rmse, ratio = rmse_std_ratio(
+                predictions.to(torch.float32), y.to(torch.float32)
+            )
+            pl_module.log(
+                "train/std", std, on_step=True, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "train/rmse", rmse, on_step=True, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "train/rmse_std_ratio",
+                ratio,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=False,
+            )
 
-    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
         if not trainer.is_global_zero:
             return
 
         # a) Validation loss
-        val_loss = outputs["loss"].item()
+        val_loss = outputs["loss"]
 
         pl_module.log(
-            "val/loss_epoch", val_loss, on_step=False, on_epoch=True, prog_bar=True
+            "val/loss",
+            val_loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=False,
         )
-
-        for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
-            pl_module.log(f"val/{k}", v.cpu(), on_step=True, on_epoch=True)
 
         if batch_idx % self.check_frequency == 0:
             # b) signal to noise ratio
@@ -391,42 +374,94 @@ class DiagnosticCallback(L.Callback):
             _, y = data
 
             # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze()
+            truth = y[0][-1].cpu().squeeze().to(torch.float32)
 
             # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze()
+            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
 
             snr_pred = calculate_wavelet_snr(pred, None)
             snr_real = calculate_wavelet_snr(truth, None)
 
             pl_module.log(
-                "val/snr_real", snr_real["snr_db"], on_step=False, on_epoch=True
+                "val/snr_real",
+                snr_real["snr_db"],
+                on_step=True,
+                on_epoch=True,
+                sync_dist=False,
             )
             pl_module.log(
-                "val/snr_pred", snr_pred["snr_db"], on_step=False, on_epoch=True
+                "val/snr_pred",
+                snr_pred["snr_db"],
+                on_step=True,
+                on_epoch=True,
+                sync_dist=False,
             )
 
             # d) variance and l1
-            var, mae = var_and_mae(predictions, y)
-            pl_module.log("val/variance", var)
-            pl_module.log("val/mae", mae)
+            std, rmse, ratio = rmse_std_ratio(
+                predictions.to(torch.float32), y.to(torch.float32)
+            )
+            pl_module.log("val/std", std, on_step=False, on_epoch=True, sync_dist=False)
+            pl_module.log(
+                "val/rmse", rmse, on_step=False, on_epoch=True, sync_dist=False
+            )
+            pl_module.log(
+                "val/rmse_std_ratio",
+                ratio,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
 
-        if not trainer.is_global_zero or trainer.sanity_checking:
+        if trainer.sanity_checking:
             return
 
-        current_val_loss = trainer.logged_metrics.get("val/loss_epoch", float("nan"))
-        current_lr = trainer.logged_metrics.get("lr", float("nan"))
-        current_snr_real = trainer.logged_metrics.get("val/snr_real", float("nan"))
-        current_snr_pred = trainer.logged_metrics.get("val/snr_pred", float("nan"))
+        tendencies = pl_module.latest_val_tendencies
+        predictions = pl_module.latest_val_predictions
+        x, y = pl_module.latest_val_data
+
+        self.plot_visual(
+            x[0].cpu().detach().to(torch.float32),
+            y[0].cpu().detach().to(torch.float32),
+            predictions[0].cpu().detach().to(torch.float32),
+            tendencies[0].cpu().detach().to(torch.float32),
+            trainer.current_epoch,
+            trainer.sanity_checking,
+        )
+
+        return
+
+        current_val_loss = (
+            trainer.logged_metrics.get("val/loss_epoch", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_lr = (
+            trainer.logged_metrics.get("lr", float("nan")).to(torch.float32).cpu()
+        )
+        current_snr_real = (
+            trainer.logged_metrics.get("val/snr_real", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_snr_pred = (
+            trainer.logged_metrics.get("val/snr_pred", float("nan"))
+            .to(torch.float32)
+            .cpu()
+        )
+        current_var = trainer.logged_metrics.get("val/variance", float("nan"))
+        current_mae = trainer.logged_metrics.get("val/mae", float("nan"))
 
         # Append to internal history lists
         self.val_loss.append(current_val_loss)
         self.lr.append(current_lr)
         self.val_snr_real.append(current_snr_real)
         self.val_snr_pred.append(current_snr_pred)
+        self.val_var.append(current_var)
+        self.val_mae.append(current_mae)
 
         for k in self.loss_names:
             val = trainer.logged_metrics.get(f"val/{k}_epoch", float("nan"))
@@ -436,39 +471,6 @@ class DiagnosticCallback(L.Callback):
             except KeyError:
                 self.val_loss_components[k] = [val]
 
-        # Get a single batch from the dataloader
-        data, forcing = next(iter(trainer.val_dataloaders))
-        data = (data[0].to(pl_module.device), data[1].to(pl_module.device))
-        forcing = forcing.to(pl_module.device)
-
-        rollout_length = data[1].shape[2]
-
-        # Perform a prediction
-        with torch.no_grad():
-            _, tendencies, predictions = roll_forecast(
-                pl_module,
-                data,
-                forcing,
-                rollout_length,
-                loss_fn=None,
-            )
-        x, y = data
-
-        assert torch.isfinite(x).all()
-        assert torch.isfinite(y).all()
-
-        assert torch.isfinite(tendencies).all(), "non-finite values in tendencies"
-        assert torch.isfinite(predictions).all(), "non-finite values in predictions"
-
-        self.plot_visual(
-            x[0].cpu().detach(),
-            y[0].cpu().detach(),
-            predictions[0].cpu().detach(),
-            tendencies[0].cpu().detach(),
-            trainer.current_epoch,
-            trainer.sanity_checking,
-        )
-
         self.plot_history(trainer.current_epoch, trainer.sanity_checking)
 
     @rank_zero_only
@@ -476,13 +478,21 @@ class DiagnosticCallback(L.Callback):
         if trainer.sanity_checking:
             return
 
-        current_train_loss = trainer.logged_metrics.get(
-            "train/loss_epoch", float("nan")
+        return
+        current_train_loss = (
+            trainer.logged_metrics.get("train/loss_epoch", float("nan"))
+            .to(torch.float32)
+            .cpu()
         )
         self.train_loss.append(current_train_loss)
 
+        current_var = trainer.logged_metrics.get("train/variance", float("nan"))
+        current_mae = trainer.logged_metrics.get("train/mae", float("nan"))
+        self.train_var.append(current_var)
+        self.train_mae.append(current_mae)
+
         for k in self.loss_names:
-            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
+            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan")).cpu()
 
             try:
                 self.train_loss_components[k].append(val)
@@ -636,9 +646,8 @@ class DiagnosticCallback(L.Callback):
         plt.legend(loc="upper left")
 
         plt.subplot(243)
-        val_snr = np.array(self.val_snr).T
-        snr_real = torch.tensor(val_snr[0])
-        snr_pred = torch.tensor(val_snr[1])
+        snr_real = torch.tensor(self.val_snr_real)
+        snr_pred = torch.tensor(self.val_snr_pred)
         plt.plot(snr_real, color="blue", alpha=0.3)
         plt.plot(
             moving_average(snr_real, 30),
@@ -682,38 +691,40 @@ class DiagnosticCallback(L.Callback):
         plt.legend()
 
         plt.subplot(246)
-        plt.plot(self.train_var, color="blue", alpha=0.3)
+        train_var = torch.tensor(self.train_var).cpu()
+        plt.plot(train_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.train_var), 30),
+            moving_average(train_var, 30),
             color="blue",
             label="Variance",
         )
         plt.legend(loc="upper left")
 
+        train_mae = torch.tensor(self.train_mae).cpu()
         ax2 = plt.gca().twinx()
-        ax2.plot(self.train_mae, color="orange", alpha=0.3)
+        ax2.plot(train_mae, color="orange", alpha=0.3)
         ax2.plot(
-            moving_average(torch.tensor(self.train_mae), 30),
+            moving_average(train_mae, 30),
             color="orange",
             label="MAE",
         )
         ax2.legend(loc="upper right")
         plt.title("Train Variance vs MAE")
 
+        val_var = torch.tensor(self.val_var).cpu()
         plt.subplot(247)
-        plt.plot(self.val_var, color="blue", alpha=0.3)
+        plt.plot(val_var, color="blue", alpha=0.3)
         plt.plot(
-            moving_average(torch.tensor(self.val_var), 30),
+            moving_average(val_var, 30),
             color="blue",
             label="Variance",
         )
         plt.legend(loc="upper left")
 
+        val_mae = torch.tensor(self.val_mae)
         ax2 = plt.gca().twinx()
-        ax2.plot(self.val_mae, color="orange", alpha=0.3)
-        ax2.plot(
-            moving_average(torch.tensor(self.val_mae), 30), color="orange", label="MAE"
-        )
+        ax2.plot(val_mae, color="orange", alpha=0.3)
+        ax2.plot(moving_average(val_mae, 30), color="orange", label="MAE")
         ax2.legend(loc="upper right")
         plt.title("Val Variance vs MAE")
 
@@ -763,18 +774,3 @@ class CleanupFailedRunCallback(L.Callback):
                 print(
                     f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
                 )
-
-
-class LazyLoggerCallback(L.Callback):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.logger_created = False
-
-    @rank_zero_only
-    def on_train_start(self, trainer, pl_module):
-        """This runs after the sanity check is successful."""
-        if not self.logger_created and get_rank() == 0:
-            trainer.logger = CSVLogger(f"{self.config.run_dir}/logs")
-            self.logger_created = True  # Prevent multiple reassignments
-            print(f"Logger initialized at {self.config.run_dir}/logs")

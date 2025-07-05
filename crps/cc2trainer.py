@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import torch
 import os
 import randomname
@@ -7,14 +8,18 @@ import lightning as L
 import json
 import time
 from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.loggers import MLFlowLogger
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number, get_rank
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch.loggers import MLFlowLogger
 
 coord_file = "ddp_coordination_info.json"
 
 
-def write_coordination_info(coord_file, run_name, run_number, run_dir):
+def write_coordination_info(
+    coord_file: str, run_name: str, run_number: int, run_dir: str
+):
     # Write coordination info to file for other processes
     coord_info = {
         "run_name": run_name,
@@ -25,7 +30,7 @@ def write_coordination_info(coord_file, run_name, run_number, run_dir):
         json.dump(coord_info, f)
 
 
-def setup_run_dir(coord_file, ckpt_path):
+def setup_run_dir(coord_file: str, ckpt_path: str | None):
     # Generate random name if not already set
     run_name = os.environ.get("CC2_RUN_NAME", randomname.get_name())
     os.environ["CC2_RUN_NAME"] = run_name
@@ -56,13 +61,13 @@ def setup_run_dir(coord_file, ckpt_path):
     return run_name, version, versioned_dir
 
 
-def initialize_environment(ckpt_path):
+def initialize_environment(ckpt_path: str | None):
     rank = get_rank()
 
     if rank == 0:
         setup_run_dir(coord_file, ckpt_path)
     else:
-        time.sleep(0.2)
+        time.sleep(2)
         max_wait = 20  # seconds
         start_time = time.time()
 
@@ -82,8 +87,28 @@ def initialize_environment(ckpt_path):
         os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
 
 
+def setup_mlflow_logger(trainer):
+    # setup run name for mlflow logger
+    run_name = os.environ["CC2_RUN_NAME"]
+
+    for i, logger in enumerate(trainer.loggers):
+        if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
+            new_logger = pl.loggers.MLFlowLogger(
+                experiment_name=logger._experiment_name,
+                run_name=run_name,
+                save_dir=logger.save_dir,
+                log_model=logger._log_model,
+                checkpoint_path_prefix=logger._checkpoint_path_prefix,
+            )
+            trainer.loggers[i] = new_logger
+
+            rank_zero_info(f"MLFlowLogger run_name set to: {run_name}")
+
+
 class cc2trainer(LightningCLI):
     def before_instantiate_classes(self):
+        super().before_instantiate_classes()
+
         if self.subcommand == "fit":
             initialize_environment(self.config.fit.get("ckpt_path"))
 
@@ -107,6 +132,8 @@ class cc2trainer(LightningCLI):
 
     def before_fit(self):
         if self.trainer.global_rank == 0:
+            setup_mlflow_logger(self.trainer)
+
             # Update loggers with version
             for i, logger in enumerate(self.trainer.loggers):
                 if isinstance(logger, L.pytorch.loggers.csv_logs.CSVLogger):

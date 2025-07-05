@@ -51,7 +51,12 @@ data:
 
 trainer:
   max_epochs: 25
-  logger: true
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: "cc2"
+      log_model: true
+      save_dir: "./mlruns"
   enable_model_summary: false
   accumulate_grad_batches: 1
   num_nodes: 1

@@ -33,6 +33,7 @@ class cc2CRPSModel(L.LightningModule):
         input_resolution: tuple[int, int],
         prognostic_params: list[str],
         forcing_params: list[str],
+        static_forcing_params: list[str],
         history_length: int = 2,
         hidden_dim: int = 96,
         patch_size: int = 4,
@@ -84,6 +85,7 @@ class cc2CRPSModel(L.LightningModule):
                 "attn_drop_rate",
                 "prognostic_params",
                 "forcing_params",
+                "static_forcing_params",
                 "use_gradient_checkpointing",
                 "add_refinement_head",
                 "noise_dim",
@@ -192,6 +194,14 @@ class cc2CRPSModel(L.LightningModule):
         self.test_truth = []
         self.test_dates = []
 
+        self.latest_val_tendencies = None
+        self.latest_val_predictions = None
+        self.latest_val_data = None
+
+        self.latest_train_tendencies = None
+        self.latest_train_predictions = None
+        self.latest_train_data = None
+
     def forward(self, *args, **kwargs):  # data, forcing, step):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
@@ -206,7 +216,18 @@ class cc2CRPSModel(L.LightningModule):
             loss_fn=self._loss_fn,
         )
 
-        self.log("train_loss", loss["loss"], sync_dist=True)
+        if batch_idx == 0:
+            self.latest_train_tendencies = tendencies
+            self.latest_train_predictions = predictions
+            self.latest_train_data = data
+
+        self.log("train_loss", loss["loss"], sync_dist=False)
+
+        if batch_idx == 0:
+            self.latest_train_tendencies = tendencies
+            self.latest_train_predictions = predictions
+            self.latest_train_data = data
+
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
@@ -226,6 +247,12 @@ class cc2CRPSModel(L.LightningModule):
         )
 
         self.log("val_loss", loss["loss"], sync_dist=True)
+
+        if batch_idx == 0:
+            self.latest_val_tendencies = tendencies
+            self.latest_val_predictions = predictions
+            self.latest_val_data = data
+
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
@@ -236,7 +263,7 @@ class cc2CRPSModel(L.LightningModule):
     def test_step(self, batch, batch_idx):
         data, forcing, dates = batch
 
-        _, tendencies, predictions = roll_forecast(
+        _, tendencies, predictions = self._roll_forecast(
             self,
             data,
             forcing,

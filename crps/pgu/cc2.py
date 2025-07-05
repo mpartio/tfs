@@ -41,7 +41,7 @@ class cc2CRPS(nn.Module):
             input_resolution=input_resolution,
             patch_size=self.patch_size,
             data_channels=len(config.prognostic_params),
-            forcing_channels=len(config.forcing_params),
+            forcing_channels=len(config.forcing_params) + len(config.static_forcing_params),
             embed_dim=self.embed_dim,
         )
 
