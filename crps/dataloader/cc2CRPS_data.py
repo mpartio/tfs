@@ -425,9 +425,7 @@ class AnemoiDataset(Dataset):
             )
         else:
             all_forcings_combined_normalized = dynamic_forcing_normalized
-            combined_output_tensor = (
-                combined_dynamic_normalized  # If no static, this is just dynamic
-            )
+            combined_output_tensor = combined_dynamic
 
         # Split into data (prognostic) and forcings (dynamic + static)
         data_channels_count = len(self.prognostic_params)
