@@ -15,13 +15,19 @@ from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 def get_default_normalization_methods(custom_methods):
     default_methods = {
-        "insolation": "none",
+        # prognostic parameters
+        "tcc": "none",
+        # dynamic forcings
+        "r_1000": "none",
+        "r_500": "none",
+        "r_700": "none",
+        "r_850": "none",
+        "r_925": "none",
         "t_1000": "standard",
         "t_500": "standard",
         "t_700": "standard",
         "t_850": "standard",
         "t_925": "standard",
-        "tcc": "none",
         "u_1000": "standard",
         "u_500": "standard",
         "u_700": "standard",
@@ -37,6 +43,19 @@ def get_default_normalization_methods(custom_methods):
         "z_700": "standard",
         "z_850": "standard",
         "z_925": "standard",
+        # environment forcings
+        "insolation": "none",
+        "cos_julian_day": "none",
+        "sin_julian_day": "none",
+        "cos_latitude": "none",
+        "sin_latitude": "none",
+        "cos_longitude": "none",
+        "sin_longitude": "none",
+        "cos_local_time": "none",
+        "sin_local_time": "none",
+        # static forcings
+        "lsm": "none",
+        "z": "minmax",
     }
 
     if custom_methods is not None:
@@ -133,6 +152,8 @@ class AnemoiDataset(Dataset):
         group_size: int,
         prognostic_params: list[str],
         forcing_params: list[str],
+        static_forcing_path: str | None,
+        static_forcing_params: list[str],
         normalization_methods: dict,
         disable_normalization: bool,
         input_resolution: tuple[int, int],
@@ -144,14 +165,28 @@ class AnemoiDataset(Dataset):
 
         assert type(prognostic_params) == list
         assert type(forcing_params) == list
+        assert type(static_forcing_params) == list
 
         self.prognostic_params = prognostic_params
         self.forcing_params = forcing_params
+        self.static_forcing_params = static_forcing_params
+        self.static_forcing_path = static_forcing_path
 
         self.data_indexes = [self.data.name_to_index[x] for x in self.prognostic_params]
         self.forcings_indexes = [
             self.data.name_to_index[x] for x in self.forcing_params
         ]
+
+        # Initialize static forcings to None, will be loaded once
+        self.static_forcings = None
+        self.static_forcings_indexes = []
+        if self.static_forcing_path and self.static_forcing_params:
+            temp_static_data = open_dataset(self.static_forcing_path)
+            self.static_forcings_indexes = [
+                temp_static_data.name_to_index[x] for x in self.static_forcing_params
+            ]
+            del temp_static_data
+
         self.input_resolution = input_resolution
         assert self.time_steps >= group_size
 
@@ -176,40 +211,123 @@ class AnemoiDataset(Dataset):
         self.dates = self.data.dates
 
     def _setup_normalization(self):
-        # Pre-compute combined indexes and params
-        self.combined_indexes = self.data_indexes + self.forcings_indexes
-        self.combined_params = self.prognostic_params + self.forcing_params
-        self.total_channels = len(
-            self.combined_indexes
-        )  # Number of channels before E multiplication
+        # Pre-compute combined indexes and params for dynamic data
+        self.combined_dynamic_indexes = self.data_indexes + self.forcings_indexes
+        self.combined_dynamic_params = self.prognostic_params + self.forcing_params
 
-        # default:
+        # Load and normalize static forcings once
         dtype = torch.float32
-        methods = [self.normalization_methods[k] for k in self.combined_params]
+        if self.static_forcing_path and self.static_forcing_params:
+            # Open the static forcing zarr directly
+            static_root_group = zarr.open(
+                self.static_forcing_path, mode="r"
+            )  # shape: (1, 2, 1, 254125)
 
-        # Pre-reshape statistics for all combined channels
-        C = self.total_channels  # This will be multiplied by E in __getitem__
+            static_data_zarr = static_root_group["data"]
+
+            selection_tuple = (
+                0,
+                np.array(self.static_forcings_indexes),
+                slice(None),
+                slice(None),
+            )
+
+            # Load only the required static forcing channels
+            # Assuming static forcings are [C_static, H, W]
+            static_data_numpy = static_data_zarr[selection_tuple].astype(np.float32)
+
+            # Make sure it's 4D for consistency (T, C, H, W) where T=1
+            # If static data is (C, H, W), add a time dimension of 1
+
+            if static_data_numpy.ndim == 3:
+                static_data_numpy = np.expand_dims(static_data_numpy, axis=0)
+            elif static_data_numpy.ndim == 4:
+                pass  # Already in correct shape
+            else:
+                raise ValueError(
+                    f"Unexpected static forcing data shape: {static_data_numpy.shape}"
+                )
+
+            self.static_forcings = np.zeros_like(static_data_numpy)
+
+            for i, param_name in enumerate(self.static_forcing_params):
+                method = self.normalization_methods.get(param_name, "none")
+                channel_data = static_data_numpy[0, i : i + 1, :, :]
+
+                assert channel_data.ndim == 3
+
+                if method == "none":
+                    self.static_forcings[0, i : i + 1, 0, :] = channel_data
+                elif method == "minmax":
+                    # Calculate min/max for THIS static channel
+                    c_min = channel_data.min()
+                    c_max = channel_data.max()
+                    self.static_forcings[0, i : i + 1, 0, :] = (
+                        channel_data - c_min
+                    ) / (c_max - c_min + 1e-8)
+                elif method == "standard":
+                    # Calculate mean/std for THIS static channel
+                    c_mean = channel_data.mean()
+                    c_std = channel_data.std()
+                    self.static_forcings[0, i : i + 1, 0, :] = (
+                        channel_data - c_mean
+                    ) / (c_std + 1e-8)
+                else:
+                    raise ValueError(
+                        f"Unknown normalization method for static forcing '{param_name}': {method}"
+                    )
+
+                min_, max_, mean_ = (
+                    np.min(self.static_forcings[0, i, :, :]),
+                    np.max(self.static_forcings[0, i, :, :]),
+                    np.mean(self.static_forcings[0, i, :, :]),
+                )
+
+            # Add time dimension (T=1) at the beginning for consistency (1, C_static, H, W)
+            self.static_forcings = (
+                torch.tensor(self.static_forcings).unsqueeze(0).to(dtype).squeeze(1)
+            )
+
+        # Combine all parameters and their normalization methods for the main normalize function
+        self.all_combined_params = self.prognostic_params + self.forcing_params
+
+        self.all_combined_indexes = self.data_indexes + self.forcings_indexes
+
+        self.total_channels = len(self.all_combined_indexes)
+
+        # Pre-reshape statistics for all combined channels (dynamic + static)
+        # Assuming self.data.statistics also contains stats for static forcings if registered
         self.mins = torch.tensor(
-            self.data.statistics["minimum"][self.combined_indexes].reshape(1, C, 1, 1),
+            self.data.statistics["minimum"][self.all_combined_indexes].reshape(
+                1, self.total_channels, 1, 1
+            ),
             dtype=dtype,
         )
+
         self.maxs = torch.tensor(
-            self.data.statistics["maximum"][self.combined_indexes].reshape(1, C, 1, 1),
+            self.data.statistics["maximum"][self.all_combined_indexes].reshape(
+                1, self.total_channels, 1, 1
+            ),
             dtype=dtype,
         )
         self.means = torch.tensor(
-            self.data.statistics["mean"][self.combined_indexes].reshape(1, C, 1, 1),
+            self.data.statistics["mean"][self.all_combined_indexes].reshape(
+                1, self.total_channels, 1, 1
+            ),
             dtype=dtype,
         )
         self.stds = torch.tensor(
-            self.data.statistics["stdev"][self.combined_indexes].reshape(1, C, 1, 1),
+            self.data.statistics["stdev"][self.all_combined_indexes].reshape(
+                1, self.total_channels, 1, 1
+            ),
             dtype=dtype,
         )
-        # Create a single method tensor for indexing
+        # Create a single method tensor for indexing for all combined parameters
+        methods_all = [self.normalization_methods[k] for k in self.all_combined_params]
         self.method_tensor = torch.tensor(
-            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods],
+            [0 if m == "none" else 1 if m == "minmax" else 2 for m in methods_all],
             dtype=torch.long,
-        ).view(1, C, 1, 1)
+        ).view(1, self.total_channels, 1, 1)
 
     def _sequence_has_missing_data(self, start_idx):
         for i in range(start_idx, start_idx + self.group_size):
@@ -221,30 +339,30 @@ class AnemoiDataset(Dataset):
         return len(self.valid_indices)
 
     def normalize(self, tensor: torch.tensor, params: list):
+        # This normalize method will now work on the combined dynamic + static data.
+        # The `self.method_tensor`, `self.mins`, etc., are already setup to include
+        # all channels (prognostic, dynamic forcings, static forcings) in their correct order.
+
         T, C, H, W = tensor.shape
-        methods = [self.normalization_methods[k] for k in params]
-        indices = [self.data.name_to_index[x] for x in params]
-
-        # Early return for "none" case
-        if len(methods) == 1 and methods[0] == "none":
-            return tensor
-
-        # Compute normalizations only where needed
         result = tensor.clone()  # Avoid modifying input tensor directly
-        minmax_mask = self.method_tensor == 1
-        std_mask = self.method_tensor == 2
+
+        minmax_mask = self.method_tensor.expand(T, -1, H, W) == 1
+        std_mask = self.method_tensor.expand(T, -1, H, W) == 2
 
         if minmax_mask.any():
             result = torch.where(
                 minmax_mask,
-                (tensor - self.mins)
-                / (self.maxs - self.mins + 1e-8),  # Add epsilon for stability
+                (tensor - self.mins.expand(T, -1, H, W))
+                / (
+                    self.maxs.expand(T, -1, H, W) - self.mins.expand(T, -1, H, W) + 1e-8
+                ),
                 result,
             )
         if std_mask.any():
             result = torch.where(
                 std_mask,
-                (tensor - self.means) / (self.stds + 1e-8),  # Add epsilon only for std
+                (tensor - self.means.expand(T, -1, H, W))
+                / (self.stds.expand(T, -1, H, W) + 1e-8),
                 result,
             )
 
@@ -253,36 +371,71 @@ class AnemoiDataset(Dataset):
     def __getitem__(self, idx):
         actual_idx = self.valid_indices[idx]
 
-        # Extract the full slice (data + forcings) from self.data
-        combined_indexes = self.data_indexes + self.forcings_indexes
-        combined_params = self.prognostic_params + self.forcing_params
-
-        # Get the combined data
-        combined = self.data[
-            actual_idx : actual_idx + self.group_size, combined_indexes, ...
+        # Get the combined dynamic data (prognostic + dynamic forcings)
+        combined_dynamic = self.data[
+            actual_idx : actual_idx + self.group_size,
+            self.combined_dynamic_indexes,
+            ...,
         ]
 
-        T, C, E, HW = combined.shape
+        T_dyn, C_dyn_e, H_flat_e, W_flat_e = combined_dynamic.shape
 
-        assert E == 1
+        assert H_flat_e == 1  # Assuming the 'E' dimension is flattened into H if E is 1
 
-        combined = combined.reshape(
-            T, C * E, self.input_resolution[0], self.input_resolution[1]
+        # Reshape dynamic data to (T, C, H, W)
+        combined_dynamic = combined_dynamic.reshape(
+            T_dyn,
+            len(self.combined_dynamic_indexes),
+            self.input_resolution[0],
+            self.input_resolution[1],
         )
-        combined = torch.from_numpy(combined)
+        combined_dynamic = torch.from_numpy(combined_dynamic)
 
-        # Normalize the combined tensor
+        # Normalize the dynamic data only
         if self.disable_normalization is False:
-            combined = self.normalize(combined, combined_params)
+            combined_dynamic = self.normalize(
+                combined_dynamic, self.combined_dynamic_params
+            )
 
-        # Split into data and forcings based on original channel counts
-        data_channels = len(self.data_indexes) * E
-        data = combined[:, :data_channels, :, :]
-        forcing = combined[:, data_channels:, :, :]
+        # Separate prognostic from dynamic forcings (both now normalized)
+        prognostic_normalized = combined_dynamic[:, : len(self.data_indexes), :, :]
+        dynamic_forcing_normalized = combined_dynamic[:, len(self.data_indexes) :, :, :]
+
+        # If static forcings exist, concatenate them to the dynamic forcings
+        if self.static_forcings is not None:
+            num_timesteps_in_group = self.group_size
+
+            if self.static_forcings.shape[-1] > 2000:
+                s = self.static_forcings.shape
+                self.static_forcings = self.static_forcings.reshape(
+                    s[0], s[1], self.input_resolution[0], self.input_resolution[1]
+                )
+
+            static_forcings_for_group = self.static_forcings.repeat(
+                num_timesteps_in_group, 1, 1, 1
+            )
+
+            # Concatenate normalized dynamic forcings with normalized static forcings
+            all_forcings_combined_normalized = torch.cat(
+                (dynamic_forcing_normalized, static_forcings_for_group), dim=1
+            )
+            # The 'combined' tensor for output will be prognostic + all_forcings_combined_normalized
+            combined_output_tensor = torch.cat(
+                (prognostic_normalized, all_forcings_combined_normalized), dim=1
+            )
+        else:
+            all_forcings_combined_normalized = dynamic_forcing_normalized
+            combined_output_tensor = (
+                combined_dynamic_normalized  # If no static, this is just dynamic
+            )
+
+        # Split into data (prognostic) and forcings (dynamic + static)
+        data_channels_count = len(self.prognostic_params)
+        data = combined_output_tensor[:, :data_channels_count, :, :]
+        forcing = combined_output_tensor[:, data_channels_count:, :, :]
 
         if self.return_metadata:
             sequence_dates = self.dates[actual_idx : actual_idx + self.group_size]
-
             return data, forcing, sequence_dates.astype(np.float64)
 
         return data, forcing
@@ -357,6 +510,8 @@ class cc2DataModule(L.LightningDataModule):
         input_resolution: tuple[int, int],
         prognostic_params: tuple[str, ...],
         forcing_params: tuple[str, ...],
+        static_forcing_path: str | None = None,
+        static_forcing_params: list[str] = [],
         history_length: int = 2,
         rollout_length: int = 1,
         val_split: float = 0.1,
@@ -390,11 +545,12 @@ class cc2DataModule(L.LightningDataModule):
 
             self._full_dataset = AnemoiDataset(
                 zarr_path=self.hparams.data_path,
-                group_size=self.hparams.history_length
-                + self.hparams.rollout_length,  # n_x + n_y
+                group_size=self.hparams.history_length + self.hparams.rollout_length,
                 input_resolution=self.hparams.input_resolution,
                 prognostic_params=self.hparams.prognostic_params,
                 forcing_params=self.hparams.forcing_params,
+                static_forcing_path=self.hparams.static_forcing_path,
+                static_forcing_params=self.hparams.static_forcing_params,
                 normalization_methods=norm_methods,
                 disable_normalization=self.hparams.disable_normalization,
             )
