@@ -38,6 +38,7 @@ model:
     - z_850
     - z_925
 
+    static_forcing_params: &static_forcing_params_anchor []
     # Path to checkpoint for initializing ONLY model weights (starts epoch 0, new optimizer)
     init_weights_from_ckpt: false # Set path here or via CLI: --model.init_weights_from_ckpt=true
     # Adapt resolution when using init_weights_path
@@ -47,6 +48,7 @@ data:
   data_path: ../data/era5-86x97.zarr
   prognostic_params: *prognostic_params_anchor
   forcing_params: *forcing_params_anchor
+  static_forcing_params: *static_forcing_params_anchor
   batch_size: 16
 
 trainer:
