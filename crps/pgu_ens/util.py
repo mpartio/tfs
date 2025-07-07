@@ -8,9 +8,10 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
     B, T, C_data, H, W = x.shape
     _, T_y, _, _, _ = y.shape
 
+    assert C_data == 1
     assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
 
-    M = 3  # TODO: how to get this
+    M = model.num_members
 
     assert y.ndim == 5
 
