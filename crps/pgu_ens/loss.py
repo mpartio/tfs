@@ -7,10 +7,9 @@ def loss_fn(y_pred, y_true):
 
 
 class AlmostFairCRPSLoss(nn.Module):
-    def __init__(self, alpha=0.95, eps=1e-6):
+    def __init__(self, alpha=0.95):
         super().__init__()
         self.alpha = alpha
-        self.eps = eps
 
     def forward(self, predictions, target):
         """
@@ -26,6 +25,9 @@ class AlmostFairCRPSLoss(nn.Module):
         )
 
         B, M, C, H, W = predictions.shape
+
+        assert C == 1
+
         epsilon = (1 - self.alpha) / M
 
         # Reshape target to match predictions dimensions
