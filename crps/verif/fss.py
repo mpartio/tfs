@@ -159,18 +159,20 @@ def plot_fss_1d(
 
     x = torch.arange(num_leadtimes)
 
-    c = 3  # category index = overcast
     m = 2  # mask index = 6px
 
-    plt.figure(figsize=(8, 4))
-    for i, r in enumerate(results):
-        plt.plot(x, r[c, m, :], label=run_name[i])
+    fig, ax = plt.subplots(2, 2, figsize=(16, 12))
+    ax = ax.flatten()
 
-    plt.xlabel("Lead time (h)")
-    plt.ylabel("Fraction Skill Score")
-    plt.title(f"FSS for category {categories[c]} (mask size {mask_sizes[m]*5}km)")
-    plt.legend()
-    filename = f"{save_path}/figures/fss_1d_{categories[c].replace(' ','_')}.png"
+    for c in range(num_categories):
+        for i, r in enumerate(results):
+            ax[c].plot(x, r[c, m, :], label=run_name[i])
+            ax[c].set_xlabel("Lead time (h)")
+            ax[c].set_ylabel("Fraction Skill Score")
+            ax[c].set_title(f"FSS for category {categories[c]}")
+            ax[c].legend()
+    plt.suptitle(f"FSS for four categories (mask size {mask_sizes[m]*5}km)")
+    filename = f"{save_path}/figures/fss_1d.png"
     plt.savefig(filename)
     print(f"Plot saved to {filename}")
 
@@ -224,4 +226,5 @@ def plot_fss_2d(
             cat_name = c.replace(" ", "_").lower()
             filename = f"{save_path}/figures/fss_2d_{model_name}_{cat_name}.png"
             plt.savefig(filename)
+            plt.close()
             print(f"Plot saved to {filename}")

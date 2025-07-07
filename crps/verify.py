@@ -20,7 +20,7 @@ def get_args():
         type=str,
         required=False,
         nargs="+",
-        choices=["mae", "mae2d", "psd", "fss"],
+        choices=["stamps", "mae", "mae2d", "psd", "fss"],
         help="Score to produce",
     )
     parser.add_argument(
@@ -42,6 +42,10 @@ def get_args():
 
     if args.score is None:
         args.score = ["mae"]
+
+    if "stamps" in args.score and args.plot_only:
+        raise ValueError("Cannot plot stamps without running verification.")
+
     return args
 
 
@@ -67,6 +71,22 @@ def read_data(run_name):
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
 
+    if predictions.ndim == 6:
+        # predictions are from pgu_ens, pick first member
+        print("Using member 0/{}".format(predictions.shape[1]))
+        predictions = predictions[:, 0, :, :, :]
+        truth = truth[:, 0, :, :, :]
+
+    assert (
+        predictions.ndim == 5
+    ), "Predictions should be 5D tensor (batch, time, channel, height, width), got {}".format(
+        predictions.shape
+    )
+    assert (
+        truth.ndim == 5
+    ), "Truth should be 5D tensor (batch, time, channel, height, width), got {}".format(
+        truth.shape
+    )
     return truth, predictions, dates
 
 
@@ -191,8 +211,8 @@ def plot_stamps(
     ncols = num_timesteps
 
     # Dynamically adjust figsize - very rough estimate
-    fig_width = ncols * 2.5
-    fig_height = nrows * 2.5
+    fig_width = ncols * 3
+    fig_height = nrows * 3
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(fig_width, fig_height), sharex=True, sharey=True
     )
@@ -205,8 +225,8 @@ def plot_stamps(
     elif ncols == 1:
         axes = np.array([[ax] for ax in axes])  # Make it 2D Nrows x 1 col
 
-    fig.suptitle(f"Ground Truth vs. Model Predictions", fontsize=16)
-    cmap = "viridis"
+    fig.suptitle(f"Ground Truth vs. Model Predictions", fontsize=24)
+    cmap = "Blues"
 
     for r in range(nrows):
         if r == 0:
@@ -223,19 +243,26 @@ def plot_stamps(
 
             if c == 0:  # Set row labels on the first column
                 if r == 0:
-                    ax.set_ylabel("Ground Truth", fontsize=10, rotation=90, labelpad=10)
+                    ax.set_ylabel("Ground Truth", fontsize=12, rotation=90, labelpad=10)
                 else:
                     ax.set_ylabel(
-                        f"{args.run_name[r-1]}", fontsize=10, rotation=90, labelpad=10
+                        f"{args.run_name[r-1]}", fontsize=12, rotation=90, labelpad=10
                     )
 
-            ax.imshow(img_data[c, 0], cmap=cmap, vmin=0, vmax=1)
+            im = ax.imshow(img_data[c, 0], cmap=cmap, vmin=0, vmax=1)
 
             if r == 0:  # Top row: Ground Truth
-                ax.set_title(f"Timestep {c}", fontsize=10)
+                ax.set_title(f"Leadtime {c}h", fontsize=16)
 
     # Adjust layout to prevent overlap
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust rect to make space for suptitle
+    plt.tight_layout(
+        rect=[0, 0.03, 0.85, 0.95]
+    )  # Adjust rect to make space for suptitle
+
+    # Add colorbar
+    cbar_ax = fig.add_axes([0.86, 0.039, 0.015, 0.85])  # [left, bottom, width, height]
+    cbar = fig.colorbar(im, cax=cbar_ax)
+    cbar.set_label("Cloud cover", rotation=90, labelpad=15, fontsize=16)
 
     filename = f"{save_path}/figures/stamps.png"
     plt.savefig(filename)
@@ -270,9 +297,14 @@ if __name__ == "__main__":
             if args.plot_only:
                 obs_psd = torch.load(f"{args.save_path}/results/observed_psd.pt")
                 pred_psd = torch.load(f"{args.save_path}/results/predicted_psd.pt")
+                pred_psd_r1 = torch.load(
+                    f"{args.save_path}/results/predicted_psd_r1.pt"
+                )
             else:
-                obs_psd, pred_psd = psd(all_truth, all_predictions, args.save_path)
-            plot_psd(args.run_name, obs_psd, pred_psd, args.save_path)
+                obs_psd, pred_psd, pred_psd_r1 = psd(
+                    all_truth, all_predictions, args.save_path
+                )
+            plot_psd(args.run_name, obs_psd, pred_psd, pred_psd_r1, args.save_path)
 
         elif score == "fss":
             if args.plot_only:

@@ -11,7 +11,7 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
     assert C_data == 1
     assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
 
-    M = model.num_members
+    M = model.model.num_members
 
     assert y.ndim == 5
 
@@ -73,5 +73,5 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
     else:
         loss = None
 
-    assert tendencies.ndim == 6
+    assert predictions.ndim == tendencies.ndim == 6
     return {"loss": loss, "step_losses": losses}, tendencies, predictions
