@@ -7,7 +7,7 @@ randomname
 zarr
 xarray
 scipy
-lightning
+lightning==2.5.1
 PyWavelets
 dask
 anemoi-datasets
