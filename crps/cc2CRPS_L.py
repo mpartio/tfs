@@ -112,7 +112,12 @@ class cc2CRPSModel(L.LightningModule):
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
         self.run_dir = os.environ["CC2_RUN_DIR"]
 
-        if self.run_dir and self.hparams.init_weights_from_ckpt:
+        if self.run_dir and not self.hparams.init_weights_from_ckpt:
+            print(
+                "Run dir set but weights are not loaded (init_weights_from_ckpt: false)"
+            )
+
+        elif self.run_dir and self.hparams.init_weights_from_ckpt:
 
             if self.hparams.branch_from_run:
                 if "/" in self.hparams.branch_from_run:
