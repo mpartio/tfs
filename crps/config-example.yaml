@@ -50,6 +50,10 @@ data:
   forcing_params: *forcing_params_anchor
   static_forcing_params: *static_forcing_params_anchor
   batch_size: 16
+  train_start: 1994-01-01
+  train_end: 1994-02-01
+  val_start: 1994-02-01
+  val_end: 1994-02-05
 
 trainer:
   max_epochs: 25

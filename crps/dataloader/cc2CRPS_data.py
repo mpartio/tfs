@@ -514,6 +514,10 @@ class cc2DataModule(L.LightningDataModule):
         rollout_length: int = 1,
         val_split: float = 0.1,
         test_split: float = 0.0,
+        train_start: str | None = None,
+        train_end: str | None = None,
+        val_start: str | None = None,
+        val_end: str | None = None,
         seed: int = 0,
         batch_size: int = 32,
         num_workers: int = 6,
@@ -563,33 +567,74 @@ class cc2DataModule(L.LightningDataModule):
             return  # Use test for predict if no specific ds_predict
 
         ds_full = self._get_or_create_full_dataset()
-        num_total_valid_samples = len(ds_full)
 
-        indices = np.arange(num_total_valid_samples)
-        num_samples_to_split = num_total_valid_samples
+        if (
+            self.hparams.train_start
+            and self.hparams.train_end
+            and self.hparams.val_start
+            and self.hparams.val_end
+        ):
+            # total number of usable time-windows
+            valid_dates = np.array(ds_full.dates)
+            max_idx = len(valid_dates) - ds_full.group_size
 
-        # Shuffle indices before splitting
-        rng = np.random.RandomState(self.hparams.seed)
-        rng.shuffle(indices)
+            # parse to numpy datetimes
+            t0 = np.datetime64(self.hparams.train_start)
+            t1 = np.datetime64(self.hparams.train_end)
+            v0 = np.datetime64(self.hparams.val_start)
+            v1 = np.datetime64(self.hparams.val_end)
 
-        # Calculate split sizes based on the potentially limited number of samples
-        val_size = int(self.hparams.val_split * num_samples_to_split)
-        test_size = int(self.hparams.test_split * num_samples_to_split)
-        train_size = num_samples_to_split - val_size - test_size
+            # only keep windows whose first date falls into each span
+            all_starts = valid_dates[:max_idx]
+            train_mask = (all_starts >= t0) & (all_starts < t1)
+            val_mask = (all_starts >= v0) & (all_starts < v1)
+            test_mask = ~train_mask & ~val_mask
 
-        if train_size < 0:
-            raise ValueError(
-                f"Dataset size {num_samples_to_split} (after limit/validation) is too small for val_split={self.hparams.val_split} and test_split={self.hparams.test_split}"
+            train_indices = np.nonzero(train_mask)[0]
+            val_indices = np.nonzero(val_mask)[0]
+            test_indices = np.nonzero(test_mask)[0]
+
+            rank_zero_info(
+                "Training dataset ({} to {}) contains {} samples".format(
+                    self.hparams.train_start,
+                    self.hparams.train_end,
+                    train_indices.shape[0],
+                )
+            )
+            rank_zero_info(
+                "Val dataset ({} to {}) contains {} samples".format(
+                    self.hparams.val_start, self.hparams.val_end, val_indices.shape[0]
+                )
             )
 
-        rank_zero_info(
-            f"Dataset split sizes (based on {num_samples_to_split} samples): Train={train_size}, Validation={val_size}, Test={test_size}"
-        )
+        else:
+            num_total_valid_samples = len(ds_full)
 
-        # Get the actual indices corresponding to the shuffled array segments
-        train_indices = indices[val_size + test_size :]
-        val_indices = indices[:val_size]
-        test_indices = indices[val_size : val_size + test_size]
+            indices = np.arange(num_total_valid_samples)
+            num_samples_to_split = num_total_valid_samples
+
+            # Shuffle indices before splitting
+            rng = np.random.RandomState(self.hparams.seed)
+            rng.shuffle(indices)
+
+            # Calculate split sizes based on the potentially limited number of samples
+            val_size = int(self.hparams.val_split * num_samples_to_split)
+            test_size = int(self.hparams.test_split * num_samples_to_split)
+            train_size = num_samples_to_split - val_size - test_size
+
+            if train_size < 0:
+                raise ValueError(
+                    f"Dataset size {num_samples_to_split} (after limit/validation) is too small for val_split={self.hparams.val_split} and test_split={self.hparams.test_split}"
+                )
+
+            rank_zero_info(
+                f"Dataset split sizes (based on {num_samples_to_split} samples): Train={train_size}, Validation={val_size}, Test={test_size}"
+            )
+
+            # Get the actual indices corresponding to the shuffled array segments
+            train_indices = indices[val_size + test_size :]
+            val_indices = indices[:val_size]
+            test_indices = indices[val_size : val_size + test_size]
 
         # Create Subset datasets based on the stage
         # stage='fit' or stage=None will setup train and val
