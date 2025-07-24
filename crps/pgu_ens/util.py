@@ -1,8 +1,91 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import pytorch_lightning as pl
 
 
-def roll_forecast(model, data, forcing, n_step, loss_fn):
+def scheduled_sampling_inputs(
+    previous_state: torch.Tensor,
+    current_state: torch.Tensor,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    t: int,
+    epoch: int,
+    max_epoch: int,
+    steepness: float = 10.0,
+) -> torch.Tensor:
+    """
+    Mixes ground-truth and model predictions for two-lag inputs at rollout step t.
+
+    Bengio et al: Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks
+
+    Args:
+        previous_state: Tensor of shape [B,M,1,C,H,W], model's last prediction or ground-truth mix.
+        current_state:  Tensor of shape [B,M,1,C,H,W], model's current prediction or ground-truth mix.
+        x:             Original input sequence Tensor [B,T,C,H,W].
+        y:             Ground-truth future targets Tensor [B,n_step,C,H,W].
+        t:             Current rollout step (0-based).
+        epoch:         Current epoch index.
+        max_epoch:     Total number of epochs for scheduling.
+        steepness:     Controls sigmoid slope (higher = sharper transition).
+
+    Returns:
+        input_state:  Mixed input Tensor to feed into model, shape [B,M,2,C,H,W].
+    """
+
+    assert (
+        previous_state.ndim == current_state.ndim == 6
+    ), "Invalid dimensionality: {}".format(previous_state.ndim)
+    assert x.ndim == 5 == y.ndim == 5, "Invalid dimensionality: x={} y={}".format(
+        x.ndim, y.ndim
+    )
+
+    B = previous_state.size(0)
+    device = previous_state.device
+
+    # Compute probability of using model prediction (p_pred from 0 -> 1)
+    p_pred = torch.sigmoid(
+        torch.tensor((epoch / max_epoch) * steepness - steepness / 2, device=device)
+    )
+
+    # Sample independent Bernoulli for each lag
+    mask_prev = torch.bernoulli(p_pred * torch.ones([B, 1, 1, 1, 1, 1], device=device))
+    mask_curr = torch.bernoulli(p_pred * torch.ones([B, 1, 1, 1, 1, 1], device=device))
+
+    # Determine ground-truth frames for this step
+    if t == 0:
+        gt_prev = x[:, -2:-1, ...]  # second-to-last input
+        gt_curr = x[:, -1:, ...]  # last input
+    elif t == 1:
+        gt_prev = x[:, -1:, ...]
+        gt_curr = y[:, 0:1, ...]
+    else:
+        gt_prev = y[:, t - 2 : t - 1, ...]
+        gt_curr = y[:, t - 1 : t, ...]
+
+    # Mix: mask=1 -> use prediction; mask=0 -> use ground truth
+    input_prev = mask_prev * previous_state + (1 - mask_prev) * gt_prev
+    input_curr = mask_curr * current_state + (1 - mask_curr) * gt_curr
+
+    return (
+        torch.cat([input_prev, input_curr], dim=2),
+        p_pred.item(),
+        mask_prev.float().mean(),
+        mask_curr.float().mean(),
+    )
+
+
+def roll_forecast(
+    model: nn.Module,
+    data: torch.Tensor,
+    forcing: torch.Tensor,
+    n_step: int,
+    loss_fn,
+    use_scheduled_sampling: bool = False,
+    epoch: int | None = None,
+    max_epoch: int | None = None,
+    pl_module: pl.LightningModule | None = None,
+):
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data  # x: B, T, C, H, W y: B, T, C, H, W
     B, T, C_data, H, W = x.shape
@@ -33,7 +116,42 @@ def roll_forecast(model, data, forcing, n_step, loss_fn):
 
     for t in range(n_step):
         step_forcing = forcing[:, :, t : t + 2, ...]
-        input_state = torch.cat([previous_state, current_state], dim=2)
+
+        if use_scheduled_sampling:
+            input_state, p_pred, mask_prev, mask_curr = scheduled_sampling_inputs(
+                previous_state,
+                current_state,
+                x,
+                y,
+                t,
+                epoch,
+                max_epoch,
+            )
+
+            pl_module.log(
+                "ss_p_pred",
+                p_pred,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
+            pl_module.log(
+                "ss_mask_prev",
+                mask_prev,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
+            pl_module.log(
+                "ss_mask_curr",
+                mask_curr,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
+
+        else:
+            input_state = torch.cat([previous_state, current_state], dim=2)
 
         tendency = model(input_state, step_forcing, t)  # B, M, T, C, H, W
 
