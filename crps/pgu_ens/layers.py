@@ -80,9 +80,7 @@ def depad_tensor(tensor, padding_info):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(
-        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128
-    ):
+    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim):
         super().__init__()
         self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.attn = nn.MultiheadAttention(
@@ -105,9 +103,7 @@ class EncoderBlock(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(
-        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim=128
-    ):
+    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, noise_dim):
         super().__init__()
         self.norm1 = ConditionalLayerNorm(dim, noise_dim)
         self.self_attn = nn.MultiheadAttention(
