@@ -366,16 +366,3 @@ class cc2CRPSModel(L.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
-
-
-def get_strategy(strategy):
-    if strategy == "deep_speed":
-        from pytorch_lightning.strategies import DeepSpeedStrategy
-
-        return DeepSpeedStrategy(
-            stage=3,  # Stage 3 enables full parameter, gradient, and optimizer sharding
-            offload_optimizer=True,  # Offload optimizer states to CPU
-            offload_parameters=True,  # Offload parameters to CPU
-        )
-
-    return strategy
