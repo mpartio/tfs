@@ -57,6 +57,7 @@ class cc2CRPSModel(L.LightningModule):
         use_gradient_checkpointing: bool = False,
         add_refinement_head: bool = False,
         model_family: str = "pgu",
+        use_scheduled_sampling: bool = False,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
     ):
@@ -208,6 +209,11 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_predictions = None
         self.latest_train_data = None
 
+        self.use_scheduled_sampling = use_scheduled_sampling
+
+    def on_train_start(self) -> None:
+        self.max_epochs = self.trainer.max_epochs
+
     def forward(self, *args, **kwargs):  # data, forcing, step):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
@@ -220,6 +226,10 @@ class cc2CRPSModel(L.LightningModule):
             forcing,
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
+            use_scheduled_sampling=self.use_scheduled_sampling,
+            epoch=self.current_epoch,
+            max_epoch=self.max_epochs,
+            pl_module=self,
         )
 
         if batch_idx == 0:

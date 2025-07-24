@@ -13,6 +13,9 @@ model:
     patch_size: 2
     window_size: 8
     add_skip_connection: true
+    use_scheduled_sampling: true
+    use_gradient_checkpointing: true
+    model_family: pgu
     prognostic_params: &prognostic_params_anchor
     - tcc
     forcing_params: &forcing_params_anchor
@@ -61,7 +64,7 @@ trainer:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
     init_args:
       experiment_name: "cc2"
-      log_model: true
+      log_model: false
       save_dir: "./mlruns"
   enable_model_summary: false
   accumulate_grad_batches: 1
