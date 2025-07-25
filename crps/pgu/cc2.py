@@ -155,6 +155,7 @@ class cc2CRPS(nn.Module):
             self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
+        self.use_scheduled_sampling = config.use_scheduled_sampling
 
         self.add_refinement_head = config.add_refinement_head
 
@@ -234,7 +235,9 @@ class cc2CRPS(nn.Module):
         decoder_in = decoder_input.reshape(B, -1, D)
 
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-        step_id = 0 if step == 0 else 1
+        step_id = 0
+        if not self.use_scheduled_sampling and step > 0:
+            step_id = 1
 
         # Get appropriate step embedding
         step_embedding = self.step_id_embeddings[step_id]  # [D]

@@ -88,6 +88,7 @@ class cc2CRPSModel(L.LightningModule):
                 "forcing_params",
                 "static_forcing_params",
                 "use_gradient_checkpointing",
+                "use_scheduled_sampling",
                 "add_refinement_head",
                 "noise_dim",
                 "num_members",
