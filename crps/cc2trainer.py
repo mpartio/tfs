@@ -90,15 +90,17 @@ def initialize_environment(ckpt_path: str | None):
 def setup_mlflow_logger(trainer):
     # setup run name for mlflow logger
     run_name = os.environ["CC2_RUN_NAME"]
+    run_number = os.environ["CC2_RUN_NUMBER"]
 
     for i, logger in enumerate(trainer.loggers):
         if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
             new_logger = pl.loggers.MLFlowLogger(
                 experiment_name=logger._experiment_name,
-                run_name=run_name,
+                run_name=f"{run_name}/{run_number}",
                 save_dir=logger.save_dir,
                 log_model=logger._log_model,
                 checkpoint_path_prefix=logger._checkpoint_path_prefix,
+                tags={"run_name": run_name, "run_number": run_number},
             )
             trainer.loggers[i] = new_logger
 
