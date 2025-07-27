@@ -33,12 +33,13 @@ def print_env():
 
 print_env()
 
-zarr_path = "../../data/cerra-475x535-1984-1988.zarr"
+zarr_path = "/anemoi-data/cerra-475x535-1994-1998-v3.zarr" if len(sys.argv) == 1 else sys.argv[1]
 cc2Data = cc2DataModule(
     data_path=zarr_path,
     input_resolution=[475, 535],
     prognostic_params=["tcc"],
     forcing_params=["insolation"],
+    batch_size=1,
 )
 cc2Data.setup("fit")
 
@@ -63,14 +64,18 @@ for i, batch in enumerate(df):
         )
     )
 
-    if i >= 5:
-        break
+    print("Forcing min={:.3f} mean={:.3f} max={:.3f}".format(t.min(forcing), t.mean(forcing), t.max(forcing)))
 
-    continue
-    fig, ax = plt.subplots(1, 3, figsize=(10, 4))
-    ax[0].imshow(x_f[0])
-    ax[1].imshow(x_f[1])
-    ax[2].imshow(y_f)
+    fig, ax = plt.subplots(2, 3, figsize=(10, 8))
+    ax[0][0].imshow(x_f[0])
+    ax[0][1].imshow(x_f[1])
+    ax[0][2].imshow(y_f)
+
+    forcing = forcing[0].squeeze()
+    ax[1][0].imshow(forcing[0])
+    ax[1][1].imshow(forcing[1])
+    ax[1][2].imshow(forcing[2])
+
 
     plt.savefig("figures/test-dataloader.png")
     print("Saved figure: figures/test-dataloader.png")
