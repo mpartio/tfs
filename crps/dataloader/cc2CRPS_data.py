@@ -439,27 +439,6 @@ class AnemoiDataset(Dataset):
         return data, forcing
 
 
-class HourlyZarrDataset(Dataset):
-    def __init__(self, zarr_path, group_size):
-        # Open the zarr array without loading data
-        self.data = zarr.open(zarr_path, mode="r")
-        self.group_size = group_size
-        self.time_steps, _, _, _ = self.data.shape
-
-        assert self.time_steps >= group_size
-
-    def __len__(self):
-        return self.time_steps - self.group_size - 1
-
-    def __getitem__(self, idx):
-        # Get consecutive samples
-        samples = self.data[idx : idx + self.group_size]
-
-        # Convert to tensor
-        samples = torch.from_numpy(samples)
-
-        return samples
-
 
 class SplitWrapper:
     def __init__(self, dataset, n_x, apply_smoothing=False):
