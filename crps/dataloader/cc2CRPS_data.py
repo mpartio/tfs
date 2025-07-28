@@ -574,9 +574,13 @@ class cc2DataModule(L.LightningDataModule):
             and self.hparams.val_start
             and self.hparams.val_end
         ):
-            # total number of usable time-windows
-            valid_dates = np.array(ds_full.dates)
-            max_idx = len(valid_dates) - ds_full.group_size
+            # Build splits aligned to valid_indices
+            # 1) positions 0…N-1 into valid_indices
+            valid_pos = np.arange(len(ds_full.valid_indices))
+            # 2) actual start dates for each valid window
+            all_dates = np.array(ds_full.dates, dtype="datetime64[ns]")
+            actual_pos = np.array(ds_full.valid_indices, dtype=int)
+            date_starts = all_dates[actual_pos]
 
             # parse to numpy datetimes
             t0 = np.datetime64(self.hparams.train_start)
@@ -585,14 +589,13 @@ class cc2DataModule(L.LightningDataModule):
             v1 = np.datetime64(self.hparams.val_end)
 
             # only keep windows whose first date falls into each span
-            all_starts = valid_dates[:max_idx]
-            train_mask = (all_starts >= t0) & (all_starts < t1)
-            val_mask = (all_starts >= v0) & (all_starts < v1)
+            train_mask = (date_starts >= t0) & (date_starts < t1)
+            val_mask = (date_starts >= v0) & (date_starts < v1)
             test_mask = ~train_mask & ~val_mask
 
-            train_indices = np.nonzero(train_mask)[0]
-            val_indices = np.nonzero(val_mask)[0]
-            test_indices = np.nonzero(test_mask)[0]
+            train_indices = valid_pos[train_mask]
+            val_indices = valid_pos[val_mask]
+            test_indices = valid_pos[test_mask]
 
             rank_zero_info(
                 "Training dataset ({} to {}) contains {} samples".format(
