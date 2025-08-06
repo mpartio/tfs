@@ -214,8 +214,9 @@ class cc2CRPSModel(L.LightningModule):
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
+        self.max_steps = self.trainer.max_steps
 
-    def forward(self, *args, **kwargs):  # data, forcing, step):
+    def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
     def training_step(self, batch, batch_idx):
@@ -228,8 +229,8 @@ class cc2CRPSModel(L.LightningModule):
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
             use_scheduled_sampling=self.use_scheduled_sampling,
-            epoch=self.current_epoch,
-            max_epoch=self.max_epochs,
+            step=self.global_step,
+            max_step=self.max_steps,
             pl_module=self,
         )
 
@@ -259,9 +260,9 @@ class cc2CRPSModel(L.LightningModule):
             self.model,
             data,
             forcing,
-            use_scheduled_sampling=False,
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
+            use_scheduled_sampling=False,
         )
 
         self.log("val_loss", loss["loss"], sync_dist=True)

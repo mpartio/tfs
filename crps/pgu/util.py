@@ -10,8 +10,8 @@ def scheduled_sampling_inputs(
     x: torch.Tensor,
     y: torch.Tensor,
     t: int,
-    epoch: int,
-    max_epoch: int,
+    step: int,
+    max_step: int,
     steepness: float = 10.0,
 ) -> torch.Tensor:
     """
@@ -25,8 +25,8 @@ def scheduled_sampling_inputs(
         x:             Original input sequence Tensor [B,T,C,H,W].
         y:             Ground-truth future targets Tensor [B,n_step,C,H,W].
         t:             Current rollout step (0-based).
-        epoch:         Current epoch index.
-        max_epoch:     Total number of epochs for scheduling.
+        step:          Current step index.
+        max_step:      Total number of steps for scheduling.
         steepness:     Controls sigmoid slope (higher = sharper transition).
 
     Returns:
@@ -37,7 +37,7 @@ def scheduled_sampling_inputs(
 
     # Compute probability of using model prediction (p_pred from 0 -> 1)
     p_pred = torch.sigmoid(
-        torch.tensor((epoch / max_epoch) * steepness - steepness / 2, device=device)
+        torch.tensor((step / max_step) * steepness - steepness / 2, device=device)
     )
 
     # Sample independent Bernoulli for each lag
@@ -74,8 +74,8 @@ def roll_forecast(
     n_step: int,
     loss_fn,
     use_scheduled_sampling: bool,
-    epoch: int | None = None,
-    max_epoch: int | None = None,
+    step: int | None = None,
+    max_step: int | None = None,
     pl_module: pl.LightningModule | None = None,
 ):
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
@@ -105,8 +105,8 @@ def roll_forecast(
                 x,
                 y,
                 t,
-                epoch,
-                max_epoch,
+                step,
+                max_step,
             )
 
             pl_module.log(
