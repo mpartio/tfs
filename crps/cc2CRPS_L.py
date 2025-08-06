@@ -259,6 +259,7 @@ class cc2CRPSModel(L.LightningModule):
             self.model,
             data,
             forcing,
+            use_scheduled_sampling=False,
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
         )

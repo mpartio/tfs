@@ -73,7 +73,7 @@ def roll_forecast(
     forcing: torch.Tensor,
     n_step: int,
     loss_fn,
-    use_scheduled_sampling: bool = False,
+    use_scheduled_sampling: bool,
     epoch: int | None = None,
     max_epoch: int | None = None,
     pl_module: pl.LightningModule | None = None,
