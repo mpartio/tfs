@@ -9,6 +9,7 @@ from tqdm import tqdm
 from verif.mae import mae, mae2d, plot_mae_timeseries, plot_mae2d
 from verif.psd import psd, plot_psd
 from verif.fss import fss, plot_fss
+from verif.error_spread import error_spread, plot_error_spread
 
 
 def get_args():
@@ -20,7 +21,7 @@ def get_args():
         type=str,
         required=False,
         nargs="+",
-        choices=["stamps", "mae", "mae2d", "psd", "fss"],
+        choices=["stamps", "mae", "mae2d", "psd", "fss", "error-spread"],
         help="Score to produce",
     )
     parser.add_argument(
@@ -49,7 +50,7 @@ def get_args():
     return args
 
 
-def read_data(run_name):
+def read_data(run_name, ensemble_only):
     if "/" in run_name:
         run_dir = f"runs/{run_name}"
     else:
@@ -71,14 +72,17 @@ def read_data(run_name):
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
 
-    if predictions.ndim == 6:
+    if not ensemble_only and predictions.ndim == 6:
         # predictions are from pgu_ens, pick first member
         print("Using member 0/{}".format(predictions.shape[1]))
         predictions = predictions[:, 0, :, :, :]
+
+    if truth.ndim == 6:
+        # squeeze "member" dim from truth
         truth = truth[:, 0, :, :, :]
 
     assert (
-        predictions.ndim == 5
+        ensemble_only or predictions.ndim == 5
     ), "Predictions should be 5D tensor (batch, time, channel, height, width), got {}".format(
         predictions.shape
     )
@@ -178,12 +182,16 @@ def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
     return all_truth, all_predictions, all_dates
 
 
-def prepare_data(args):
+def prepare_data(args, ensemble_only: bool = False):
     all_truth, all_predictions, all_dates = [], [], []
 
     for run_name in tqdm(args.run_name, desc="Reading data"):
 
-        truth, predictions, dates = read_data(run_name)
+        truth, predictions, dates = read_data(run_name, ensemble_only)
+
+        if ensemble_only and predictions.ndim == 5:
+            print(f"Skipping run {run_name}, not an ensemble")
+            continue
 
         all_truth.append(truth)
         all_predictions.append(predictions)
@@ -314,6 +322,15 @@ if __name__ == "__main__":
             else:
                 results = fss(all_truth, all_predictions, args.save_path)
             plot_fss(args.run_name, results, args.save_path)
+
+        elif score == "error-spread":
+            _all_truth, _all_predictions, _ = prepare_data(args, True)
+            print(_all_truth[0].shape, _all_predictions[0].shape)
+            results = error_spread(
+                args.run_name, _all_truth, _all_predictions, args.save_path
+            )
+            print(results)
+            plot_error_spread(results)
 
     if args.plot_only is False:
         plot_stamps(
