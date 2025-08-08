@@ -115,7 +115,7 @@ class cc2CRPSModel(L.LightningModule):
         self.run_dir = os.environ["CC2_RUN_DIR"]
 
         if self.run_dir and not self.hparams.init_weights_from_ckpt:
-            print(
+            rank_zero_info(
                 "Run dir set but weights are not loaded (init_weights_from_ckpt: false)"
             )
 
@@ -128,7 +128,8 @@ class cc2CRPSModel(L.LightningModule):
                     ckpt_dir = get_latest_run_dir(
                         "runs/" + self.hparams.branch_from_run
                     )
-                print(f"Branching from {ckpt_dir}")
+
+                rank_zero_info(f"Branching from {ckpt_dir}")
 
             else:
                 ckpt_dir = (
@@ -187,7 +188,7 @@ class cc2CRPSModel(L.LightningModule):
             # Load the (potentially adapted) state dict
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
-            print("Weight loading results:", load_result)
+            rank_zero_info("Weight loading results:", load_result)
 
         rank = get_rank()
 
