@@ -157,7 +157,7 @@ def roll_forecast(
                 # Second, third, ... step: y - y_prev
                 y_true = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
 
-            loss = loss_fn(y_true, tendency, t)
+            loss = loss_fn(y_true, tendency)
             all_losses.append(loss)
 
     # Stack predictions into a single tensor

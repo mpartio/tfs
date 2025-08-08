@@ -1,31 +1,36 @@
 import torch
 import torch.nn as nn
 
-step_weights = torch.tensor([3.0, 1.5, 1.0, 0.8, 0.5, 0.3])
-e_std = 0.32  # empirical tendency std
+e_std = 0.32  # empirical tendency std, change point for huber
 huber = nn.SmoothL1Loss(beta=e_std, reduction="none")
 
 
 def loss_fn(
-    y_true: torch.tensor, y_pred: torch.tensor, rollout_len: int, alpha: int = 2
+    y_true: torch.tensor,
+    y_pred: torch.tensor,
+    alpha: float = 2.0,  # scaler for tendency loss
+    tau: float = 0.02,  # lower bound for "noise" change
 ):
     # rollout_len starts with 0
     B, T, C, H, W = y_true.shape
 
-    weights = step_weights.to(y_true.device)
+    # base loss
+    base = huber(y_pred, y_true)
+    step_loss = base.mean(dim=(0, 2, 3, 4))  # [T]
 
-    err = y_pred - y_true
+    # change-aware tendency loss
+    # ignore tiny changes below tau, and scale up other by alpha
+    magnitude = (torch.abs(y_true) - tau).clamp_min(0)
 
-    step_loss = huber(y_pred, y_true)
-    step_loss = step_loss.mean(dim=(0, 2, 3, 4))
-    step_loss = weights[rollout_len] * step_loss
+    # scale the magnitude, as volatile batches might result into higher loss
+    # than calm batches
+    magnitude_mean = magnitude.mean(dim=(0, 2, 3, 4), keepdim=True)  # [1,T,1,1,1]
+    magnitude = magnitude / (magnitude_mean + 1e-8)  # [B,T,C,H,W]
+    magnitude = magnitude * alpha
 
-    tendency_importance = alpha * torch.abs(y_true)
-    tendency_map = tendency_importance * err**2
-    tendency_loss = tendency_map.mean(dim=(0, 2, 3, 4))
-    tendency_loss = weights[rollout_len] * tendency_loss
+    tendency_loss = (magnitude * base).mean(dim=(0, 2, 3, 4))  # [T]
 
-    loss = torch.stack((step_loss, tendency_loss)).sum()
+    loss = step_loss.mean() + tendency_loss.mean()
 
     assert torch.isfinite(loss).all(), "Non-finite values at loss: {}".format(loss)
 
