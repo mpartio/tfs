@@ -288,6 +288,7 @@ class cc2CRPSModel(L.LightningModule):
             forcing,
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
+            use_scheduled_sampling=False,
         )
 
         # We want to include the analysis time also
