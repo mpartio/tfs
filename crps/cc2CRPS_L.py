@@ -188,7 +188,7 @@ class cc2CRPSModel(L.LightningModule):
             # Load the (potentially adapted) state dict
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
-            rank_zero_info("Weight loading results:", load_result)
+            rank_zero_info(f"Weight loading results: {load_result}")
 
         rank = get_rank()
 
