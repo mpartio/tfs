@@ -112,22 +112,22 @@ def roll_forecast(
             pl_module.log(
                 "ss_p_pred",
                 p_pred,
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 sync_dist=False,
             )
             pl_module.log(
                 "ss_mask_prev",
                 mask_prev,
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 sync_dist=False,
             )
             pl_module.log(
                 "ss_mask_curr",
                 mask_curr,
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 sync_dist=False,
             )
 
