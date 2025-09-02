@@ -215,7 +215,15 @@ class cc2CRPSModel(L.LightningModule):
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
-        self.max_steps = self.trainer.max_steps
+        # max_steps is not typically set (by me)
+        if self.trainer.max_steps > 0:
+            self.max_steps = self.trainer.max_steps
+        else:
+            # fallback if only max_epochs is set
+            self.max_steps = self.trainer.estimated_stepping_batches
+
+        assert self.max_steps > 0, "Trainer must be configured with max_steps"
+
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
