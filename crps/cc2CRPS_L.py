@@ -58,6 +58,8 @@ class cc2CRPSModel(L.LightningModule):
         add_refinement_head: bool = False,
         model_family: str = "pgu",
         use_scheduled_sampling: bool = False,
+        ss_pred_min: float = 0.0,
+        ss_pred_max: float = 1.0,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
     ):
@@ -92,6 +94,8 @@ class cc2CRPSModel(L.LightningModule):
                 "add_refinement_head",
                 "noise_dim",
                 "num_members",
+                "ss_pred_min",
+                "ss_pred_max",
             ]
         }
 
@@ -212,6 +216,8 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_data = None
 
         self.use_scheduled_sampling = use_scheduled_sampling
+        self.ss_pred_min = ss_pred_min
+        self.ss_pred_max = ss_pred_max
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
@@ -223,7 +229,6 @@ class cc2CRPSModel(L.LightningModule):
             self.max_steps = self.trainer.estimated_stepping_batches
 
         assert self.max_steps > 0, "Trainer must be configured with max_steps"
-
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
@@ -240,6 +245,8 @@ class cc2CRPSModel(L.LightningModule):
             use_scheduled_sampling=self.use_scheduled_sampling,
             step=self.global_step,
             max_step=self.max_steps,
+            ss_pred_min=self.ss_pred_min,
+            ss_pred_max=self.ss_pred_max,
             pl_module=self,
         )
 
