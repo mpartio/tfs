@@ -62,6 +62,7 @@ class cc2CRPSModel(L.LightningModule):
         ss_pred_max: float = 1.0,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
+        loss_function: str = "huber_loss",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -102,7 +103,9 @@ class cc2CRPSModel(L.LightningModule):
         if model_family == "pgu":
             from pgu.cc2 import cc2CRPS
             from pgu.util import roll_forecast
-            from pgu.loss import loss_fn
+            from pgu.loss import LOSS_FUNCTIONS
+
+            loss_fn = LOSS_FUNCTIONS[loss_function]
         elif model_family == "pgu_ens":
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
