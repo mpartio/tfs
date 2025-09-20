@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pgu.spectrally_adjusted_huber import huber_with_tendency_and_spectral_loss
 
 
 def mse_loss(y_true: torch.tensor, y_pred: torch.tensor):
@@ -112,4 +113,5 @@ LOSS_FUNCTIONS = {
     "mse_loss": mse_loss,
     "huber_loss": huber_with_tendency_loss,
     "multiscale_huber_loss": multiscale_huber_loss,
+    "spectrally_adjusted_huber_loss": huber_with_tendency_and_spectral_loss,
 }
