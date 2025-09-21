@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import os
@@ -439,7 +438,6 @@ class AnemoiDataset(Dataset):
         return data, forcing
 
 
-
 class SplitWrapper:
     def __init__(self, dataset, n_x, apply_smoothing=False):
         self.dataset = dataset
@@ -596,8 +594,9 @@ class cc2DataModule(L.LightningDataModule):
             num_samples_to_split = num_total_valid_samples
 
             # Shuffle indices before splitting
-            rng = np.random.RandomState(self.hparams.seed)
-            rng.shuffle(indices)
+            if stage == "fit":
+                rng = np.random.RandomState(self.hparams.seed)
+                rng.shuffle(indices)
 
             # Calculate split sizes based on the potentially limited number of samples
             val_size = int(self.hparams.val_split * num_samples_to_split)
