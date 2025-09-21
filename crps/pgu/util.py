@@ -115,8 +115,8 @@ def roll_forecast(
                 t,
                 step,
                 max_step,
-                ss_pred_min,
-                ss_pred_max,
+                ss_pred_min=ss_pred_min,
+                ss_pred_max=ss_pred_max,
             )
 
             pl_module.log(
