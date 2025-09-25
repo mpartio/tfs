@@ -87,7 +87,7 @@ def mae2d(
 
 
 def plot_mae_timeseries(
-    df: pd.DataFrame, save_path="runs/verification/mae_timeseries.png"
+    df: pd.DataFrame, save_path="runs/verification"
 ):
     if df.empty:
         print("No results to plot.")
