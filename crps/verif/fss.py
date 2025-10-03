@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import pandas as pd
 from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+categories = ["Clear", "Partly cloudy", "Mostly cloudy", "Overcast"]
 
 
 def get_mask_sizes(n: int = 8) -> list[int]:
@@ -80,6 +82,7 @@ def compute_fss_per_leadtime(
 
 
 def fss(
+    run_name: list[str],
     all_truth: torch.Tensor,
     all_predictions: list[torch.Tensor],
     save_path: str,
@@ -130,7 +133,32 @@ def fss(
     results.append(observed_categories_frac)
 
     torch.save(results, f"{save_path}/results/fss.pt")
-    return results
+
+    m = 2  # mask index = 6px
+
+    x = torch.arange(results[0].shape[2])
+
+    df=[]
+    for i in range(n_models):
+        for c in range(len(categories)):
+            for t in range(results[0].shape[2]):
+                fss_1d = results[i][c, m, t]
+                df.append(
+                    {
+                        "model": run_name[i],
+                        "category": categories[c],
+                        "timestep": t,
+                        "fss": fss_1d.numpy().item(),
+                    }
+                )
+                print(df[-1])
+
+    df = pd.DataFrame(df)
+    if not df.empty:
+        df = df.sort_values(by=["category","timestep", "model"])
+
+    df.to_csv(f"{save_path}/results/fss.csv", index=False)
+    return results, df
 
 
 def plot_fss(
@@ -138,22 +166,20 @@ def plot_fss(
     results: torch.tensor,
     save_path: str,
 ):
-    plot_fss_2d(run_name, results, save_path)
+    # plot_fss_2d(run_name, results, save_path)
     plot_fss_1d(run_name, results, save_path)
 
 
 def plot_fss_1d(
     run_name: list[str],
-    results: torch.tensor,
+    results: list[torch.tensor],
     save_path: str,
 ):
+    results = results[:-1]
     plt.close("all")
-
     num_categories = results[0].shape[0]
     num_masks = results[0].shape[1]
     num_leadtimes = results[0].shape[2]
-
-    categories = ["Clear", "Partly cloudy", "Mostly cloudy", "Overcast"]
 
     mask_sizes = get_mask_sizes(num_masks)
 
@@ -166,6 +192,7 @@ def plot_fss_1d(
 
     for c in range(num_categories):
         for i, r in enumerate(results):
+            print(r.shape, c, m)
             ax[c].plot(x, r[c, m, :], label=run_name[i])
             ax[c].set_xlabel("Lead time (h)")
             ax[c].set_ylabel("Fraction Skill Score")

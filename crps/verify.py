@@ -2,6 +2,7 @@ import torch
 import os
 import argparse
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import os
 from common.util import get_latest_run_dir
@@ -10,6 +11,22 @@ from verif.mae import mae, mae2d, plot_mae_timeseries, plot_mae2d
 from verif.psd import psd, plot_psd
 from verif.fss import fss, plot_fss
 from verif.error_spread import error_spread, plot_error_spread
+from verif.variance_ratio import variance_ratio, plot_variance_ratio
+from verif.highk_power_ratio import highk_power_ratio, plot_highk_power_ratio
+from verif.spectral_coherence import (
+    spectral_coherence_bands,
+    plot_spectral_coherence_bands,
+)
+from verif.change_metrics import (
+    change_metrics,
+    plot_change_prf_timeseries,
+    plot_change_corr_stationarity_timeseries,
+)
+from verif.composite_score import (
+    composite_score,
+    plot_composite_bars,
+    plot_component_contributions,
+)
 
 
 def get_args():
@@ -21,7 +38,18 @@ def get_args():
         type=str,
         required=False,
         nargs="+",
-        choices=["stamps", "mae", "mae2d", "psd", "fss", "error-spread"],
+        choices=[
+            "stamps",
+            "mae",
+            "mae2d",
+            "psd",
+            "fss",
+            "variance_ratio",
+            "highk_power_ratio",
+            "spectral_coherence",
+            "change_metrics",
+            "error-spread",
+        ],
         help="Score to produce",
     )
     parser.add_argument(
@@ -285,28 +313,36 @@ if __name__ == "__main__":
         all_truth, all_predictions, all_dates = prepare_data(args)
 
     pivot_df = None
+    all_results = []
     for score in args.score:
         if score == "mae":
             if args.plot_only:
-                results = torch.load(f"{args.save_path}/results/mae.pt")
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results = mae(args.run_name, all_truth, all_predictions, args.save_path)
             plot_mae_timeseries(results, args.save_path)
+            print(results)
             pivot_df = results.pivot(index="model", columns="timestep", values="mae")
 
         elif score == "mae2d":
             if args.plot_only:
-                results = torch.load(f"{args.save_path}/results/mae2d.pt")
+                results = torch.load(
+                    f"{args.save_path}/results/{score}.pt", weights_only=False
+                )
             else:
                 results = mae2d(all_truth, all_predictions, args.save_path)
             plot_mae2d(args.run_name, results, args.save_path)
 
         elif score == "psd":
             if args.plot_only:
-                obs_psd = torch.load(f"{args.save_path}/results/observed_psd.pt")
-                pred_psd = torch.load(f"{args.save_path}/results/predicted_psd.pt")
+                obs_psd = torch.load(
+                    f"{args.save_path}/results/observed_psd.pt", weights_only=False
+                )
+                pred_psd = torch.load(
+                    f"{args.save_path}/results/predicted_psd.pt", weights_only=False
+                )
                 pred_psd_r1 = torch.load(
-                    f"{args.save_path}/results/predicted_psd_r1.pt"
+                    f"{args.save_path}/results/predicted_psd_r1.pt", weights_only=False
                 )
             else:
                 obs_psd, pred_psd, pred_psd_r1 = psd(
@@ -316,12 +352,16 @@ if __name__ == "__main__":
 
         elif score == "fss":
             if args.plot_only:
-                results = torch.load(
-                    f"{args.save_path}/results/fss.pt", weights_only=False
+                results_t = torch.load(
+                    f"{args.save_path}/results/{score}.pt", weights_only=False
                 )
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
-                results = fss(all_truth, all_predictions, args.save_path)
-            plot_fss(args.run_name, results, args.save_path)
+                results_t, results = fss(
+                    args.run_name, all_truth, all_predictions, args.save_path
+                )
+
+            plot_fss(args.run_name, results_t, args.save_path)
 
         elif score == "error-spread":
             _all_truth, _all_predictions, _ = prepare_data(args, True)
@@ -331,6 +371,78 @@ if __name__ == "__main__":
             )
             print(results)
             plot_error_spread(results)
+
+        elif score == "variance_ratio":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = variance_ratio(
+                    args.run_name, all_truth, all_predictions, args.save_path
+                )
+
+            print(results)
+            plot_variance_ratio(results, args.save_path)
+
+        elif score == "highk_power_ratio":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = highk_power_ratio(
+                    args.run_name, all_truth, all_predictions, args.save_path
+                )
+
+            print(results)
+            plot_highk_power_ratio(results, args.save_path)
+
+        elif score == "spectral_coherence":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = spectral_coherence_bands(
+                    args.run_name, all_truth, all_predictions, args.save_path
+                )
+
+            print(results)
+            plot_spectral_coherence_bands(results, args.save_path)
+
+        elif score == "change_metrics":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = change_metrics(
+                    args.run_name, all_truth, all_predictions, args.save_path
+                )
+
+            print(results)
+            plot_change_prf_timeseries(results, args.save_path)
+            plot_change_corr_stationarity_timeseries(results, args.save_path)
+
+        all_results.append(results)
+
+    composite_score_metrics = [
+        "mae",
+        "fss",
+        "variance_ratio",
+        "highk_power_ratio",
+        "spectral_coherence",
+        "change_metrics",
+    ]
+
+    composite_score_values = {}
+    for s in composite_score_metrics:
+        if s not in args.score:
+            break
+
+        i = args.score.index(s)
+        composite_score_values[s] = all_results[i]
+
+    if len(composite_score_values.keys()) == 6:
+        composite_result = composite_score(args.run_name, composite_score_values)
+        plot_composite_bars(composite_result, save_path=args.save_path)
+        plot_component_contributions(composite_result, save_path=args.save_path)
+
+    else:
+        print("Not producing composite score: some scores not calculated")
 
     if args.plot_only is False:
         plot_stamps(

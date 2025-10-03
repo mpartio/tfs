@@ -58,8 +58,11 @@ class cc2CRPSModel(L.LightningModule):
         add_refinement_head: bool = False,
         model_family: str = "pgu",
         use_scheduled_sampling: bool = False,
+        ss_pred_min: float = 0.0,
+        ss_pred_max: float = 1.0,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
+        loss_function: str = "huber_loss",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -92,13 +95,17 @@ class cc2CRPSModel(L.LightningModule):
                 "add_refinement_head",
                 "noise_dim",
                 "num_members",
+                "ss_pred_min",
+                "ss_pred_max",
             ]
         }
 
         if model_family == "pgu":
             from pgu.cc2 import cc2CRPS
             from pgu.util import roll_forecast
-            from pgu.loss import loss_fn
+            from pgu.loss import LOSS_FUNCTIONS
+
+            loss_fn = LOSS_FUNCTIONS[loss_function]
         elif model_family == "pgu_ens":
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
@@ -212,6 +219,8 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_data = None
 
         self.use_scheduled_sampling = use_scheduled_sampling
+        self.ss_pred_min = ss_pred_min
+        self.ss_pred_max = ss_pred_max
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
@@ -223,7 +232,6 @@ class cc2CRPSModel(L.LightningModule):
             self.max_steps = self.trainer.estimated_stepping_batches
 
         assert self.max_steps > 0, "Trainer must be configured with max_steps"
-
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
@@ -240,13 +248,10 @@ class cc2CRPSModel(L.LightningModule):
             use_scheduled_sampling=self.use_scheduled_sampling,
             step=self.global_step,
             max_step=self.max_steps,
+            ss_pred_min=self.ss_pred_min,
+            ss_pred_max=self.ss_pred_max,
             pl_module=self,
         )
-
-        if batch_idx == 0:
-            self.latest_train_tendencies = tendencies
-            self.latest_train_predictions = predictions
-            self.latest_train_data = data
 
         self.log("train_loss", loss["loss"], sync_dist=False)
 

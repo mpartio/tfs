@@ -136,7 +136,7 @@ def find_latest_checkpoint_path(checkpoint_directory):
     assert checkpoint_directory is not None, "checkpoint_directory is 'None'"
     try:
         # Find latest checkpoint
-        checkpoints = glob(f"{checkpoint_directory}/checkpoints/*.ckpt")
+        checkpoints = glob(f"{checkpoint_directory}/checkpoints/epoch*.ckpt")
         assert (
             checkpoints
         ), f"No model checkpoints found in directory {checkpoint_directory}/checkpoints, cwd={os.getcwd()}"
