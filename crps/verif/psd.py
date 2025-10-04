@@ -1,92 +1,176 @@
+import os
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.ticker import LogLocator
 
 
+# --------------------------- helpers ---------------------------
+
+
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def _hann2d(nx: int, ny: int, device, dtype, periodic=True):
+    wx = torch.hann_window(nx, periodic=periodic, device=device, dtype=dtype)
+    wy = torch.hann_window(ny, periodic=periodic, device=device, dtype=dtype)
+    return wx[:, None] * wy[None, :]
+
+
+def infer_spacing_from_original(
+    nx_down,
+    ny_down,
+    nx_orig=949,
+    ny_orig=1069,
+    dx_orig_km=2.5,
+    dy_orig_km=2.5,
+    periodic=False,
+):
+    """
+    Returns dx, dy (km) for the *downscaled* data, assuming it spans the same
+    physical extent as the original grid.
+
+    periodic=False -> L = (N_orig-1)*dx_orig
+    periodic=True  -> L =  N_orig   *dx_orig
+    """
+    if periodic:
+        Lx = nx_orig * dx_orig_km
+        Ly = ny_orig * dy_orig_km
+    else:
+        Lx = (nx_orig - 1) * dx_orig_km
+        Ly = (ny_orig - 1) * dy_orig_km
+    dx = Lx / nx_down
+    dy = Ly / ny_down
+    return dx, dy
+
+
+def _radial_bin(kx, ky, psd2):
+    device, dtype = psd2.device, psd2.dtype
+    nx, ny = kx.numel(), ky.numel()
+
+    KX, KY = torch.meshgrid(kx, ky, indexing="ij")
+    kr = torch.sqrt(KX**2 + KY**2)
+
+    nr = min(nx, ny) // 2
+    kr_max = kr.max()
+    edges = torch.linspace(0.0, kr_max, nr + 1, device=device, dtype=dtype)
+
+    bin_idx = torch.bucketize(kr.reshape(-1), edges, right=False) - 1
+    bin_idx = bin_idx.clamp(min=0, max=nr - 1).reshape(nx, ny)
+
+    Pk = []
+    counts = []
+    for b in range(nr):
+        mask = bin_idx == b
+        c = mask.sum()
+        if c == 0:
+            Pk.append(torch.zeros(psd2.shape[:-2], device=device, dtype=dtype))
+            counts.append(torch.tensor(1, device=device))
+        else:
+            val = (psd2 * mask).sum(dim=(-2, -1))
+            Pk.append(val)
+            counts.append(c)
+
+    Pk = torch.stack(Pk, dim=-1)
+    counts = torch.stack(counts).to(Pk)
+    Pk = Pk / counts
+    k_centers = 0.5 * (edges[:-1] + edges[1:])
+    return k_centers, Pk
+
+
+def interp1d_torch(x, xp, fp):
+    """
+    Torch version of numpy.interp. Works on 1D tensors.
+    x  : points to evaluate
+    xp : ascending reference x
+    fp : values at xp
+    """
+    # ensure 1D
+    x, xp, fp = x.flatten(), xp.flatten(), fp.flatten()
+    inds = torch.searchsorted(xp, x)
+    inds = torch.clamp(inds, 1, len(xp) - 1)
+    x0, x1 = xp[inds - 1], xp[inds]
+    f0, f1 = fp[inds - 1], fp[inds]
+    slope = (f1 - f0) / (x1 - x0)
+    return f0 + slope * (x - x0)
+
+
+# --------------------------- DROP-IN API ---------------------------
+
+
 def calculate_psd(data: torch.Tensor):
-    _nx, _ny = data.shape[-2:]
-    _window_x = torch.hann_window(
-        _nx, periodic=False, device=data.device, dtype=data.dtype
+    *lead, nx, ny = data.shape
+    device, dtype = data.device, data.dtype
+
+    window = _hann2d(nx, ny, device, dtype, periodic=True)
+    win_power = (window**2).sum()
+
+    d = data.reshape(-1, nx, ny) * window
+
+    dx, dy = infer_spacing_from_original(
+        nx_down=nx,
+        ny_down=ny,
+        nx_orig=949,
+        ny_orig=1069,
+        dx_orig_km=2.5,
+        dy_orig_km=2.5,
+        periodic=False,
     )
-    _window_y = torch.hann_window(
-        _ny, periodic=False, device=data.device, dtype=data.dtype
-    )
-    _window = _window_x.unsqueeze(-1) * _window_y.unsqueeze(0)
-    data = data * _window
 
-    nx, ny = data.shape[-2:]
-    # Using data.shape[-2] for 'nx' in dx calculation as in original
-    dx = 2.5 * (949.0 - 1.0) / nx
-    dy = 2.5 * (1069.0 - 1.0) / ny
+    F = torch.fft.fft2(d, dim=(-2, -1), norm="ortho")
+    F = torch.fft.fftshift(F, dim=(-2, -1))
+    P2 = F.real**2 + F.imag**2
 
-    f_transform = torch.fft.fft2(data, dim=(-2, -1))
-    f_transform = torch.fft.fftshift(f_transform, dim=(-2, -1))
-
-    psd = torch.abs(f_transform) ** 2
-
-    # Using data.shape[-2] for 'nx' in kx as in original
-    kx = torch.fft.fftfreq(nx, d=dx, device=data.device, dtype=data.dtype)
-    # Using data.shape[-1] for 'ny' in ky, and d=dx as in original
-    ky = torch.fft.fftfreq(ny, d=dy, device=data.device, dtype=data.dtype)
-
+    kx = torch.fft.fftfreq(nx, d=dx, device=device, dtype=dtype)
+    ky = torch.fft.fftfreq(ny, d=dy, device=device, dtype=dtype)
     kx = torch.fft.fftshift(kx)
     ky = torch.fft.fftshift(ky)
 
-    # Positive frequencies, excluding zero.
-    # nx corresponds to data.shape[-2]
-    # ny corresponds to data.shape[-1]
-    scale_x = 1.0 / kx[nx // 2 + 1 :]
-    scale_y = 1.0 / ky[ny // 2 + 1 :]
+    k, Pk = _radial_bin(kx, ky, P2)
 
-    scale_x = torch.flip(scale_x, dims=[0])
-    scale_y = torch.flip(scale_y, dims=[0])
+    nz = k > 0
+    k = k[nz]
+    Pk = Pk[:, nz]
 
-    # Ellipsis '...' handles potential batch dimensions
-    psd_quadrant = psd[..., nx // 2 + 1 :, ny // 2 + 1 :]
-    psd_quadrant = torch.flip(psd_quadrant, dims=[-2, -1])
-    psd_quadrant = torch.mean(psd_quadrant, dim=0).sum(dim=-1)
+    wavelength = 1.0 / k
+    Pk = Pk / (win_power / (nx * ny))
+    Pk_mean = Pk.mean(dim=0)
 
-    return scale_x, scale_y, psd_quadrant
+    return wavelength, wavelength, Pk_mean
 
 
 def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
-    truth = all_truth[0]
+    _ensure_dir(os.path.join(save_path, "results"))
 
+    truth = all_truth[0]
     if truth.ndim > 3:
         truth = truth.reshape(-1, truth.shape[-2], truth.shape[-1])
 
     sx, sy, psd_q = calculate_psd(truth)
-
     observed_psd = {"sx": sx, "sy": sy, "psd": psd_q}
-    predicted_psds = []
 
+    predicted_psds = []
     for i in range(len(all_predictions)):
         prediction = all_predictions[i]
         if prediction.ndim > 3:
             prediction = prediction.reshape(
                 -1, prediction.shape[-2], prediction.shape[-1]
             )
+        sx_p, sy_p, psd_p = calculate_psd(prediction)
+        predicted_psds.append({"sx": sx_p, "sy": sy_p, "psd": psd_p})
 
-        sx, sy, psd_q = calculate_psd(prediction)
-        predicted_psds.append({"sx": sx, "sy": sy, "psd": psd_q})
-
-    # Save the observed and predicted PSDs to a file
     torch.save(observed_psd, f"{save_path}/results/observed_psd.pt")
     torch.save(predicted_psds, f"{save_path}/results/predicted_psd.pt")
 
-    # Do the same but only for the first leadtime
-
     predicted_psds_r1 = []
-
     for i in range(len(all_predictions)):
-        prediction = all_predictions[i][:, 1:2, :, :, :]
+        prediction = all_predictions[i][:, 1:2, ...]
         if prediction.ndim > 3:
             prediction = prediction.reshape(
                 -1, prediction.shape[-2], prediction.shape[-1]
             )
-
-        sx, sy, psd_q = calculate_psd(prediction)
-        predicted_psds_r1.append({"sx": sx, "sy": sy, "psd": psd_q})
+        sx_p1, sy_p1, psd_p1 = calculate_psd(prediction)
+        predicted_psds_r1.append({"sx": sx_p1, "sy": sy_p1, "psd": psd_p1})
 
     torch.save(predicted_psds_r1, f"{save_path}/results/predicted_psd_r1.pt")
 
@@ -100,65 +184,132 @@ def plot_psd(
     pred_psds_r1: list[dict],
     save_path: str,
 ):
+    _ensure_dir(os.path.join(save_path, "figures"))
+
+    def _to_np(t):
+        return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
+
     def init_plot():
         plt.figure(figsize=(8, 8))
         plt.xlabel("Horizontal Scale (km)", fontsize=12)
         plt.ylabel("PSD", fontsize=12)
-
         sx = obs_psd["sx"]
         psd = obs_psd["psd"]
-        plt.loglog(sx, psd, label="Observed", linewidth=1, color="black")
+        plt.loglog(
+            _to_np(sx), _to_np(psd), label="Observed", linewidth=2, color="black"
+        )
 
+    sx_o = obs_psd["sx"]
+    psd_o = obs_psd["psd"]
+
+    # ---------------- Absolute PSD ----------------
     init_plot()
-    # Add units if clear, e.g., '(Cloud Cover Fraction)$^2$ / (km$^{-2}$)'
     plt.title("Power Spectral Density", fontsize=14)
-    plt.grid(True, alpha=0.7)  # Grid for major and minor ticks
-    # plt.grid(True, which="both", ls="-", alpha=0.7)  # Grid for major and minor ticks
+    plt.grid(True, alpha=0.7)
 
     for i in range(len(run_name)):
         sx = pred_psds[i]["sx"]
-        # sort_indices = np.argsort(scales)[::-1] # Sort scales descending
         psd = pred_psds[i]["psd"]
-        plt.loglog(sx, psd, label=run_name[i], linewidth=2)
+        if sx[0] > sx[-1]:
+            sx = torch.flip(sx, dims=[0])
+            psd = torch.flip(psd, dims=[0])
+        psd_interp = interp1d_torch(sx_o, sx, psd)
+        plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
 
-    plt.gca().yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
-    plt.gca().yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
-
-    plt.gca().invert_xaxis()
-
-    plt.gca().set_ylim(4000, 5e8)
-    plt.gca().set_xlim(2900, 7)
-
+    ax = plt.gca()
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
+    ax.invert_xaxis()
+    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10)
 
     filename = f"{save_path}/figures/psd.png"
-    plt.savefig(filename)
-
+    plt.savefig(filename, dpi=200)
     print(f"Plot saved to {filename}")
+    plt.close()
 
+    # ---------------- Anomaly vs Observed ----------------
+    plt.figure(figsize=(8, 8))
+    plt.title("PSD Anomaly vs Observed", fontsize=14)
+    plt.xlabel("Horizontal Scale (km)", fontsize=12)
+    plt.ylabel("log10(pred/obs)", fontsize=12)
+    plt.grid(True, alpha=0.7)
+    plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
+
+    for i in range(len(run_name)):
+        sx = pred_psds[i]["sx"]
+        psd = pred_psds[i]["psd"]
+        if sx[0] > sx[-1]:
+            sx = torch.flip(sx, dims=[0])
+            psd = torch.flip(psd, dims=[0])
+        psd_interp = interp1d_torch(sx_o, sx, psd)
+        anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
+        plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+
+    ax = plt.gca()
+    ax.invert_xaxis()
+    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+    plt.legend(fontsize=10, ncol=2)
+
+    filename = f"{save_path}/figures/psd_anomaly.png"
+    plt.savefig(filename, dpi=200)
+    print(f"Plot saved to {filename}")
     plt.close()
     plt.clf()
 
+    # ---------------- Rollout-1 Absolute ----------------
     init_plot()
-
     plt.title("Power Spectral Density Rollout 1", fontsize=14)
-    plt.grid(True, alpha=0.7)  # Grid for major and minor ticks
+    plt.grid(True, alpha=0.7)
 
     for i in range(len(run_name)):
         sx = pred_psds_r1[i]["sx"]
         psd = pred_psds_r1[i]["psd"]
-        plt.loglog(sx, psd, label=run_name[i], linewidth=2)
+        if sx[0] > sx[-1]:
+            sx = torch.flip(sx, dims=[0])
+            psd = torch.flip(psd, dims=[0])
+        psd_interp = interp1d_torch(sx_o, sx, psd)
+        plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
 
-    plt.gca().yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
-    plt.gca().yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
-
-    plt.gca().invert_xaxis()
-    plt.gca().set_ylim(4000, 5e8)
-    plt.gca().set_xlim(2900, 7)
-
+    ax = plt.gca()
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
+    ax.invert_xaxis()
+    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10)
 
     filename = f"{save_path}/figures/psd_r1.png"
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=200)
     print(f"Plot saved to {filename}")
     plt.close()
+    plt.clf()
+
+    # ---------------- Rollout-1 Anomaly ----------------
+    plt.figure(figsize=(8, 8))
+    plt.title("PSD Anomaly vs Observed Rollout 1", fontsize=14)
+    plt.xlabel("Horizontal Scale (km)", fontsize=12)
+    plt.ylabel("log10(pred/obs)", fontsize=12)
+    plt.grid(True, alpha=0.7)
+    # Horizontal reference line at 0 (observed spectrum)
+    plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
+
+    for i in range(len(run_name)):
+        sx = pred_psds_r1[i]["sx"]
+        psd = pred_psds_r1[i]["psd"]
+        if sx[0] > sx[-1]:
+            sx = torch.flip(sx, dims=[0])
+            psd = torch.flip(psd, dims=[0])
+        psd_interp = interp1d_torch(sx_o, sx, psd)
+        anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
+        plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+
+    ax = plt.gca()
+    ax.invert_xaxis()
+    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+    plt.legend(fontsize=10, ncol=2)
+
+    filename = f"{save_path}/figures/psd_r1_anomaly.png"
+    plt.savefig(filename, dpi=200)
+    print(f"Plot saved to {filename}")
+    plt.close()
+    plt.clf()
