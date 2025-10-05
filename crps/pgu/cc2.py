@@ -64,6 +64,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
+                    drop_path_rate=config.drop_path_rate,
                 )
                 for _ in range(config.encoder1_depth)
             ]
@@ -86,6 +87,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
+                    drop_path_rate=config.drop_path_rate,
                 )
                 for _ in range(config.encoder2_depth)
             ]
@@ -100,6 +102,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
+                    drop_path_rate=config.drop_path_rate,
                 )
                 for _ in range(config.decoder1_depth)
             ]
@@ -118,6 +121,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
+                    drop_path_rate=config.drop_path_rate,
                 )
                 for _ in range(config.decoder2_depth)
             ]
