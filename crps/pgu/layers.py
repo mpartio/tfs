@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from math import sqrt
+from timm.models.layers import DropPath
 
 
 def get_padded_size(H, W, patch_size, num_merges=1):
@@ -80,7 +81,9 @@ def depad_tensor(tensor, padding_info):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop):
+    def __init__(
+        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path_rate
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(
@@ -90,22 +93,30 @@ class EncoderBlock(nn.Module):
             bias=qkv_bias,
             batch_first=True,
         )
+        self.drop_path1 = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
+        self.drop_path2 = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
     def forward(self, x):
         x_norm = self.norm1(x)
         attn, _ = self.attn(x_norm, x_norm, x_norm)
-        x = x + attn
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.drop_path1(attn)
+        x = x + self.drop_path2(self.mlp(self.norm2(x)))
         return x
 
 
 class DecoderBlock(nn.Module):
     """Transformer decoder block with self-attention and cross-attention"""
 
-    def __init__(self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop):
+    def __init__(
+        self, dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path_rate
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.self_attn = nn.MultiheadAttention(
@@ -114,6 +125,9 @@ class DecoderBlock(nn.Module):
             dropout=attn_drop,
             bias=qkv_bias,
             batch_first=True,
+        )
+        self.drop_path1 = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
         )
 
         self.norm2 = nn.LayerNorm(dim)
@@ -125,26 +139,32 @@ class DecoderBlock(nn.Module):
             bias=qkv_bias,
             batch_first=True,
         )
+        self.drop_path2 = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
         self.norm3 = nn.LayerNorm(dim)
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
+        self.drop_path3 = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
     def forward(self, x, context):
         # Self-attention (without mask for now to avoid shape issues)
         x_norm1 = self.norm1(x)
         self_attn, _ = self.self_attn(x_norm1, x_norm1, x_norm1)
 
-        x = x + self_attn
+        x = x + self.drop_path1(self_attn)
 
         # Cross-attention to encoder outputs
         x_norm2 = self.norm2(x)
 
         cross_attn, _ = self.cross_attn(x_norm2, context, context)
 
-        x = x + cross_attn
+        x = x + self.drop_path2(cross_attn)
 
         # Feedforward
-        x = x + self.mlp(self.norm3(x))
+        x = x + self.drop_path3(self.mlp(self.norm3(x)))
 
         return x
 
