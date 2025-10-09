@@ -1,10 +1,8 @@
 import os
 import torch
 import matplotlib.pyplot as plt
-from matplotlib.ticker import LogLocator
-
-
-# --------------------------- helpers ---------------------------
+import numpy as np
+from matplotlib.ticker import LogLocator, NullFormatter
 
 
 def _ensure_dir(path: str):
@@ -44,7 +42,7 @@ def infer_spacing_from_original(
     return dx, dy
 
 
-def _radial_bin(kx, ky, psd2):
+def _radial_bin(kx, ky, psd2, k_max=None):
     device, dtype = psd2.device, psd2.dtype
     nx, ny = kx.numel(), ky.numel()
 
@@ -52,8 +50,10 @@ def _radial_bin(kx, ky, psd2):
     kr = torch.sqrt(KX**2 + KY**2)
 
     nr = min(nx, ny) // 2
-    kr_max = kr.max()
-    edges = torch.linspace(0.0, kr_max, nr + 1, device=device, dtype=dtype)
+    # cap radial bins at axis Nyquist (avoid diagonal > Nyquist artifacts)
+    if k_max is None:
+        k_max = min(kx.abs().max(), ky.abs().max())
+    edges = torch.linspace(0.0, k_max, nr + 1, device=device, dtype=dtype)
 
     bin_idx = torch.bucketize(kr.reshape(-1), edges, right=False) - 1
     bin_idx = bin_idx.clamp(min=0, max=nr - 1).reshape(nx, ny)
@@ -95,9 +95,6 @@ def interp1d_torch(x, xp, fp):
     return f0 + slope * (x - x0)
 
 
-# --------------------------- DROP-IN API ---------------------------
-
-
 def calculate_psd(data: torch.Tensor):
     *lead, nx, ny = data.shape
     device, dtype = data.device, data.dtype
@@ -126,9 +123,11 @@ def calculate_psd(data: torch.Tensor):
     kx = torch.fft.fftshift(kx)
     ky = torch.fft.fftshift(ky)
 
-    k, Pk = _radial_bin(kx, ky, P2)
+    # axis Nyquist in km^-1 (smallest resolvable scale = 2*min(dx,dy))
+    k_max_axis = min(0.5 / dx, 0.5 / dy)
+    k, Pk = _radial_bin(kx, ky, P2, k_max=k_max_axis)
 
-    nz = k > 0
+    nz = (k > 0) & (k <= k_max_axis)  # enforce scale >= 2*min(dx,dy)
     k = k[nz]
     Pk = Pk[:, nz]
 
@@ -186,11 +185,43 @@ def plot_psd(
 ):
     _ensure_dir(os.path.join(save_path, "figures"))
 
+    def set_x_axis(ax, sx_o):
+        left_endpoint = 2400 # float(sx_o.max())
+        right_endpoint = 10
+        ax.set_xlim(left_endpoint, right_endpoint)
+
+        log_min = np.floor(np.log10(right_endpoint))  # e.g., log10(11) -> 1
+        log_max = np.ceil(np.log10(left_endpoint))  # e.g., log10(5329) -> 4
+        major_log_ticks = [10**i for i in range(int(log_min), int(log_max))]
+        major_log_ticks = [
+            t for t in major_log_ticks if right_endpoint <= t <= left_endpoint
+        ]
+
+        final_ticks = sorted(
+            list(set(major_log_ticks + [left_endpoint, right_endpoint]))
+        )
+
+        final_labels = []
+        for tick in final_ticks:
+            if tick in major_log_ticks:
+                # Format as a power of 10, e.g., $10^3$
+                exponent = int(np.log10(tick))
+                final_labels.append(f"$10^{{{exponent}}}$")
+            else:
+                # Format endpoints as rounded integers
+                final_labels.append(f"{int(round(tick))}")
+
+        ax.set_xticks(final_ticks)
+        ax.set_xticklabels(final_labels)
+        ax.minorticks_on()
+        ax.xaxis.set_minor_formatter(NullFormatter())
+
+
     def _to_np(t):
         return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
 
     def init_plot():
-        plt.figure(figsize=(8, 8))
+        plt.figure(figsize=(8, 5))
         plt.xlabel("Horizontal Scale (km)", fontsize=12)
         plt.ylabel("PSD", fontsize=12)
         sx = obs_psd["sx"]
@@ -222,6 +253,7 @@ def plot_psd(
     ax.invert_xaxis()
     ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10)
+    set_x_axis(ax, sx_o)
 
     filename = f"{save_path}/figures/psd.png"
     plt.savefig(filename, dpi=200)
@@ -229,7 +261,7 @@ def plot_psd(
     plt.close()
 
     # ---------------- Anomaly vs Observed ----------------
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(8, 5))
     plt.title("PSD Anomaly vs Observed", fontsize=14)
     plt.xlabel("Horizontal Scale (km)", fontsize=12)
     plt.ylabel("log10(pred/obs)", fontsize=12)
@@ -250,6 +282,8 @@ def plot_psd(
     ax.invert_xaxis()
     ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10, ncol=2)
+
+    set_x_axis(ax, sx_o)
 
     filename = f"{save_path}/figures/psd_anomaly.png"
     plt.savefig(filename, dpi=200)
@@ -278,6 +312,8 @@ def plot_psd(
     ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10)
 
+    set_x_axis(ax, sx_o)
+
     filename = f"{save_path}/figures/psd_r1.png"
     plt.savefig(filename, dpi=200)
     print(f"Plot saved to {filename}")
@@ -285,7 +321,7 @@ def plot_psd(
     plt.clf()
 
     # ---------------- Rollout-1 Anomaly ----------------
-    plt.figure(figsize=(8, 8))
+    plt.figure(figsize=(8, 5))
     plt.title("PSD Anomaly vs Observed Rollout 1", fontsize=14)
     plt.xlabel("Horizontal Scale (km)", fontsize=12)
     plt.ylabel("log10(pred/obs)", fontsize=12)
@@ -307,6 +343,8 @@ def plot_psd(
     ax.invert_xaxis()
     ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
     plt.legend(fontsize=10, ncol=2)
+
+    set_x_axis(ax, sx_o)
 
     filename = f"{save_path}/figures/psd_r1_anomaly.png"
     plt.savefig(filename, dpi=200)
