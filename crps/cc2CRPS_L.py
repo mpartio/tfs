@@ -64,6 +64,7 @@ class cc2CRPSModel(L.LightningModule):
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
         loss_function: str = "huber_loss",
+        use_ste: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -99,6 +100,7 @@ class cc2CRPSModel(L.LightningModule):
                 "num_members",
                 "ss_pred_min",
                 "ss_pred_max",
+                "use_ste",
             ]
         }
 
@@ -220,6 +222,7 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_predictions = None
         self.latest_train_data = None
 
+        self.use_ste = use_ste
         self.use_scheduled_sampling = use_scheduled_sampling
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
