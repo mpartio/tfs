@@ -349,6 +349,8 @@ if __name__ == "__main__":
                     all_truth, all_predictions, args.save_path
                 )
             plot_psd(args.run_name, obs_psd, pred_psd, pred_psd_r1, args.save_path)
+            results = (obs_psd, pred_psd, pred_psd_r1)
+
 
         elif score == "fss":
             if args.plot_only:

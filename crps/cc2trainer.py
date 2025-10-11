@@ -92,6 +92,8 @@ def setup_mlflow_logger(trainer):
     run_name = os.environ["CC2_RUN_NAME"]
     run_number = os.environ["CC2_RUN_NUMBER"]
 
+    assert trainer.loggers is not None and len(trainer.loggers), "no loggers defined in configuration"
+
     for i, logger in enumerate(trainer.loggers):
         if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
             new_logger = pl.loggers.MLFlowLogger(

@@ -79,6 +79,12 @@ def _amse2d_per_time(y_pred, y_true, n_bins=None, hann_window=True, eps=1e-8):
     return amse_t
 
 
+def clamp_ste(x: torch.tensor, lo=-1.0, hi=1.0):
+    """Clamp to [lo,hi] in forward, identity in backward."""
+    x_clamped = torch.clamp(x, lo, hi)
+    return x + (x_clamped - x).detach()
+
+
 def mse_plus_amse_loss(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,
@@ -87,6 +93,7 @@ def mse_plus_amse_loss(
     hann_window: bool = True,
     eps: float = 1e-8,
     lambda_spectral: float = 0.05,
+    use_ste: bool = False,
 ):
     """
     Combined pixel-wise MSE + spectral AMSE.
@@ -95,6 +102,9 @@ def mse_plus_amse_loss(
     if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
         y_true = y_true.unsqueeze(1)
         y_pred = y_pred.unsqueeze(1)
+
+    if use_ste:
+        y_pred = clamp_ste(y_pred)
 
     # pixelwise MSE
     mse_loss = F.mse_loss(y_pred, y_true)

@@ -104,7 +104,9 @@ def roll_forecast(
 
     # Loop through each rollout step
     for t in range(n_step):
-        step_forcing = forcing[:, t : t + 2, ...]
+        # Model always sees forcings two history times and one prediction time
+        # TODO: remove the hardcoded assumption of two input times
+        step_forcing = forcing[:, t : t + 3, ...]
 
         if use_scheduled_sampling:
             input_state, p_pred, mask_prev, mask_curr = scheduled_sampling_inputs(

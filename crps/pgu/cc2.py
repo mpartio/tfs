@@ -136,13 +136,20 @@ class cc2CRPS(nn.Module):
             self.embed_dim * 2, self.embed_dim // 4, scale_factor=1
         )
 
-        self.final_expand = nn.Sequential(
-            nn.Linear(
-                self.embed_dim // 4,
-                self.patch_size**2 * len(config.prognostic_params),
-            ),
-            nn.Tanh(),
-        )
+        self.use_ste = config.use_ste
+
+        if self.use_ste:
+            self.final_expand = nn.Linear(
+                self.embed_dim // 4, self.patch_size**2 * len(config.prognostic_params)
+            )
+        else:
+            self.final_expand = nn.Sequential(
+                nn.Linear(
+                    self.embed_dim // 4,
+                    self.patch_size**2 * len(config.prognostic_params),
+                ),
+                nn.Tanh(),
+            )
 
         # Step identification embeddings
         self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
@@ -363,29 +370,3 @@ class cc2CRPS(nn.Module):
             self.real_input_resolution
         ), f"Output shape {output.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
         return output
-
-
-if __name__ == "__main__":
-
-    conf = config.get_config()
-
-    conf.input_resolution = (268, 238)
-    # Sample data of shape (batch_size, times, channels, height, width)
-    sample_data = (torch.randn(1, 2, 1, 268, 238), torch.randn(1, 2, 1, 268, 238))
-    sample_forcing = (torch.randn(1, 2, 9, 268, 238), torch.randn(1, 2, 9, 268, 238))
-
-    # Create the model
-    model = cc2Pangu(conf)
-
-    print(model)
-    print(
-        "Number of trainable parameters: {:,}".format(
-            sum(p.numel() for p in model.parameters() if p.requires_grad)
-        )
-    )
-
-    # Forward pass
-    output = model(sample_data, sample_forcing, 1)
-
-    print(f"Input shape: {sample_data[0].shape} and {sample_forcing[0].shape}")
-    print(f"Output shape: {output.shape}")
