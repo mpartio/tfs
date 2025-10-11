@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from typing import Dict
 
 
 def scheduled_sampling_inputs(
@@ -85,7 +86,7 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
-):
+) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
     B, T, C_data, H, W = x.shape
@@ -107,7 +108,6 @@ def roll_forecast(
         # Model always sees forcings two history times and one prediction time
         # TODO: remove the hardcoded assumption of two input times
         step_forcing = forcing[:, t : t + 3, ...]
-
         if use_scheduled_sampling:
             input_state, p_pred, mask_prev, mask_curr = scheduled_sampling_inputs(
                 previous_state,
@@ -200,4 +200,65 @@ def roll_forecast(
             loss[k] = torch.stack(loss[k])
 
     assert tendencies.ndim == 5
+
+    return loss, tendencies, predictions
+
+
+def roll_forecast_direct(
+    model: nn.Module,
+    data: torch.Tensor,  # (x, y)
+    forcing: torch.Tensor,
+    n_step: int,
+    loss_fn,
+    use_scheduled_sampling: bool,
+    step: int | None = None,
+    max_step: int | None = None,
+    ss_pred_min: float = 0.0,
+    ss_pred_max: float = 1.0,
+    pl_module: pl.LightningModule | None = None,
+) -> Dict[str, torch.Tensor]:
+    """
+    Non-autoregressive rollout: predict n_step horizons from the same two GT inputs.
+    Signature matches roll_forecast for easy interchange.
+    """
+    # Unpack batch
+    x, y = data  # x: [B, hist_len, C,...], y: [B, n_step, C,...]
+    assert x.size(1) >= 2, "Need at least 2 input steps"
+
+    B = x.size(0)
+
+    # Always use the last two ground-truth inputs
+    prev_input = x[:, -2:-1, ...]  # [B,1,C,...]
+    last_input = x[:, -1:, ...]  # [B,1,C,...]
+    fixed_two = torch.cat([prev_input, last_input], dim=1)  # [B,2,C,...]
+
+    pred_deltas = []
+    pred_states = []
+    losses = []
+
+    hist_forcing = forcing[:, 0:2, ...]
+
+    for t in range(n_step):
+        step_forcing = torch.cat((hist_forcing, forcing[:, t : t + 1, ...]), dim=1)
+
+        # Model sees the same two inputs every time; 't' is the horizon
+        tendency = model(fixed_two, step_forcing, t)  # [B,1,C,...]
+        next_state = last_input + tendency  # [B,1,C,...]
+
+        pred_deltas.append(tendency)
+        pred_states.append(next_state)
+
+        if (y is not None) and (loss_fn is not None):
+            # true delta is always anchored to x0 ie last "known" time
+            y_true_delta = y[:, 1:2, ...] - last_input
+            losses.append(loss_fn(tendency, y_true_delta)["loss"])
+
+    tendencies = torch.cat(pred_deltas, dim=1)  # [B,T,C,...]
+    predictions = torch.cat(pred_states, dim=1)  # [B,T,C,...]
+
+    loss = {}
+    if losses:
+        loss_vec = torch.stack(losses)  # [T]
+        loss["loss"] = loss_vec.mean()
+
     return loss, tendencies, predictions

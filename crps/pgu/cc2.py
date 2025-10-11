@@ -179,6 +179,14 @@ class cc2CRPS(nn.Module):
         else:
             self.refinement_head = nn.Identity()
 
+        self.autoregressive_mode = config.autoregressive_mode
+
+        if self.autoregressive_mode is False:
+            self.max_step = 12
+            self.step_embedding_direct = nn.Embedding(
+                self.max_step + 1, self.embed_dim * 2
+            )
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -246,12 +254,18 @@ class cc2CRPS(nn.Module):
         decoder_in = decoder_input.reshape(B, -1, D)
 
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-        step_id = 0
-        if not self.use_scheduled_sampling and step > 0:
-            step_id = 1
-
-        # Get appropriate step embedding
-        step_embedding = self.step_id_embeddings[step_id]  # [D]
+        if self.autoregressive_mode:
+            step_id = 0
+            if not self.use_scheduled_sampling and step > 0:
+                step_id = 1
+            # Get appropriate step embedding
+            step_embedding = self.step_id_embeddings[step_id]  # [D]
+        else:
+            step_id = step + 1
+            if step_id > self.max_step:
+                step_id = self.max_step
+            step_tensor = torch.tensor([step_id], device=encoded.device)
+            step_embedding = self.step_embedding_direct(step_tensor).squeeze(0)
 
         # Add step embedding to decoder input
         # For first token in each sequence (acts as a "step type" token)

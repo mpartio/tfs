@@ -65,6 +65,7 @@ class cc2CRPSModel(L.LightningModule):
         num_members: Optional[int] = None,
         loss_function: str = "huber_loss",
         use_ste: bool = False,
+        autoregressive_mode: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -101,13 +102,18 @@ class cc2CRPSModel(L.LightningModule):
                 "ss_pred_min",
                 "ss_pred_max",
                 "use_ste",
+                "autoregressive_mode",
             ]
         }
 
         if model_family == "pgu":
             from pgu.cc2 import cc2CRPS
-            from pgu.util import roll_forecast
             from pgu.loss import LOSS_FUNCTIONS
+
+            if autoregressive_mode:
+                from pgu.util import roll_forecast
+            else:
+                from pgu.util import roll_forecast_direct as roll_forecast
 
             loss_fn = LOSS_FUNCTIONS[loss_function]
         elif model_family == "pgu_ens":
@@ -226,6 +232,7 @@ class cc2CRPSModel(L.LightningModule):
         self.use_scheduled_sampling = use_scheduled_sampling
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
+        self.autoregressive_mode = autoregressive_mode
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
