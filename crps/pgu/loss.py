@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from pgu.spectrally_adjusted_huber import huber_with_tendency_and_spectral_loss
 from pgu.spectrally_adjusted_mse import amse2d_loss, amse2d_with_tendency_loss
 from pgu.mse_plus_amse import mse_plus_amse_loss
+from pgu.weighted_mse_plus_amse import weighted_mse_plus_amse_loss
 
 
 def mse_loss(y_true: torch.tensor, y_pred: torch.tensor):
@@ -119,4 +120,5 @@ LOSS_FUNCTIONS = {
     "spectrally_adjusted_mse_loss": amse2d_loss,
     "spectrally_adjusted_mse_with_tendency_loss": amse2d_with_tendency_loss,
     "mse_plus_amse_loss": mse_plus_amse_loss,
+    "weighted_mse_plus_amse_loss": weighted_mse_plus_amse_loss,
 }
