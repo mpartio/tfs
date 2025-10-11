@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import LogLocator, NullFormatter
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
@@ -145,6 +146,7 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
     if truth.ndim > 3:
         truth = truth.reshape(-1, truth.shape[-2], truth.shape[-1])
 
+    truth = truth.to(device)
     sx, sy, psd_q = calculate_psd(truth)
     observed_psd = {"sx": sx, "sy": sy, "psd": psd_q}
 
@@ -168,6 +170,8 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
             prediction = prediction.reshape(
                 -1, prediction.shape[-2], prediction.shape[-1]
             )
+
+        prediction = prediction.to(device)
         sx_p1, sy_p1, psd_p1 = calculate_psd(prediction)
         predicted_psds_r1.append({"sx": sx_p1, "sy": sy_p1, "psd": psd_p1})
 
