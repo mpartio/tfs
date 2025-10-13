@@ -30,7 +30,6 @@ from typing import Optional
 class cc2CRPSModel(L.LightningModule):
     def __init__(
         self,
-        input_resolution: tuple[int, int],
         prognostic_params: list[str],
         forcing_params: list[str],
         static_forcing_params: list[str],
@@ -66,9 +65,21 @@ class cc2CRPSModel(L.LightningModule):
         loss_function: str = "huber_loss",
         use_ste: bool = False,
         autoregressive_mode: bool = True,
+        input_resolution: tuple[int, int] | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
+
+        if input_resolution is not None:
+            import warnings
+
+            warnings.warn(
+                "'input_resolution' model parameter is deprecated and will be removed in a future version.",
+                FutureWarning,
+                stacklevel=2,
+            )
+
+        self.model_configured = False
 
         # Extract only model-specific parameters
         model_kwargs = {
@@ -106,26 +117,59 @@ class cc2CRPSModel(L.LightningModule):
             ]
         }
 
-        if model_family == "pgu":
+        self.model_kwargs = model_kwargs
+
+        self.test_predictions = []
+        self.test_truth = []
+        self.test_dates = []
+
+        self.latest_val_tendencies = None
+        self.latest_val_predictions = None
+        self.latest_val_data = None
+
+        self.latest_train_tendencies = None
+        self.latest_train_predictions = None
+        self.latest_train_data = None
+
+        self.use_ste = use_ste
+        self.use_scheduled_sampling = use_scheduled_sampling
+        self.ss_pred_min = ss_pred_min
+        self.ss_pred_max = ss_pred_max
+        self.autoregressive_mode = autoregressive_mode
+
+    def configure_model(self) -> None:
+        if self.model_configured:
+            return
+
+        # Read input_resolution from data
+        self.input_resolution = self.trainer.datamodule.input_resolution
+
+        self._build_model()
+
+        self.model_configured = True
+
+    def _build_model(self) -> None:
+        if self.hparams.model_family == "pgu":
             from pgu.cc2 import cc2CRPS
             from pgu.loss import LOSS_FUNCTIONS
 
-            if autoregressive_mode:
+            if self.hparams.autoregressive_mode:
                 from pgu.util import roll_forecast
             else:
                 from pgu.util import roll_forecast_direct as roll_forecast
 
-            loss_fn = LOSS_FUNCTIONS[loss_function]
-        elif model_family == "pgu_ens":
+            loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+        elif self.hparams.model_family == "pgu_ens":
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
             from pgu_ens.loss import loss_fn
 
-        self.model_class = model_family
+        self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast
         self._loss_fn = loss_fn
 
-        self.model = cc2CRPS(config=model_kwargs)
+        self.model_kwargs["input_resolution"] = self.input_resolution
+        self.model = cc2CRPS(config=self.model_kwargs)
 
         self.run_name = os.environ["CC2_RUN_NAME"]
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
@@ -177,7 +221,7 @@ class cc2CRPSModel(L.LightningModule):
                 # Let's assume old/new size can be calculated or passed via hparams.
 
                 old_input_resolution = ckpt["hyper_parameters"]["input_resolution"]
-                new_input_resolution = self.hparams.input_resolution
+                new_input_resolution = self.input_resolution
 
                 old_patch_size = ckpt["hyper_parameters"]["patch_size"]
                 new_patch_size = self.hparams.patch_size
@@ -215,24 +259,6 @@ class cc2CRPSModel(L.LightningModule):
                     rank, datetime.now(), self.run_dir
                 )
             )
-
-        self.test_predictions = []
-        self.test_truth = []
-        self.test_dates = []
-
-        self.latest_val_tendencies = None
-        self.latest_val_predictions = None
-        self.latest_val_data = None
-
-        self.latest_train_tendencies = None
-        self.latest_train_predictions = None
-        self.latest_train_data = None
-
-        self.use_ste = use_ste
-        self.use_scheduled_sampling = use_scheduled_sampling
-        self.ss_pred_min = ss_pred_min
-        self.ss_pred_max = ss_pred_max
-        self.autoregressive_mode = autoregressive_mode
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
@@ -272,12 +298,61 @@ class cc2CRPSModel(L.LightningModule):
             self.latest_train_predictions = predictions
             self.latest_train_data = data
 
+        if batch_idx % 500 == 0:
+            self.diagnostics(batch, batch_idx, stage="train")
+
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
             "predictions": predictions,
             "loss_components": loss,
         }
+
+    def diagnostics(self, batch, batch_idx, stage="val"):
+        data, forcing = batch
+        x, y = data
+
+        # Run a forward pass
+        with torch.no_grad():
+            loss, tendencies, preds = self._roll_forecast(
+                self.model,
+                data,
+                forcing,
+                n_step=self.hparams.rollout_length,
+                loss_fn=self._loss_fn,
+                use_scheduled_sampling=False,
+                pl_module=self,
+            )
+
+        # --- Target delta stats ---
+        y_true_deltas = []
+        for t in range(y.size(1)):
+            # consistent "delta relative to last observed input"
+            y_true_deltas.append((y[:, t : t + 1] - x[:, -1:]).abs().mean().item())
+        print(f"[{stage} {batch_idx}] mean |y_true delta| per horizon:", y_true_deltas)
+
+        # --- Model output stats ---
+        print(
+            f"[{stage} {batch_idx}] tendencies mean {tendencies.mean().item():.3e}, "
+            f"std {tendencies.std().item():.3e}"
+        )
+
+        # --- Loss ---
+        if isinstance(loss, dict):
+            loss_val = loss["loss"].item()
+        elif loss is None:
+            loss_val = float("nan")
+        else:
+            loss_val = loss.item()
+        print(f"[{stage} {batch_idx}] loss {loss_val:.3e}")
+
+        # --- Gradient norm (only if training and grads exist) ---
+        if stage == "train":
+            total_norm = 0.0
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    total_norm += p.grad.detach().norm().item()
+            print(f"[{stage} {batch_idx}] grad_norm {total_norm:.3e}")
 
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
@@ -297,6 +372,9 @@ class cc2CRPSModel(L.LightningModule):
             self.latest_val_tendencies = tendencies
             self.latest_val_predictions = predictions
             self.latest_val_data = data
+
+        if batch_idx == 0:
+            self.diagnostics(batch, batch_idx, stage="val")
 
         return {
             "loss": loss["loss"],

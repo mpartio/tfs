@@ -155,8 +155,8 @@ class AnemoiDataset(Dataset):
         static_forcing_params: list[str],
         normalization_methods: dict,
         disable_normalization: bool,
-        input_resolution: tuple[int, int],
         return_metadata: bool = False,
+        trim_edge: list[float] | None = None,
     ):
         self.data = open_dataset(zarr_path)
         self.group_size = group_size
@@ -186,7 +186,6 @@ class AnemoiDataset(Dataset):
             ]
             del temp_static_data
 
-        self.input_resolution = input_resolution
         assert self.time_steps >= group_size
 
         self.missing_indices = set(self.data.missing)
@@ -482,7 +481,6 @@ class cc2DataModule(L.LightningDataModule):
     def __init__(
         self,
         data_path: list[str],
-        input_resolution: tuple[int, int],
         prognostic_params: tuple[str, ...],
         forcing_params: tuple[str, ...],
         static_forcing_path: str | None = None,
@@ -504,8 +502,18 @@ class cc2DataModule(L.LightningDataModule):
         normalization: dict[str, str] | None = None,
         disable_normalization: bool = False,
         apply_smoothing: bool = False,
+        input_resolution: tuple[int, int] | None = None,
     ):
         super().__init__()
+
+        if input_resolution is not None:
+            import warnings
+
+            warnings.warn(
+                "'input_resolution' parameter is deprecated and will be removed in a future version.",
+                FutureWarning,
+                stacklevel=2,
+            )
 
         self.save_hyperparameters()
 
@@ -513,6 +521,14 @@ class cc2DataModule(L.LightningDataModule):
         self.ds_val: Subset | None = None
         self.ds_test: Subset | None = None
         self._full_dataset: AnemoiDataset | None = None  # Cache the full dataset
+
+    @property
+    def input_resolution(self) -> tuple[int, int]:
+        """Get input resolution from the dataset."""
+        if self._full_dataset is None:
+            # Trigger dataset creation if not already done
+            self._get_or_create_full_dataset()
+        return self._full_dataset.input_resolution
 
     def _get_or_create_full_dataset(self) -> AnemoiDataset:
         if self._full_dataset is None:
@@ -525,7 +541,6 @@ class cc2DataModule(L.LightningDataModule):
             self._full_dataset = AnemoiDataset(
                 zarr_path=self.hparams.data_path,
                 group_size=self.hparams.history_length + self.hparams.rollout_length,
-                input_resolution=self.hparams.input_resolution,
                 prognostic_params=self.hparams.prognostic_params,
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
