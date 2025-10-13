@@ -6,7 +6,6 @@ import os
 import sys
 import lightning as L
 import numpy as np
-import zarr
 from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
@@ -156,9 +155,9 @@ class AnemoiDataset(Dataset):
         normalization_methods: dict,
         disable_normalization: bool,
         return_metadata: bool = False,
-        trim_edge: list[float] | None = None,
+        data_options: dict[str, str | int | list] | None = None,
     ):
-        self.data = open_dataset(zarr_path)
+        self.data = open_dataset(zarr_path, **data_options)
         self.group_size = group_size
         self.time_steps = len(self.data.dates)
 
@@ -180,7 +179,7 @@ class AnemoiDataset(Dataset):
         self.static_forcings = None
         self.static_forcings_indexes = []
         if self.static_forcing_path and self.static_forcing_params:
-            temp_static_data = open_dataset(self.static_forcing_path)
+            temp_static_data = open_dataset(self.static_forcing_path, **data_options)
             self.static_forcings_indexes = [
                 temp_static_data.name_to_index[x] for x in self.static_forcing_params
             ]
@@ -196,6 +195,7 @@ class AnemoiDataset(Dataset):
         ]
 
         self.disable_normalization = disable_normalization
+        self.data_options = data_options
 
         if self.disable_normalization is False:
             self.normalization_methods = normalization_methods
@@ -204,7 +204,6 @@ class AnemoiDataset(Dataset):
             self._setup_normalization()
 
         self.input_resolution = self.data.field_shape  # H, W
-
         self.return_metadata = return_metadata
         self.dates = self.data.dates
 
@@ -216,12 +215,10 @@ class AnemoiDataset(Dataset):
         # Load and normalize static forcings once
         dtype = torch.float32
         if self.static_forcing_path and self.static_forcing_params:
-            # Open the static forcing zarr directly
-            static_root_group = zarr.open(
-                self.static_forcing_path, mode="r"
-            )  # shape: (1, 2, 1, 254125)
-
-            static_data_zarr = static_root_group["data"]
+            static_root_group = open_dataset(
+                self.static_forcing_path, **self.data_options
+            )
+            static_data_zarr = static_root_group[:]
 
             selection_tuple = (
                 0,
@@ -405,6 +402,8 @@ class AnemoiDataset(Dataset):
 
             if self.static_forcings.shape[-1] > 2000:
                 s = self.static_forcings.shape
+                print("static forcings shape", s)
+                print("input_reso", self.input_resolution)
                 self.static_forcings = self.static_forcings.reshape(
                     s[0], s[1], self.input_resolution[0], self.input_resolution[1]
                 )
@@ -503,6 +502,7 @@ class cc2DataModule(L.LightningDataModule):
         disable_normalization: bool = False,
         apply_smoothing: bool = False,
         input_resolution: tuple[int, int] | None = None,
+        data_options: dict[str, str | int | list] | None = None,
     ):
         super().__init__()
 
@@ -547,6 +547,7 @@ class cc2DataModule(L.LightningDataModule):
                 static_forcing_params=self.hparams.static_forcing_params,
                 normalization_methods=norm_methods,
                 disable_normalization=self.hparams.disable_normalization,
+                data_options=self.hparams.data_options,
             )
         return self._full_dataset
 
