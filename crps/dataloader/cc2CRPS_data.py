@@ -155,7 +155,7 @@ class AnemoiDataset(Dataset):
         normalization_methods: dict,
         disable_normalization: bool,
         return_metadata: bool = False,
-        data_options: dict[str, str | int | list] | None = None,
+        data_options: dict[str, str | int | list] = {},
     ):
         self.data = open_dataset(zarr_path, **data_options)
         self.group_size = group_size
@@ -402,8 +402,6 @@ class AnemoiDataset(Dataset):
 
             if self.static_forcings.shape[-1] > 2000:
                 s = self.static_forcings.shape
-                print("static forcings shape", s)
-                print("input_reso", self.input_resolution)
                 self.static_forcings = self.static_forcings.reshape(
                     s[0], s[1], self.input_resolution[0], self.input_resolution[1]
                 )
@@ -502,7 +500,7 @@ class cc2DataModule(L.LightningDataModule):
         disable_normalization: bool = False,
         apply_smoothing: bool = False,
         input_resolution: tuple[int, int] | None = None,
-        data_options: dict[str, str | int | list] | None = None,
+        data_options: dict[str, str | int | list] = {},
     ):
         super().__init__()
 
