@@ -6,6 +6,7 @@ from matplotlib.ticker import LogLocator, NullFormatter
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -147,6 +148,7 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
         truth = truth.reshape(-1, truth.shape[-2], truth.shape[-1])
 
     truth = truth.to(device)
+
     sx, sy, psd_q = calculate_psd(truth)
     observed_psd = {"sx": sx, "sy": sy, "psd": psd_q}
 
@@ -157,7 +159,7 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
             prediction = prediction.reshape(
                 -1, prediction.shape[-2], prediction.shape[-1]
             )
-        sx_p, sy_p, psd_p = calculate_psd(prediction)
+        sx_p, sy_p, psd_p = calculate_psd(prediction.to(device))
         predicted_psds.append({"sx": sx_p, "sy": sy_p, "psd": psd_p})
 
     torch.save(observed_psd, f"{save_path}/results/observed_psd.pt")
@@ -190,7 +192,7 @@ def plot_psd(
     _ensure_dir(os.path.join(save_path, "figures"))
 
     def set_x_axis(ax, sx_o):
-        left_endpoint = 2400 # float(sx_o.max())
+        left_endpoint = 2400  # float(sx_o.max())
         right_endpoint = 10
         ax.set_xlim(left_endpoint, right_endpoint)
 
@@ -220,7 +222,6 @@ def plot_psd(
         ax.minorticks_on()
         ax.xaxis.set_minor_formatter(NullFormatter())
 
-
     def _to_np(t):
         return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
 
@@ -234,13 +235,20 @@ def plot_psd(
             _to_np(sx), _to_np(psd), label="Observed", linewidth=2, color="black"
         )
 
-    sx_o = obs_psd["sx"]
-    psd_o = obs_psd["psd"]
+    sx_o = obs_psd["sx"].to("cpu")
+    psd_o = obs_psd["psd"].to("cpu")
 
     # ---------------- Absolute PSD ----------------
     init_plot()
     plt.title("Power Spectral Density", fontsize=14)
     plt.grid(True, alpha=0.7)
+
+    # Copy to cpu
+    for i in range(len(run_name)):
+        pred_psds[i]["sx"] = pred_psds[i]["sx"].cpu()
+        pred_psds[i]["psd"] = pred_psds[i]["psd"].cpu()
+        pred_psds_r1[i]["sx"] = pred_psds_r1[i]["sx"].cpu()
+        pred_psds_r1[i]["psd"] = pred_psds_r1[i]["psd"].cpu()
 
     for i in range(len(run_name)):
         sx = pred_psds[i]["sx"]
