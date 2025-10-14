@@ -9,6 +9,7 @@ from pgu.layers import (
     PatchExpand,
     EncoderBlock,
     DecoderBlock,
+    SwinEncoderBlock,
     get_padded_size,
     pad_tensors,
     pad_tensor,
@@ -54,21 +55,45 @@ class cc2CRPS(nn.Module):
         self.norm_input = nn.LayerNorm(self.embed_dim)
         self.dropout = nn.Dropout(config.drop_rate)
 
+        self.use_swin_encoder = config.use_swin_encoder
+
         # Transformer encoder blocks
-        self.encoder1 = nn.ModuleList(
-            [
-                EncoderBlock(
-                    dim=self.embed_dim,
-                    num_heads=config.num_heads,
-                    mlp_ratio=config.mlp_ratio,
-                    qkv_bias=True,
-                    drop=config.drop_rate,
-                    attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
-                )
-                for _ in range(config.encoder1_depth)
-            ]
-        )
+        if self.use_swin_encoder:
+            self.encoder1 = nn.ModuleList(
+                [
+                    SwinEncoderBlock(
+                        dim=self.embed_dim,
+                        num_heads=config.num_heads,
+                        mlp_ratio=config.mlp_ratio,
+                        qkv_bias=True,
+                        drop=config.drop_rate,
+                        attn_drop=config.attn_drop_rate,
+                        drop_path_rate=config.drop_path_rate,
+                        window_size=8,
+                        shift_size=0 if i % 2 == 0 else 4,
+                        H=self.h_patches,
+                        W=self.w_patches,
+                        T=config.history_length,
+                    )
+                    for i in range(config.encoder1_depth)
+                ]
+            )
+
+        else:
+            self.encoder1 = nn.ModuleList(
+                [
+                    EncoderBlock(
+                        dim=self.embed_dim,
+                        num_heads=config.num_heads,
+                        mlp_ratio=config.mlp_ratio,
+                        qkv_bias=True,
+                        drop=config.drop_rate,
+                        attn_drop=config.attn_drop_rate,
+                        drop_path_rate=config.drop_path_rate,
+                    )
+                    for _ in range(config.encoder1_depth)
+                ]
+            )
 
         self.input_resolution_halved = (
             input_resolution[0] // self.patch_size,
@@ -78,20 +103,41 @@ class cc2CRPS(nn.Module):
             self.input_resolution_halved, self.embed_dim, time_dim=config.history_length
         )
 
-        self.encoder2 = nn.ModuleList(
-            [
-                EncoderBlock(
-                    dim=self.embed_dim * 2,
-                    num_heads=config.num_heads,
-                    mlp_ratio=config.mlp_ratio,
-                    qkv_bias=True,
-                    drop=config.drop_rate,
-                    attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
-                )
-                for _ in range(config.encoder2_depth)
-            ]
-        )
+        if self.use_swin_encoder:
+            self.encoder2 = nn.ModuleList(
+                [
+                    SwinEncoderBlock(
+                        dim=self.embed_dim * 2,
+                        num_heads=config.num_heads,
+                        mlp_ratio=config.mlp_ratio,
+                        qkv_bias=True,
+                        drop=config.drop_rate,
+                        attn_drop=config.attn_drop_rate,
+                        drop_path_rate=config.drop_path_rate,
+                        window_size=8,
+                        shift_size=0 if i % 2 == 0 else 4,
+                        H=self.h_patches // 2,
+                        W=self.w_patches // 2,
+                        T=config.history_length,
+                    )
+                    for i in range(config.encoder2_depth)
+                ]
+            )
+        else:
+            self.encoder2 = nn.ModuleList(
+                [
+                    EncoderBlock(
+                        dim=self.embed_dim * 2,
+                        num_heads=config.num_heads,
+                        mlp_ratio=config.mlp_ratio,
+                        qkv_bias=True,
+                        drop=config.drop_rate,
+                        attn_drop=config.attn_drop_rate,
+                        drop_path_rate=config.drop_path_rate,
+                    )
+                    for _ in range(config.encoder2_depth)
+                ]
+            )
 
         self.decoder1 = nn.ModuleList(
             [

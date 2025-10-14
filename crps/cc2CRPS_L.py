@@ -66,6 +66,7 @@ class cc2CRPSModel(L.LightningModule):
         use_ste: bool = False,
         autoregressive_mode: bool = True,
         input_resolution: tuple[int, int] | None = None,
+        use_swin_encoder: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -114,6 +115,7 @@ class cc2CRPSModel(L.LightningModule):
                 "ss_pred_max",
                 "use_ste",
                 "autoregressive_mode",
+                "use_swin_encoder",
             ]
         }
 
