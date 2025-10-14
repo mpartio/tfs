@@ -68,6 +68,7 @@ class cc2CRPSModel(L.LightningModule):
         input_resolution: tuple[int, int] | None = None,
         overlap_patch_embed: bool = False,
         use_swin_encoder: bool = False,
+        use_future_forcings: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -118,6 +119,7 @@ class cc2CRPSModel(L.LightningModule):
                 "autoregressive_mode",
                 "overlap_patch_embed",
                 "use_swin_encoder",
+                "use_future_forcings",
             ]
         }
 

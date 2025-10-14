@@ -468,10 +468,24 @@ class PatchEmbed(nn.Module):
 
             embeddings.append(combined_emb)
 
-        # Stack time steps
-        embeddings = torch.stack(embeddings, dim=1)  # [B, T, patches, embed_dim]
+        # [B, T, P, D]
+        x_tokens = torch.stack(embeddings, dim=1)
 
-        return embeddings
+        # keep the future forcing (if provided)
+        f_future = None
+        if T_forcing > T:
+            f_future = (
+                self.forcing_proj(forcing[:, T])  # use timestep T as the "future"
+                .flatten(2)
+                .transpose(1, 2)  # [B, P, D/2]
+            )
+            # pad to full D by concatenating zeros for the prognostic half
+            zeros = torch.zeros_like(f_future)
+            f_future = torch.cat([zeros, f_future], dim=2)  # [B, P, D]
+            f_future = self.fusion(f_future)  # [B, P, D]
+            f_future = f_future.unsqueeze(1)  # [B, 1, P, D]
+
+        return x_tokens, f_future
 
 
 class FeedForward(nn.Module):

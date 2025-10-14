@@ -257,6 +257,28 @@ class cc2CRPS(nn.Module):
                 self.max_step + 1, self.embed_dim * 2
             )
 
+        self.use_future_forcings = config.use_future_forcings
+
+        if self.use_future_forcings:
+            # Layers to process future forcings
+            # project a [B, P, D] future-forcing token into the decoder space
+            self.future_force_proj = nn.Sequential(
+                nn.LayerNorm(self.embed_dim * 2),
+                nn.Linear(
+                    self.embed_dim * 2, self.embed_dim * 2
+                ),  # lift to decoder dim
+                nn.GELU(),
+                nn.Linear(self.embed_dim * 2, self.embed_dim * 2),  # refine
+            )
+
+            # Simple downsampler to match spatial dimesions
+            self.future_force_down = nn.Conv2d(
+                in_channels=self.embed_dim,
+                out_channels=self.embed_dim * 2,
+                kernel_size=2,
+                stride=2,
+            )
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -357,6 +379,29 @@ class cc2CRPS(nn.Module):
         decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
             0
         ).unsqueeze(1)
+
+        if self.use_future_forcings and f_future is not None:
+            # f_future: [B, 1, P, D_enc]  (from patch embed)
+            # Map it to decoder dim and add to the last P tokens.
+            f_add = f_future.squeeze(1)  # [B, P, D_enc]
+
+            # reshape back to image
+            B, P_enc, D_enc = f_add.shape
+            H, W = self.h_patches, self.w_patches
+            f_img = f_add.view(B, H, W, D_enc).permute(0, 3, 1, 2)  # [B, D_enc, H, W]
+
+            # downsample spatially
+            f_img_ds = self.future_force_down(f_img)  # [B, D_dec, H/2, W/2]
+
+            # flatten back to tokens
+            H2, W2 = f_img_ds.shape[2], f_img_ds.shape[3]
+            f_add = f_img_ds.flatten(2).transpose(1, 2)  # [B, P_dec, D_dec]
+
+            # refine
+            f_add = self.future_force_proj(f_add)
+
+            # Add into the current state tokens
+            decoder_in_with_id[:, -P:, :] = decoder_in_with_id[:, -P:, :] + f_add
 
         # Process through decoder blocks
         x = decoder_in_with_id
