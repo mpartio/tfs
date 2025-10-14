@@ -69,6 +69,7 @@ class cc2CRPSModel(L.LightningModule):
         overlap_patch_embed: bool = False,
         use_swin_encoder: bool = False,
         use_future_forcings: bool = False,
+        freeze_layers: list[str] = [],
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -153,6 +154,16 @@ class cc2CRPSModel(L.LightningModule):
         self._build_model()
 
         self.model_configured = True
+
+    def _freeze_layers(self) -> None:
+        frozen = []
+        for l in self.hparams.freeze_layers:
+            for name, param in self.model.named_parameters():
+                if name.startswith(l):
+                    param.requires_grad = False
+                    frozen.append(name)
+
+        print(f"Froze layers: {frozen}")
 
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
@@ -256,6 +267,8 @@ class cc2CRPSModel(L.LightningModule):
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
             rank_zero_info(f"Weight loading results: {load_result}")
+
+        self._freeze_layers()
 
         rank = get_rank()
 
