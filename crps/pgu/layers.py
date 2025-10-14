@@ -298,6 +298,105 @@ class PatchMerging(nn.Module):
         return x
 
 
+class DualStem(nn.Module):
+    """
+    Apply ConvStem separately to prognostic and forcing inputs.
+    Outputs stemmed feature maps for both, still at full resolution.
+    """
+
+    def __init__(self, prog_ch, forcing_ch, stem_ch):
+        super().__init__()
+        self.stem_prognostic = nn.Sequential(
+            nn.Conv2d(prog_ch, stem_ch, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(stem_ch, stem_ch, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+        self.stem_forcing = nn.Sequential(
+            nn.Conv2d(forcing_ch, stem_ch, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(stem_ch, stem_ch, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+
+    def forward(self, x, forcing):
+        """
+        x: [B, T, C_prog, H, W]
+        forcing: [B, T_f, C_force, H, W]
+        returns:
+            x_stem: [B, T, stem_ch, H, W]
+            f_stem: [B, T_f, stem_ch, H, W]
+        """
+        B, T, C, H, W = x.shape
+        x = x.reshape(B * T, C, H, W)
+        x_stem = self.stem_prognostic(x).reshape(B, T, -1, H, W)
+
+        Bf, Tf, Cf, H, W = forcing.shape
+        f = forcing.reshape(Bf * Tf, Cf, H, W)
+        f_stem = self.stem_forcing(f).reshape(Bf, Tf, -1, H, W)
+
+        return x_stem, f_stem
+
+
+class OverlapPatchEmbed(nn.Module):
+    def __init__(
+        self,
+        input_resolution,
+        patch_size,
+        stride,
+        stem_ch,
+        embed_dim,
+    ):
+        super().__init__()
+        self.patch_size = patch_size
+        self.stride = stride
+
+        self.proj_data = nn.Conv2d(
+            stem_ch, embed_dim, kernel_size=patch_size, stride=stride
+        )
+        self.proj_forcing = nn.Conv2d(
+            stem_ch, embed_dim, kernel_size=patch_size, stride=stride
+        )
+
+        H, W = input_resolution
+        # number of tokens in each dim
+        self.h_patches = (H - patch_size) // stride + 1
+        self.w_patches = (W - patch_size) // stride + 1
+        self.num_patches = self.h_patches * self.w_patches
+
+        self.fuse = nn.Linear(2 * embed_dim, embed_dim)
+
+    def _proj(self, x, is_data):  # x: [B, T, C, H, W] -> [B, T, P, D]
+        B, T, C, H, W = x.shape
+        x = x.reshape(B * T, C, H, W)
+        proj = self.proj_data if is_data else self.proj_forcing
+        x = proj(x)  # [B*T, D, h_t, w_t]
+        x = x.flatten(2).transpose(1, 2)  # [B*T, P, D]
+        x = x.reshape(B, T, -1, x.shape[-1])  # [B, T, P, D]
+        return x
+
+    def forward(self, x_stem, f_stem):
+        x_tok = self._proj(x_stem, is_data=True)  # [B, T,   P, D]
+        f_tok = self._proj(f_stem, is_data=False)  # [B, T_f, P, D]
+
+        B, T, P, D = x_tok.shape
+        Tf = f_tok.shape[1]
+
+        if Tf >= T:
+            f_hist = f_tok[:, :T]  # forcings aligned with history
+            f_future = f_tok[:, T : T + 1]  # the "future" forcing (shape [B, 1, P, D])
+        else:
+            # should not ever get here
+            repeat = (T + Tf - 1) // Tf
+            f_hist = f_tok.repeat(1, repeat, 1, 1)[:, :T]
+            f_future = None
+
+        fused = torch.cat([x_tok, f_hist], dim=3)  # [B, T, P, 2D]
+        fused = self.fuse(fused)  # [B, T, P, D]
+
+        return fused, f_future
+
+
 class PatchEmbed(nn.Module):
     def __init__(
         self,
@@ -334,6 +433,10 @@ class PatchEmbed(nn.Module):
         # Optional: fusion layer to combine the embeddings
         self.fusion = nn.Linear(embed_dim, embed_dim)
 
+        self.h_patches = input_resolution[0] // self.patch_size[0]
+        self.w_patches = input_resolution[1] // self.patch_size[1]
+        self.num_patches = self.h_patches * self.w_patches
+
     def forward(self, data, forcing):
         assert data.ndim == 5, "x dims should be B, T, C, H, W, found: {}".format(
             data.shape
@@ -342,7 +445,7 @@ class PatchEmbed(nn.Module):
             forcing.ndim == 5
         ), "forcing dims should be B, T, C, H, W, found: {}".format(forcing.shape)
         B, T, C_data, H, W = data.shape
-        _, _, C_forcing, _, _ = forcing.shape
+        _, T_forcing, C_forcing, _, _ = forcing.shape
 
         # Process each time step
         embeddings = []

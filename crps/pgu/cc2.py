@@ -4,12 +4,14 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from pgu.layers import (
     FeedForward,
+    OverlapPatchEmbed,
     PatchEmbed,
     PatchMerge,
     PatchExpand,
     EncoderBlock,
     DecoderBlock,
     SwinEncoderBlock,
+    DualStem,
     get_padded_size,
     pad_tensors,
     pad_tensor,
@@ -34,19 +36,41 @@ class cc2CRPS(nn.Module):
             config.input_resolution[0], config.input_resolution[1], self.patch_size, 1
         )
 
-        self.h_patches = input_resolution[0] // self.patch_size
-        self.w_patches = input_resolution[1] // self.patch_size
-        self.num_patches = self.h_patches * self.w_patches
+        self.overlap_patch_embed = config.overlap_patch_embed
 
-        # Patch embedding for converting images to tokens
-        self.patch_embed = PatchEmbed(
-            input_resolution=input_resolution,
-            patch_size=self.patch_size,
-            data_channels=len(config.prognostic_params),
-            forcing_channels=len(config.forcing_params)
-            + len(config.static_forcing_params),
-            embed_dim=self.embed_dim,
+        self.num_prognostic = len(config.prognostic_params)
+        self.num_forcings = len(config.forcing_params) + len(
+            config.static_forcing_params
         )
+
+        self.stem_ch = 32
+
+        if config.overlap_patch_embed:
+            self.patch_embed = OverlapPatchEmbed(
+                input_resolution=input_resolution,
+                patch_size=self.patch_size,
+                stride=self.patch_size // 2,
+                stem_ch=self.stem_ch,
+                embed_dim=self.embed_dim,
+            )
+
+            in_ch = self.num_prognostic + self.num_forcings
+            self.stem = DualStem(
+                self.num_prognostic, self.num_forcings, stem_ch=self.stem_ch
+            )
+
+        else:
+            self.patch_embed = PatchEmbed(
+                input_resolution=input_resolution,
+                patch_size=self.patch_size,
+                data_channels=self.num_prognostic,
+                forcing_channels=self.num_forcings,
+                embed_dim=self.embed_dim,
+            )
+
+        self.h_patches = self.patch_embed.h_patches
+        self.w_patches = self.patch_embed.w_patches
+        self.num_patches = self.patch_embed.num_patches
 
         # Spatial position embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.embed_dim))
@@ -242,14 +266,27 @@ class cc2CRPS(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def encode(self, x, forcing):
-        """Encode input sequence into latent representation"""
-        x = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
-        B, T, P, D = x.shape
+    def patch_embedding(self, x, forcing):
+        if self.overlap_patch_embed:
+            x_stem, f_stem = self.stem(x, forcing)
+            x_tokens, f_future = self.patch_embed(x_stem, f_stem)
+
+        else:
+            x_tokens, f_future = self.patch_embed(
+                x, forcing
+            )  # [B, T, patches, embed_dim]
+
+        B, T, P, D = x_tokens.shape
 
         # Add positional embedding to each patch
         for t in range(T):
-            x[:, t] = x[:, t] + self.pos_embed
+            x_tokens[:, t] = x_tokens[:, t] + self.pos_embed
+
+        return x_tokens, f_future
+
+    def encode(self, x):
+        """Encode input sequence into latent representation"""
+        B, T, P, D = x.shape
 
         # Apply input normalization and dropout
         x = x.reshape(B, T * P, D)
@@ -286,7 +323,7 @@ class cc2CRPS(nn.Module):
 
         return x, skip
 
-    def decode(self, encoded, step, skip):
+    def decode(self, encoded, step, skip, f_future=None):
         B, T, P, D = encoded.shape
         outputs = []
 
@@ -412,14 +449,11 @@ class cc2CRPS(nn.Module):
         data, padding_info = pad_tensor(data, self.patch_size, 1)
         forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
-        encoded, skip = self.encode(
-            data,
-            forcing,
-        )
+        x, f_future = self.patch_embedding(data, forcing)
+        x, skip = self.encode(x)
+        x = self.decode(x, step, skip, f_future)
 
-        decoded = self.decode(encoded, step, skip)
-
-        output = self.project_to_image(decoded)
+        output = self.project_to_image(x)
         if self.add_refinement_head:
             output_ref = self.refinement_head(output.squeeze(2))
             output = output + output_ref.unsqueeze(2)
