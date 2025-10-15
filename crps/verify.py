@@ -315,6 +315,7 @@ if __name__ == "__main__":
     pivot_df = None
     all_results = []
     for score in args.score:
+        print(f"Score: {score}")
         if score == "mae":
             if args.plot_only:
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
