@@ -192,7 +192,6 @@ def plot_fss_1d(
 
     for c in range(num_categories):
         for i, r in enumerate(results):
-            print(r.shape, c, m)
             ax[c].plot(x, r[c, m, :], label=run_name[i])
             ax[c].set_xlabel("Lead time (h)")
             ax[c].set_ylabel("Fraction Skill Score")
