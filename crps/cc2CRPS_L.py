@@ -163,7 +163,7 @@ class cc2CRPSModel(L.LightningModule):
                     param.requires_grad = False
                     frozen.append(name)
 
-        print(f"Froze layers: {frozen}")
+        rank_zero_info(f"Froze layers: {frozen}")
 
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
