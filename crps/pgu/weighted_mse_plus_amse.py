@@ -9,7 +9,6 @@ bin_weights = None
 
 
 def build_highk_ramp(n_bins: int, gamma: float = 1.0, device=None, dtype=None):
-    # ρ in [0,1] from low→high k
     rho = torch.linspace(0, 1, steps=n_bins, device=device, dtype=dtype)
     return rho.pow(gamma)  # will be normalized inside the loss
 
@@ -92,10 +91,8 @@ def _amse2d_per_time(y_pred, y_true, n_bins=None, hann_window=True, eps=1e-8):
         bin_weights = build_highk_ramp(
             n_bins, device=loss_bins.device, dtype=loss_bins.dtype
         )
-        #        bin_weights = bin_weights.to(loss_bins.device, loss_bins.dtype)
         # normalize to keep lambda_spectral comparable across choices
         bin_weights = bin_weights / (bin_weights.mean() + eps)
-        print(f"Bin weights: {bin_weights}")
 
         if bin_weights.numel() != n_bins:
             raise ValueError(
