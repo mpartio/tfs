@@ -317,61 +317,12 @@ class cc2CRPSModel(L.LightningModule):
             self.latest_train_predictions = predictions
             self.latest_train_data = data
 
-        if batch_idx % 500 == 0:
-            self.diagnostics(batch, batch_idx, stage="train")
-
         return {
             "loss": loss["loss"],
             "tendencies": tendencies,
             "predictions": predictions,
             "loss_components": loss,
         }
-
-    def diagnostics(self, batch, batch_idx, stage="val"):
-        data, forcing = batch
-        x, y = data
-
-        # Run a forward pass
-        with torch.no_grad():
-            loss, tendencies, preds = self._roll_forecast(
-                self.model,
-                data,
-                forcing,
-                n_step=self.hparams.rollout_length,
-                loss_fn=self._loss_fn,
-                use_scheduled_sampling=False,
-                pl_module=self,
-            )
-
-        # --- Target delta stats ---
-        y_true_deltas = []
-        for t in range(y.size(1)):
-            # consistent "delta relative to last observed input"
-            y_true_deltas.append((y[:, t : t + 1] - x[:, -1:]).abs().mean().item())
-        print(f"[{stage} {batch_idx}] mean |y_true delta| per horizon:", y_true_deltas)
-
-        # --- Model output stats ---
-        print(
-            f"[{stage} {batch_idx}] tendencies mean {tendencies.mean().item():.3e}, "
-            f"std {tendencies.std().item():.3e}"
-        )
-
-        # --- Loss ---
-        if isinstance(loss, dict):
-            loss_val = loss["loss"].item()
-        elif loss is None:
-            loss_val = float("nan")
-        else:
-            loss_val = loss.item()
-        print(f"[{stage} {batch_idx}] loss {loss_val:.3e}")
-
-        # --- Gradient norm (only if training and grads exist) ---
-        if stage == "train":
-            total_norm = 0.0
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    total_norm += p.grad.detach().norm().item()
-            print(f"[{stage} {batch_idx}] grad_norm {total_norm:.3e}")
 
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
@@ -391,9 +342,6 @@ class cc2CRPSModel(L.LightningModule):
             self.latest_val_tendencies = tendencies
             self.latest_val_predictions = predictions
             self.latest_val_data = data
-
-        if batch_idx == 0:
-            self.diagnostics(batch, batch_idx, stage="val")
 
         return {
             "loss": loss["loss"],
