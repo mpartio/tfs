@@ -72,6 +72,9 @@ class cc2CRPS(nn.Module):
         self.w_patches = self.patch_embed.w_patches
         self.num_patches = self.patch_embed.num_patches
 
+        self.post_pe_norm = nn.LayerNorm(self.embed_dim)
+        self.post_pe_gain = nn.Parameter(torch.ones(1))
+
         # Spatial position embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.embed_dim))
 
@@ -127,6 +130,8 @@ class cc2CRPS(nn.Module):
             self.input_resolution_halved, self.embed_dim, time_dim=config.history_length
         )
 
+        self.post_merge_norm = nn.LayerNorm(self.embed_dim * 2)
+
         if self.use_swin_encoder:
             self.encoder2 = nn.ModuleList(
                 [
@@ -162,6 +167,8 @@ class cc2CRPS(nn.Module):
                     for _ in range(config.encoder2_depth)
                 ]
             )
+
+        self.pre_dec1_norm = nn.LayerNorm(self.embed_dim * 2)
 
         self.decoder1 = nn.ModuleList(
             [
@@ -308,6 +315,9 @@ class cc2CRPS(nn.Module):
         for t in range(T):
             x_tokens[:, t] = x_tokens[:, t] + self.pos_embed
 
+        x_tokens = self.post_pe_norm(x_tokens)
+        x_tokens = x_tokens * self.post_pe_gain
+
         return x_tokens, f_future
 
     def encode(self, x):
@@ -335,6 +345,7 @@ class cc2CRPS(nn.Module):
 
         # Downsample
         x = self.downsample(x)
+        x = self.post_merge_norm(x)
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
@@ -409,6 +420,8 @@ class cc2CRPS(nn.Module):
 
         # Process through decoder blocks
         x = decoder_in_with_id
+
+        x = self.pre_dec1_norm(x)
 
         # Process through decoder blocks
         if self.use_gradient_checkpointing:
