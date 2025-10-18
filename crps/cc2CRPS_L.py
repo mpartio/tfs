@@ -156,11 +156,15 @@ class cc2CRPSModel(L.LightningModule):
         self.model_configured = True
 
     def _freeze_layers(self) -> None:
+        if len(self.hparams.freeze_layers) == 0:
+            return
+
         frozen = []
         for l in self.hparams.freeze_layers:
-            for name, param in self.model.named_parameters():
+            for name, module in self.model.named_modules():
                 if name.startswith(l):
-                    param.requires_grad = False
+                    for param in module.parameters():
+                        param.requires_grad = False
                     frozen.append(name)
 
         rank_zero_info(f"Froze layers: {frozen}")
