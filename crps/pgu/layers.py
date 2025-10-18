@@ -545,6 +545,9 @@ class SwinEncoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = FeedForward(dim, hidden_dim=int(dim * mlp_ratio), dropout=drop)
 
+        self.gamma_attn = nn.Parameter(torch.ones(1) * 0.1)
+        self.gamma_mlp = nn.Parameter(torch.ones(1) * 0.1)
+
     def _partition_windows(self, x4):
         """
         x4: [B*, Hpad, Wpad, C]
@@ -630,6 +633,6 @@ class SwinEncoderBlock(nn.Module):
         y = y.reshape(B, T, P, C).reshape(B, T * P, C)
 
         # residual + MLP
-        x = x + x_attn_in + self.drop_path(y)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = x + x_attn_in + self.drop_path(self.gamma_attn * y)
+        x = x + self.drop_path(self.gamma_mlp * self.mlp(self.norm2(x)))
         return x
