@@ -93,7 +93,6 @@ def mse_plus_amse_loss(
     hann_window: bool = True,
     eps: float = 1e-8,
     lambda_spectral: float = 0.05,
-    use_ste: bool = False,
 ):
     """
     Combined pixel-wise MSE + spectral AMSE.
@@ -102,9 +101,6 @@ def mse_plus_amse_loss(
     if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
         y_true = y_true.unsqueeze(1)
         y_pred = y_pred.unsqueeze(1)
-
-    if use_ste:
-        y_pred = clamp_ste(y_pred)
 
     # pixelwise MSE
     mse_loss = F.mse_loss(y_pred, y_true)

@@ -86,6 +86,7 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
+    use_ste: bool = False,
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
@@ -149,15 +150,7 @@ def roll_forecast(
         tendency = model(input_state, step_forcing, t)
 
         # Add the predicted tendency to get the next state
-        next_state = current_state + tendency
-
-        # Store the prediction
-        all_predictions.append(next_state)
-        all_tendencies.append(tendency)
-
-        # Update current state for next iteration
-        previous_state = current_state
-        current_state = next_state
+        next_pred = current_state + tendency
 
         # Compute loss for this step
         if loss_fn is not None:
@@ -169,13 +162,46 @@ def roll_forecast(
                 # Second, third, ... step: y - y_prev
                 y_true = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
 
-            loss = loss_fn(y_true, tendency)
-            all_losses.append(loss)
+            all_losses.append(loss_fn(y_true, tendency))
+
+        if model.training:
+            if use_scheduled_sampling:
+                # Bernoulli sample per sample for whether to use predicted state
+                mask_next = torch.bernoulli(
+                    p_pred * torch.ones_like(current_state[:, :1, :, :, :])
+                )
+
+                # clamp predictions only if reused
+                if use_ste:
+                    pred_clamped = (
+                        next_pred + (next_pred.clamp(0.0, 1.0) - next_pred).detach()
+                    )
+                else:
+                    pred_clamped = next_pred.clamp(0.0, 1.0)
+
+                next_gt = y[:, t : t + 1, ...]
+                next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
+
+                pl_module.log("ss_mask_next", mask_next.float().mean(), on_step=True)
+            else:
+                # Training without SS -> always clamp predictions before reuse
+                next_state = next_pred.clamp(0.0, 1.0)
+
+        else:
+            # eval/inference always use clamped prediction
+            next_state = next_pred.clamp(0.0, 1.0)
+
+        # Store the prediction
+        all_predictions.append(next_state)
+        all_tendencies.append(tendency)
+
+        # Update current state for next iteration
+        previous_state = current_state
+        current_state = next_state
 
     # Stack predictions into a single tensor
     tendencies = torch.cat(all_tendencies, dim=1)
     predictions = torch.cat(all_predictions, dim=1)
-    predictions = torch.clamp(predictions, 0, 1)
 
     loss = None
 
@@ -216,6 +242,7 @@ def roll_forecast_direct(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
+    use_ste: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Non-autoregressive rollout: predict n_step horizons from the same two GT inputs.

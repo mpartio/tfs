@@ -218,8 +218,12 @@ class cc2CRPS(nn.Module):
                     self.embed_dim // 4,
                     self.patch_size**2 * len(config.prognostic_params),
                 ),
-                nn.Tanh(),
             )
+
+        if self.use_ste is False:
+            self.activation = nn.Tanh()
+        else:
+            self.activation = nn.Identity()
 
         # Step identification embeddings
         self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
@@ -468,6 +472,8 @@ class cc2CRPS(nn.Module):
             output = self.final_expand(
                 expanded
             )  # [B, h_new*w_new, patch_size*patch_size*output_channels]
+
+            output = self.activation(output)
 
             output = output.reshape(
                 B, h_new, w_new, self.patch_size, self.patch_size, 1

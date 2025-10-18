@@ -138,7 +138,6 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_predictions = None
         self.latest_train_data = None
 
-        self.use_ste = use_ste
         self.use_scheduled_sampling = use_scheduled_sampling
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
@@ -312,6 +311,7 @@ class cc2CRPSModel(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             pl_module=self,
+            use_ste=self.hparams.use_ste,
         )
 
         self.log("train_loss", loss["loss"], sync_dist=False)
@@ -338,6 +338,7 @@ class cc2CRPSModel(L.LightningModule):
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
+            use_ste=self.hparams.use_ste,
         )
 
         self.log("val_loss", loss["loss"], sync_dist=True)
@@ -364,6 +365,7 @@ class cc2CRPSModel(L.LightningModule):
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
             use_scheduled_sampling=False,
+            use_ste=self.hparams.use_ste,
         )
 
         # We want to include the analysis time also
