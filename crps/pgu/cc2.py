@@ -97,7 +97,7 @@ class cc2CRPS(nn.Module):
                         attn_drop=config.attn_drop_rate,
                         drop_path_rate=config.drop_path_rate,
                         window_size=config.window_size,
-                        shift_size=0 if i % 2 == 0 else config.window_size//2,
+                        shift_size=0 if i % 2 == 0 else config.window_size // 2,
                         H=self.h_patches,
                         W=self.w_patches,
                         T=config.history_length,
@@ -144,7 +144,7 @@ class cc2CRPS(nn.Module):
                         attn_drop=config.attn_drop_rate,
                         drop_path_rate=config.drop_path_rate,
                         window_size=config.window_size,
-                        shift_size=0 if i % 2 == 0 else config.window_size//2,
+                        shift_size=0 if i % 2 == 0 else config.window_size // 2,
                         H=self.h_patches // 2,
                         W=self.w_patches // 2,
                         T=config.history_length,
@@ -217,7 +217,8 @@ class cc2CRPS(nn.Module):
 
         if self.use_ste:
             self.final_expand = nn.Linear(
-                self.embed_dim // 4, self.patch_size**2 * len(config.prognostic_params)
+                self.embed_dim // 4,
+                self.patch_size**2 * len(config.prognostic_params),
             )
         else:
             self.final_expand = nn.Sequential(
