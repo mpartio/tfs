@@ -366,6 +366,8 @@ class OverlapPatchEmbed(nn.Module):
 
         self.fuse = nn.Linear(2 * embed_dim, embed_dim)
 
+        self.patch_area_scale = math.sqrt(self.patch_size * self.patch_size)
+
     def _proj(self, x, is_data):  # x: [B, T, C, H, W] -> [B, T, P, D]
         B, T, C, H, W = x.shape
         x = x.reshape(B * T, C, H, W)
@@ -378,6 +380,9 @@ class OverlapPatchEmbed(nn.Module):
     def forward(self, x_stem, f_stem):
         x_tok = self._proj(x_stem, is_data=True)  # [B, T,   P, D]
         f_tok = self._proj(f_stem, is_data=False)  # [B, T_f, P, D]
+
+        x_tok = x_tok * self.patch_area_scale
+        f_tok = f_tok * self.patch_area_scale
 
         B, T, P, D = x_tok.shape
         Tf = f_tok.shape[1]
@@ -437,6 +442,8 @@ class PatchEmbed(nn.Module):
         self.w_patches = input_resolution[1] // self.patch_size[1]
         self.num_patches = self.h_patches * self.w_patches
 
+        self.patch_area_scale = sqrt(self.patch_size[0] * self.patch_size[1])
+
     def forward(self, data, forcing):
         assert data.ndim == 5, "x dims should be B, T, C, H, W, found: {}".format(
             data.shape
@@ -458,12 +465,18 @@ class PatchEmbed(nn.Module):
                 self.forcing_proj(forcing[:, t]).flatten(2).transpose(1, 2)
             )  # [B, patches, embed_dim//2]
 
+            # With patch size k each output token is an average over k pixels
+            # ie. the activation magnitude is reduced to 1/k. To counter this
+            # we multiply the activation with the patch size
+            data_emb = data_emb * self.patch_area_scale
+            forcing_emb = forcing_emb * self.patch_area_scale
+
             # Concatenate along embedding dimension
             combined_emb = torch.cat(
                 [data_emb, forcing_emb], dim=2
             )  # [B, patches, embed_dim]
 
-            # Optional: apply fusion layer
+            # apply fusion layer
             combined_emb = self.fusion(combined_emb)
 
             embeddings.append(combined_emb)
