@@ -99,17 +99,15 @@ class StageActivationCallback(Callback):
         # Single modules
         self._reg("patch_embed", getattr(m, "patch_embed", None))
         self._reg("downsample", getattr(m, "downsample", None))
+        self._reg("upsample", getattr(m, "upsample", None))
         self._reg("patch_expand", getattr(m, "patch_expand", None))
         self._reg("final_expand", getattr(m, "final_expand", None))
-
-        pm = m.downsample
-
-        self._reg("downsample.norm", pm.norm)
-        self._reg("downsample.reduction", pm.reduction)
-
         self._reg("post_pe_norm", getattr(m, "post_pe_norm", None))
         self._reg("post_merge_norm", getattr(m, "post_merge_norm", None))
         self._reg("pre_dec1_norm", getattr(m, "pre_dec1_norm", None))
+        self._reg("pre_dec2_norm", getattr(m, "pre_dec2_norm", None))
+        self._reg("pre_dec2_norm_skip", getattr(m, "pre_dec2_norm_skip", None))
+        self._reg("post_fuse_norm", getattr(m, "post_fuse_norm", None))
 
         # All blocks within ModuleLists
         for stage in ["encoder1", "encoder2", "decoder1", "decoder2"]:
