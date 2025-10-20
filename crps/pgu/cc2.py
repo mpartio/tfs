@@ -72,8 +72,9 @@ class cc2CRPS(nn.Module):
         self.w_patches = self.patch_embed.w_patches
         self.num_patches = self.patch_embed.num_patches
 
-        self.post_pe_norm = nn.LayerNorm(self.embed_dim)
-        self.post_pe_gain = nn.Parameter(torch.ones(1))
+        if config.use_swin_encoder:
+            self.post_pe_norm = nn.LayerNorm(self.embed_dim)
+            self.post_pe_gain = nn.Parameter(torch.ones(1))
 
         # Spatial position embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.embed_dim))
@@ -130,7 +131,8 @@ class cc2CRPS(nn.Module):
             self.input_resolution_halved, self.embed_dim, time_dim=config.history_length
         )
 
-        self.post_merge_norm = nn.LayerNorm(self.embed_dim * 2)
+        if config.use_swin_encoder:
+            self.post_merge_norm = nn.LayerNorm(self.embed_dim * 2)
 
         if self.use_swin_encoder:
             self.encoder2 = nn.ModuleList(
@@ -168,7 +170,8 @@ class cc2CRPS(nn.Module):
                 ]
             )
 
-        self.pre_dec1_norm = nn.LayerNorm(self.embed_dim * 2)
+        if config.use_swin_encoder:
+            self.pre_dec1_norm = nn.LayerNorm(self.embed_dim * 2)
 
         self.decoder1 = nn.ModuleList(
             [
@@ -188,6 +191,11 @@ class cc2CRPS(nn.Module):
         self.upsample = PatchExpand(
             self.embed_dim * 2, self.embed_dim * 2, scale_factor=2
         )
+
+        if config.use_swin_encoder:
+            self.pre_dec2_norm = nn.LayerNorm(self.embed_dim * 2)
+            self.pre_dec2_norm_skip = nn.LayerNorm(self.embed_dim * 2)
+            self.post_fuse_norm = nn.LayerNorm(self.embed_dim * 2)
 
         self.decoder2 = nn.ModuleList(
             [
@@ -316,8 +324,9 @@ class cc2CRPS(nn.Module):
         for t in range(T):
             x_tokens[:, t] = x_tokens[:, t] + self.pos_embed
 
-        x_tokens = self.post_pe_norm(x_tokens)
-        x_tokens = x_tokens * self.post_pe_gain
+        if hasattr(self, "post_pe_norm"):
+            x_tokens = self.post_pe_norm(x_tokens)
+            x_tokens = x_tokens * self.post_pe_gain
 
         return x_tokens, f_future
 
@@ -346,7 +355,8 @@ class cc2CRPS(nn.Module):
 
         # Downsample
         x = self.downsample(x)
-        x = self.post_merge_norm(x)
+        if hasattr(self, "post_merge_norm"):
+            x = self.post_merge_norm(x)
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
@@ -422,7 +432,8 @@ class cc2CRPS(nn.Module):
         # Process through decoder blocks
         x = decoder_in_with_id
 
-        x = self.pre_dec1_norm(x)
+        if hasattr(self, "pre_dec1_norm"):
+            x = self.pre_dec1_norm(x)
 
         # Process through decoder blocks
         if self.use_gradient_checkpointing:
@@ -450,12 +461,20 @@ class cc2CRPS(nn.Module):
         P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
         x2 = upsampled_delta.reshape(B, -1, D_new)
 
+        if hasattr(self, "pre_dec2_norm"):
+            x2 = self.pre_dec2_norm(x2)
+
         if self.add_skip_connection:
             skip_token = skip[:, -1, :, :]  # shape: [B, num_tokens, embed_dim]
             assert skip_token.ndim == 3
             skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
+            if hasattr(self, "pre_dec2_norm_skip"):
+                skip_proj = self.pre_dec2_norm_skip(skip_proj)  # normalize skip branch
+
             x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
             x2 = self.skip_fusion(x2)
+            if hasattr(self, "post_fuse_norm"):
+                x2 = self.post_fuse_norm(x2)
 
         if self.use_gradient_checkpointing:
             for block in self.decoder2:
