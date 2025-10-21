@@ -74,6 +74,14 @@ def scheduled_sampling_inputs(
     )
 
 
+def ste_clamp(x, use_ste=False):
+    if use_ste:
+        x_clamped = x.clamp(0.0, 1.0)
+        return x + (x_clamped - x).detach()
+    else:
+        return x.clamp(0.0, 1.0)
+
+
 def roll_forecast(
     model: nn.Module,
     data: torch.Tensor,
@@ -171,25 +179,19 @@ def roll_forecast(
                     p_pred * torch.ones_like(current_state[:, :1, :, :, :])
                 )
 
-                # clamp predictions only if reused
-                if use_ste:
-                    pred_clamped = (
-                        next_pred + (next_pred.clamp(0.0, 1.0) - next_pred).detach()
-                    )
-                else:
-                    pred_clamped = next_pred.clamp(0.0, 1.0)
+                pred_clamped = ste_clamp(next_pred, use_ste)
 
                 next_gt = y[:, t : t + 1, ...]
                 next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
 
                 pl_module.log("ss_mask_next", mask_next.float().mean(), on_step=True)
             else:
-                # Training without SS -> always clamp predictions before reuse
-                next_state = next_pred.clamp(0.0, 1.0)
+                # Training without SS
+                next_state = ste_clamp(next_pred, use_ste)
 
         else:
             # eval/inference always use clamped prediction
-            next_state = next_pred.clamp(0.0, 1.0)
+            next_state = ste_clamp(next_pred, False)
 
         # Store the prediction
         all_predictions.append(next_state)
