@@ -566,7 +566,7 @@ class cc2DataModule(L.LightningDataModule):
             and self.hparams.val_end
         ):
             # Build splits aligned to valid_indices
-            # 1) positions 0…N-1 into valid_indices
+            # 1) positions  into valid_indices
             valid_pos = np.arange(len(ds_full.valid_indices))
             # 2) actual start dates for each valid window
             all_dates = np.array(ds_full.dates, dtype="datetime64[ns]")
@@ -600,6 +600,12 @@ class cc2DataModule(L.LightningDataModule):
                     self.hparams.val_start, self.hparams.val_end, val_indices.shape[0]
                 )
             )
+            rank_zero_info(
+                "Test dataset contains {} samples".format(
+                    test_indices.shape[0]
+                )
+            )
+
 
         else:
             num_total_valid_samples = len(ds_full)
