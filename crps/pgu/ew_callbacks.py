@@ -206,7 +206,7 @@ class EarlyWarningMetricsCallback(L.Callback):
     def _mlflow_log_metrics(self, pl_module, metrics: dict, prefix: str):
         for k, v in metrics.items():
             pl_module.log(
-                f"{prefix}/{k}",
+                f"metrics/{prefix}/{k}",
                 float(v),
                 on_step=False,
                 on_epoch=True,
