@@ -129,7 +129,7 @@ class StageActivationCallback(Callback):
         for name, d in self.buffer.items():
             for k, v in d.items():
                 pl_module.log(
-                    f"{prefix}/{name}_{k}",
+                    f"activations/{prefix}/{name}_{k}",
                     float(v),
                     on_step=False,
                     on_epoch=True,
