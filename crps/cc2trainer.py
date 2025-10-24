@@ -13,6 +13,7 @@ from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number, get_rank
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger
+from common.sc_callback import CustomSaveConfigCallback
 
 coord_file = "ddp_coordination_info.json"
 
@@ -92,7 +93,9 @@ def setup_mlflow_logger(trainer):
     run_name = os.environ["CC2_RUN_NAME"]
     run_number = os.environ["CC2_RUN_NUMBER"]
 
-    assert trainer.loggers is not None and len(trainer.loggers), "no loggers defined in configuration"
+    assert trainer.loggers is not None and len(
+        trainer.loggers
+    ), "no loggers defined in configuration"
 
     for i, logger in enumerate(trainer.loggers):
         if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
@@ -163,5 +166,6 @@ torch.set_float32_matmul_precision("high")
 cli = cc2trainer(
     model_class=None,  # read from yaml
     datamodule_class=cc2DataModule,
+    save_config_callback=CustomSaveConfigCallback,
     save_config_kwargs={"overwrite": True, "multifile": False},
 )
