@@ -7,6 +7,8 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def highk_power_ratio(
     run_name: list[str],
@@ -31,8 +33,8 @@ def highk_power_ratio(
         B, T, C, H, W = y_pred.shape
         # compute once per timestep, average over batch
         for t in range(T):
-            yp = y_pred[:, t]  # [B,C,H,W]
-            yt = y_true[:, t]
+            yp = y_pred[:, t].to(device)  # [B,C,H,W]
+            yt = y_true[:, t].to(device)
             # average PSD over batch
             psd_pred_bins = []
             psd_true_bins = []
@@ -81,9 +83,7 @@ def highk_power_ratio(
     return df
 
 
-def plot_highk_power_ratio(
-    df: pd.DataFrame, save_path="runs/verification"
-):
+def plot_highk_power_ratio(df: pd.DataFrame, save_path="runs/verification"):
     if df.empty:
         print("No high_k_power_ratio results to plot.")
         return

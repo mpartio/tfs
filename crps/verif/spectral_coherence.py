@@ -7,6 +7,8 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def spectral_coherence_bands(
     run_name: list[str],
@@ -32,8 +34,8 @@ def spectral_coherence_bands(
         B, T, C, H, W = y_pred.shape
 
         for t in range(T):
-            yp = y_pred[:, t]  # [B,C,H,W]
-            yt = y_true[:, t]
+            yp = y_pred[:, t].to(device)  # [B,C,H,W]
+            yt = y_true[:, t].to(device)
 
             # build bins once from first sample
             X0 = rfft2(yp[0], norm="ortho")
@@ -95,9 +97,7 @@ def spectral_coherence_bands(
     return df
 
 
-def plot_spectral_coherence_bands(
-    df: pd.DataFrame, save_path="runs/verification"
-):
+def plot_spectral_coherence_bands(df: pd.DataFrame, save_path="runs/verification"):
     """
     Expects columns: model, timestep, coherence_mid, coherence_high
     Produces a single plot; each model has two lines (mid & high).
