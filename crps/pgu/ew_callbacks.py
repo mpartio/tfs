@@ -134,6 +134,48 @@ def _fss_once(y_pred, y_true, threshold=0.5, radius=10, eps=1e-8):
     return fss.item()
 
 
+def _psd_anomaly_once(y_pred, y_true, lo_px=12.0, hi_px=6.0, eps=1e-8):
+    """
+    Mean PSD anomaly (log10(pred/obs)) in an annulus defined by pixel wavelengths
+    [lo_px, hi_px]. With 5 km grid, 12 px ~ 60 km, 6 px ~ 30 km.
+    Inputs: y_* [C,H,W] (single frame). Returns float.
+    """
+    device = y_pred.device
+    y_pred = y_pred.to(torch.float32)
+    y_true = y_true.to(torch.float32)
+
+    X = rfft2(y_pred, norm="ortho")  # [C,H,Wf]
+    Y = rfft2(y_true, norm="ortho")
+    # channel-mean PSD
+    PSDx = (X.real**2 + X.imag**2).mean(dim=0)  # [Hf,Wf]
+    PSDy = (Y.real**2 + Y.imag**2).mean(dim=0)
+
+    Hf, Wf = PSDx.shape[-2], PSDx.shape[-1]
+    bin_index, counts, n_bins = _radial_bins(Hf, Wf, device)
+    flat_idx = bin_index.flatten()
+
+    def _bin_mean(Z):
+        Zb = Z.reshape(1, Hf * Wf)
+        sums = torch.zeros(1, n_bins, dtype=Z.dtype, device=device)
+        sums.index_add_(1, flat_idx, Zb)
+        return (sums / counts).squeeze(0)  # [n_bins]
+
+    bx = _bin_mean(PSDx).clamp_min(eps)
+    by = _bin_mean(PSDy).clamp_min(eps)
+
+    r = torch.linspace(0, 1, steps=n_bins, device=device, dtype=bx.dtype)
+    inv_sqrt2 = 1.0 / math.sqrt(0.5**2 + 0.5**2)
+    rn_lo = (1.0 / lo_px) * inv_sqrt2
+    rn_hi = (1.0 / hi_px) * inv_sqrt2
+    # hard mask (simple and robust)
+    mask = (r >= rn_lo) & (r <= rn_hi)
+    if not mask.any():
+        return 0.0
+
+    anom = torch.log10(bx[mask] / by[mask])
+    return float(anom.mean().item())
+
+
 def _compute_metrics_pack(y_pred_btchw, y_true_btchw, fss_threshold=0.5, fss_radius=10):
     """
     y_*: [B,T,C,H,W] (or [B,C,H,W]) tensors, same shapes
@@ -148,7 +190,14 @@ def _compute_metrics_pack(y_pred_btchw, y_true_btchw, fss_threshold=0.5, fss_rad
     yp = y_pred[:, step]  # [B,C,H,W]
     yt = y_true[:, step]
 
-    mae_list, fss_list, vk_list, coh_mid_list, coh_hi_list = [], [], [], [], []
+    mae_list, fss_list, vk_list, coh_mid_list, coh_hi_list, psd_anom_list = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
     for b in range(yp.shape[0]):
         yp_b = yp[b]
         yt_b = yt[b]
@@ -162,6 +211,8 @@ def _compute_metrics_pack(y_pred_btchw, y_true_btchw, fss_threshold=0.5, fss_rad
         fss_list.append(
             _fss_once(yp_b, yt_b, threshold=fss_threshold, radius=fss_radius)
         )
+
+        psd_anom_list.append(_psd_anomaly_once(yp_b, yt_b, lo_px=12.0, hi_px=6.0))
 
     # High-k ratio can be averaged too (use last computed dict from loop)
     # Better: recompute per-sample and average
@@ -177,6 +228,7 @@ def _compute_metrics_pack(y_pred_btchw, y_true_btchw, fss_threshold=0.5, fss_rad
         "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
         "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
         "fss": float(sum(fss_list) / len(fss_list)),
+        "psd_anom_30_60km": float(sum(psd_anom_list) / len(psd_anom_list)),
     }
 
 
