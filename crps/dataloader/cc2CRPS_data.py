@@ -482,8 +482,8 @@ class cc2DataModule(L.LightningDataModule):
         forcing_params: tuple[str, ...],
         static_forcing_path: str | None = None,
         static_forcing_params: list[str] = [],
-        history_length: int = 2,
-        rollout_length: int = 1,
+        history_length: int = None,
+        rollout_length: int = None,
         val_split: float = 0.1,
         test_split: float = 0.0,
         train_start: str | None = None,
@@ -508,12 +508,22 @@ class cc2DataModule(L.LightningDataModule):
             import warnings
 
             warnings.warn(
-                "'input_resolution' parameter is deprecated and will be removed in a future version.",
+                "'input_resolution' parameter for dataloader is deprecated and will be removed in a future version.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        if rollout_length is not None:
+            import warnings
+
+            warnings.warn(
+                "'rollout_length' parameter for dataloader is deprecated and will be removed in a future version.",
                 FutureWarning,
                 stacklevel=2,
             )
 
-        self.save_hyperparameters()
+        self.save_hyperparameters(
+            ignore=["history_length", "rollout_length", "input_resolution"]
+        )
 
         self.ds_train: Subset | None = None
         self.ds_val: Subset | None = None
@@ -536,9 +546,13 @@ class cc2DataModule(L.LightningDataModule):
                     self.hparams.normalization
                 )
 
+            history_length = self.trainer.model.hparams.history_length
+            rollout_length = self.trainer.model.hparams.rollout_length
+
+            assert rollout_length is not None
             self._full_dataset = AnemoiDataset(
                 zarr_path=self.hparams.data_path,
-                group_size=self.hparams.history_length + self.hparams.rollout_length,
+                group_size=history_length + rollout_length,
                 prognostic_params=self.hparams.prognostic_params,
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
@@ -601,11 +615,8 @@ class cc2DataModule(L.LightningDataModule):
                 )
             )
             rank_zero_info(
-                "Test dataset contains {} samples".format(
-                    test_indices.shape[0]
-                )
+                "Test dataset contains {} samples".format(test_indices.shape[0])
             )
-
 
         else:
             num_total_valid_samples = len(ds_full)
@@ -668,10 +679,12 @@ class cc2DataModule(L.LightningDataModule):
             is_test_or_predict = stage == "test" or stage == "predict"
             dataset.dataset.return_metadata = is_test_or_predict
 
+        history_length = self.trainer.model.hparams.history_length
+
         wrapped_dataset = SplitWrapper(
             dataset=dataset,
-            n_x=self.hparams.history_length,  # Use hparams
-            apply_smoothing=self.hparams.apply_smoothing,  # Use hparams
+            n_x=history_length,
+            apply_smoothing=self.hparams.apply_smoothing,
         )
 
         return DataLoader(
