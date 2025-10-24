@@ -103,7 +103,7 @@ def mse_plus_amse_loss(
         y_pred = y_pred.unsqueeze(1)
 
     # pixelwise MSE
-    mse_loss = F.mse_loss(y_pred, y_true)
+    mse_loss = F.mse_loss(y_pred.float(), y_true.float())
 
     # spectral AMSE
     amse_t = _amse2d_per_time(
