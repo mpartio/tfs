@@ -502,17 +502,17 @@ class DiagnosticCallback(L.Callback):
             data = true_tendencies - tendencies[t]
             ax[t, 2].set_title(f"Tendencies bias step={t}")
             ax[t, 2].set_axis_off()
-            im = ax[t, 2].imshow(data.cpu(), cmap=cmap, norm=norm)
+            im = ax[t, 2].imshow(data.cpu(), cmap=cmap)
 
             divider_bias = make_axes_locatable(ax[t, 2])
             cax_bias = divider_bias.append_axes("right", size="5%", pad=0.05)
             fig.colorbar(im, cax=cax_bias)
 
             ax[t, 3].set_title(f"True histogram step={t}")
-            ax[t, 3].hist(true_tendencies.flatten(), bins=30, density=True)
+            ax[t, 3].hist(true_tendencies.flatten(), bins=50, density=True)
 
             ax[t, 4].set_title(f"Predicted histogram step={t}")
-            ax[t, 4].hist(tendencies[t].flatten(), bins=30, density=True)
+            ax[t, 4].hist(tendencies[t].flatten(), bins=50, density=True)
 
         plt.tight_layout()
 
