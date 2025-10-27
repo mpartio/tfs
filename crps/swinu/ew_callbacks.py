@@ -15,6 +15,17 @@ from torchmetrics.functional.image import (
 from scipy.stats import wasserstein_distance
 
 
+def _ensure_bchw(y):
+    # Accept [B,C,H,W] or [C,H,W]. Return [B,C,H,W]
+    if y.dim() == 4:
+        return y
+    elif y.dim() == 3:
+        C, H, W = y.shape
+        return y.view(1, C, H, W)
+
+    raise ValueError(f"Expected 3D or 4D, got {y.shape}")
+
+
 def _ensure_btchw(y):
     # Accept [B,T,C,H,W] or [B,C,H,W]. Return [B,T,C,H,W], T>=1
     if y.dim() == 5:
@@ -22,6 +33,7 @@ def _ensure_btchw(y):
     elif y.dim() == 4:
         B, C, H, W = y.shape
         return y.view(B, 1, C, H, W)
+
     raise ValueError(f"Expected 4D or 5D, got {y.shape}")
 
 
@@ -56,34 +68,40 @@ def _radial_bins(Hf, Wf, device, n_bins=None):
 
 
 @torch.no_grad()
-def _ssim(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
-    return structural_similarity_index_measure(y_pred_btchw, y_true_btchw).item()
+def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
+    return structural_similarity_index_measure(
+        _ensure_bchw(y_pred), _ensure_bchw(y_true)
+    ).item()
 
 
 @torch.no_grad()
-def _psnr(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
-    return peak_signal_noise_ratio(y_pred_btchw, y_true_btchw, data_range=2.0).item()
+def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
+    return peak_signal_noise_ratio(y_pred, y_true, data_range=2.0).item()
 
 
 @torch.no_grad()
-def _rase(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
-    return relative_average_spectral_error(y_pred_btchw, y_true_btchw).item()
+def _rase(y_pred: torch.Tensor, y_true: torch.Tensor):
+    return relative_average_spectral_error(
+        _ensure_bchw(y_pred), _ensure_bchw(y_true)
+    ).item()
 
 
 @torch.no_grad()
-def _scc(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
-    return spatial_correlation_coefficient(y_pred_btchw, y_true_btchw).item()
+def _scc(y_pred: torch.Tensor, y_true: torch.Tensor):
+    return spatial_correlation_coefficient(y_pred, y_true).item()
 
 
 @torch.no_grad()
-def _tv(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
-    return (total_variation(y_true_btchw) - total_variation(y_pred_btchw)).item()
+def _tv(y_pred: torch.Tensor, y_true: torch.Tensor):
+    return (
+        total_variation(_ensure_bchw(y_true)) - total_variation(_ensure_bchw(y_pred))
+    ).item()
 
 
 @torch.no_grad()
-def _wasserstein(y_pred_btchw: torch.Tensor, y_true_btchw: torch.Tensor):
+def _wasserstein(y_pred: torch.Tensor, y_true: torch.Tensor):
     return wasserstein_distance(
-        y_pred_btchw.cpu().flatten().numpy(), y_true_btchw.cpu().flatten().numpy()
+        y_pred.cpu().flatten().numpy(), y_true.cpu().flatten().numpy()
     )
 
 
