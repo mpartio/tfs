@@ -12,6 +12,10 @@ from pgu.layers import (
     DecoderBlock,
     SwinEncoderBlock,
     DualStem,
+    ProjectToImageFold,
+    PatchEmbedLossless,
+    FiLM1D,
+    DWConvResidual3D,
     get_padded_size,
     pad_tensors,
     pad_tensor,
@@ -44,6 +48,7 @@ class cc2CRPS(nn.Module):
         )
 
         self.stem_ch = 32
+        self.use_lossless_patch_embed = config.use_lossless_patch_embed
 
         if config.overlap_patch_embed:
             self.patch_embed = OverlapPatchEmbed(
@@ -57,6 +62,16 @@ class cc2CRPS(nn.Module):
             in_ch = self.num_prognostic + self.num_forcings
             self.stem = DualStem(
                 self.num_prognostic, self.num_forcings, stem_ch=self.stem_ch
+            )
+
+        elif config.use_lossless_patch_embed:
+            self.patch_embed = PatchEmbedLossless(
+                input_resolution=self.real_input_resolution,  # or whatever you pass now
+                patch_size=self.patch_size,
+                data_channels=self.num_prognostic,  # 1 for tcc
+                forcing_channels=self.num_forcings,  # 32 in your config
+                embed_dim=self.embed_dim,  # 128 in your tiny cfg
+                data_dim_override=None,  # keep None: d_data = C*ps*ps
             )
 
         else:
@@ -123,6 +138,23 @@ class cc2CRPS(nn.Module):
                 ]
             )
 
+        h0, w0 = self.h_patches, self.w_patches
+
+        self.use_dw_conv_residual = config.use_dw_conv_residual
+
+        if self.use_dw_conv_residual:
+            self.dwres_e1 = nn.ModuleList(
+                [
+                    DWConvResidual3D(
+                        self.embed_dim,
+                        (h0, w0),
+                        time_dim=config.history_length,
+                        dilation=(1 if i % 2 == 0 else 2),
+                    )
+                    for i in range(config.encoder1_depth)
+                ]
+            )
+
         self.input_resolution_halved = (
             input_resolution[0] // self.patch_size,
             input_resolution[1] // self.patch_size,
@@ -169,6 +201,20 @@ class cc2CRPS(nn.Module):
                     for _ in range(config.encoder2_depth)
                 ]
             )
+        h1, w1 = h0 // 2, w0 // 2
+
+        if self.use_dw_conv_residual:
+            self.dwres_e2 = nn.ModuleList(
+                [
+                    DWConvResidual3D(
+                        self.embed_dim * 2,
+                        (h1, w1),
+                        time_dim=config.history_length,
+                        dilation=(1 if i % 2 == 0 else 2),
+                    )
+                    for i in range(config.encoder2_depth)
+                ]
+            )
 
         if config.use_swin_encoder:
             self.pre_dec1_norm = nn.LayerNorm(self.embed_dim * 2)
@@ -187,6 +233,19 @@ class cc2CRPS(nn.Module):
                 for _ in range(config.decoder1_depth)
             ]
         )
+
+        if self.use_dw_conv_residual:
+            self.dwres_d1 = nn.ModuleList(
+                [
+                    DWConvResidual3D(
+                        self.embed_dim * 2,
+                        (h1, w1),
+                        time_dim=config.history_length,
+                        dilation=(1 if i % 2 == 0 else 2),
+                    )
+                    for i in range(config.decoder1_depth)
+                ]
+            )
 
         self.upsample = PatchExpand(
             self.embed_dim * 2, self.embed_dim * 2, scale_factor=2
@@ -215,6 +274,15 @@ class cc2CRPS(nn.Module):
         # Final norm and output projection
         self.norm_final = nn.LayerNorm(self.embed_dim * 2)
 
+        if config.use_lossless_patch_embed:
+            self.project_to_image_fold = ProjectToImageFold(
+                input_resolution=self.real_input_resolution,
+                patch_size=self.patch_size,
+                out_channels=self.num_prognostic,  # 1
+                d_data=self.patch_embed.d_data,
+                embed_dim=self.embed_dim * 2,
+                undo_scale=False,
+            )
         # Patch expansion for upsampling to original resolution
 
         self.patch_expand = PatchExpand(
@@ -341,11 +409,15 @@ class cc2CRPS(nn.Module):
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
-            for block in self.encoder1:
+            for i, block in enumerate(self.encoder1):
                 x = checkpoint(block, x, use_reentrant=False)
+                if self.use_dw_conv_residual:
+                    x = checkpoint(self.dwres_e1[i], x, use_reentrant=False)
         else:
-            for block in self.encoder1:
+            for i, block in enumerate(self.encoder1):
                 x = block(x)
+                if self.use_dw_conv_residual:
+                    x = self.dwres_e1[i](x)
 
         if self.add_skip_connection:
             skip = x.clone()  # skip connection, B, T*P, D
@@ -360,11 +432,16 @@ class cc2CRPS(nn.Module):
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
-            for block in self.encoder2:
+            for i, block in enumerate(self.encoder2):
                 x = checkpoint(block, x, use_reentrant=False)
+                if self.use_dw_conv_residual:
+                    x = checkpoint(self.dwres_e2[i], x, use_reentrant=False)
+
         else:
-            for block in self.encoder2:
+            for i, block in enumerate(self.encoder2):
                 x = block(x)
+                if self.use_dw_conv_residual:
+                    x = self.dwres_e2[i](x)
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
@@ -439,9 +516,13 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for block in self.decoder1:
                 x = checkpoint(block, x, encoded_flat, use_reentrant=False)
+                if self.use_dw_conv_residual:
+                    x = checkpoint(self.dwres_d1[i], x, use_reentrant=False)
         else:
-            for block in self.decoder1:
+            for i, block in enumerate(self.decoder1):
                 x = block(x, encoded_flat)
+                if self.use_dw_conv_residual:
+                    x = self.dwres_d1[i](x)
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
@@ -489,6 +570,10 @@ class cc2CRPS(nn.Module):
 
     def project_to_image(self, x):
         """Project latent representation back to image space"""
+
+        if self.use_lossless_patch_embed:
+            return self.project_to_image_fold(x)
+
         B, T, P, D = x.shape
         assert T == 1
         # Apply final norm

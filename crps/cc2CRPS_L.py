@@ -70,6 +70,8 @@ class cc2CRPSModel(L.LightningModule):
         use_swin_encoder: bool = False,
         use_future_forcings: bool = False,
         freeze_layers: list[str] = [],
+        use_lossless_patch_embed: bool = False,
+        use_dw_conv_residual: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -121,6 +123,8 @@ class cc2CRPSModel(L.LightningModule):
                 "overlap_patch_embed",
                 "use_swin_encoder",
                 "use_future_forcings",
+                "use_lossless_patch_embed",
+                "use_dw_conv_residual",
             ]
         }
 
@@ -188,6 +192,7 @@ class cc2CRPSModel(L.LightningModule):
             from swinu.cc2 import cc2CRPS
             from swinu.loss import LOSS_FUNCTIONS
             from swinu.util import roll_forecast
+
             loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
 
         self.model_class = self.hparams.model_family

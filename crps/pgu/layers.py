@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from math import sqrt
+from math import sqrt, ceil
 from timm.models.layers import DropPath
 
 
@@ -79,6 +79,280 @@ def depad_tensor(tensor, padding_info):
 
     return depadded_tensor
 
+
+class PatchEmbedLossless(nn.Module):
+    """
+    Drop-in replacement for your PatchEmbed.
+    - Prognostic data is patchified with Unfold (exact, invertible).
+    - Forcings are embedded separately and compressed to fill (embed_dim - d_data).
+    - A small fusion Linear keeps the output shape [B,T,P,embed_dim] identical.
+    Exposes: patch_size, h_patches, w_patches, num_patches
+    """
+
+    def __init__(
+        self,
+        input_resolution,  # (H, W)
+        patch_size,  # int or (ph,pw)
+        data_channels,  # C_data (e.g., 1)
+        forcing_channels,  # C_forc (e.g., 32)
+        embed_dim,  # D (e.g., 128)
+        data_dim_override=None,  # optionally force d_data; default = C_data*ps*ps (clipped to embed_dim-1)
+    ):
+        super().__init__()
+        assert type(input_resolution) in (list, tuple)
+        H, W = input_resolution
+        if isinstance(patch_size, (list, tuple)):
+            ps = int(patch_size[0])
+            assert patch_size[0] == patch_size[1], "use square patches"
+        else:
+            ps = int(patch_size)
+        self.input_resolution = (H, W)
+        self.patch_size = (ps, ps)
+
+        # patch grid
+        self.h_patches = ceil(H / ps)
+        self.w_patches = ceil(W / ps)
+        self.num_patches = self.h_patches * self.w_patches
+
+        self.Cd = int(data_channels)
+        self.Cf = int(forcing_channels)
+        self.embed_dim = int(embed_dim)
+
+        # --- Lossless (exact) patchify for data ---
+        self.unfold_data = nn.Unfold(kernel_size=ps, stride=ps)  # exact
+
+        # Choose d_data so we can reconstruct data exactly (start with full C*ps*ps, but cap by embed_dim-1)
+        full_data_dim = self.Cd * ps * ps
+        if data_dim_override is None:
+            self.d_data = (
+                min(full_data_dim, self.embed_dim - 1)
+                if self.embed_dim >= 2
+                else self.embed_dim
+            )
+        else:
+            self.d_data = int(data_dim_override)
+            assert 1 <= self.d_data <= self.embed_dim, "invalid data_dim_override"
+
+        # If we reduced data dimension, use a learnable projection. If equal, start as identity.
+        self.proj_data = nn.Linear(full_data_dim, self.d_data, bias=True)
+        with torch.no_grad():
+            nn.init.zeros_(self.proj_data.bias)
+            # identity-ish init on the first d_data rows
+            eye = torch.eye(full_data_dim, self.d_data)
+            self.proj_data.weight.copy_(eye.t())
+
+        # --- Forcings: also patchify (exact), then compress to remaining dims ---
+        self.unfold_force = nn.Unfold(kernel_size=ps, stride=ps)
+        self.d_force = max(0, self.embed_dim - self.d_data)
+        if self.d_force > 0:
+            self.proj_force = nn.Linear(self.Cf * ps * ps, self.d_force, bias=True)
+            nn.init.xavier_uniform_(self.proj_force.weight)
+            nn.init.zeros_(self.proj_force.bias)
+        else:
+            self.proj_force = None
+
+        # Optional: a light fusion to keep interface identical (no change in dim)
+        self.fusion = (
+            nn.Identity()
+        )  # keep simple; you can swap to nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, data, forcing):
+        """
+        data, forcing: [B,T,C,H,W]
+        returns: x_tokens [B,T,P,embed_dim], f_future [B,1,P,embed_dim] or None
+        """
+        assert data.ndim == 5 and forcing.ndim == 5
+        B, T, Cd, H, W = data.shape
+        _, Tf, Cf, _, _ = forcing.shape
+        assert Cd == self.Cd and Cf == self.Cf
+
+        tokens_per_t = []
+        for t in range(T):
+            # exact patchify
+            u_d = self.unfold_data(data[:, t])  # [B, Cd*ps*ps, P]
+            u_f = self.unfold_force(forcing[:, t])  # [B, Cf*ps*ps, P]
+            P = u_d.shape[-1]
+            # to [B,P,*]
+            u_d = u_d.transpose(1, 2)
+            u_f = u_f.transpose(1, 2)
+
+            # project to token dims
+            td = self.proj_data(u_d)  # [B,P,d_data]
+            if self.d_force > 0:
+                tf = self.proj_force(u_f)  # [B,P,d_force]
+                tok = torch.cat([td, tf], dim=-1)  # [B,P,embed_dim]
+            else:
+                tok = td
+            # optional fusion (kept Identity)
+            tok = self.fusion(tok)
+            tokens_per_t.append(tok)
+
+        x_tokens = torch.stack(tokens_per_t, dim=1)  # [B,T,P,D]
+
+        # future forcing token (kept for API compatibility)
+        f_future = None
+        if Tf > T:
+            u_ff = self.unfold_force(forcing[:, T]).transpose(1, 2)  # [B,P,Cf*ps*ps]
+            if self.d_force > 0:
+                tfut = self.proj_force(u_ff)  # [B,P,d_force]
+                # pad zeros for the data part to keep same D
+                zeros = torch.zeros(
+                    B, u_ff.shape[1], self.d_data, device=u_ff.device, dtype=u_ff.dtype
+                )
+                f_future = torch.cat([zeros, tfut], dim=-1)  # [B,P,D]
+            else:
+                f_future = torch.zeros(
+                    B,
+                    u_ff.shape[1],
+                    self.embed_dim,
+                    device=u_ff.device,
+                    dtype=u_ff.dtype,
+                )
+            f_future = self.fusion(f_future).unsqueeze(1)  # [B,1,P,D]
+
+        return x_tokens, f_future
+
+
+class ProjectToImageFold(nn.Module):
+    """
+    Drop-in head that reconstructs the image from the *data part* of tokens.
+    Uses a Linear "unproj" to C*ps*ps per patch + Fold (exact unpatch).
+    Ignoring the forcing sub-token here is intentional: forcings help forecast
+    via the backbone, not via the pixel reconstruction path.
+    """
+
+    def __init__(
+        self,
+        input_resolution,
+        patch_size,
+        out_channels,
+        d_data,
+        embed_dim,
+        undo_scale: bool = False,
+    ):
+        super().__init__()
+        H, W = input_resolution
+        if isinstance(patch_size, (list, tuple)):
+            ps = int(patch_size[0])
+        else:
+            ps = int(patch_size)
+        self.ps = ps
+        self.input_resolution = (H, W)
+        self.out_channels = int(out_channels)
+        self.embed_dim = int(embed_dim)
+        self.d_data = int(d_data)  # how many leading dims are the data sub-token
+
+        self.norm_final = nn.LayerNorm(self.embed_dim)  # keep your interface
+        self.unproj = nn.Linear(self.d_data, self.out_channels * ps * ps, bias=True)
+        with torch.no_grad():
+            nn.init.zeros_(self.unproj.bias)
+            # start close to identity on the first channels if sizes match
+            eye = torch.eye(self.out_channels * ps * ps, self.d_data)
+            self.unproj.weight.copy_(eye)
+
+        self.undo_scale = bool(undo_scale)
+
+    def forward(self, x_tokens_bt_p_d):
+        """
+        x_tokens: [B,T,P,D] (D==embed_dim). We only use the first d_data dims to reconstruct.
+        returns: [B,T,out_channels,H,W]
+        """
+        B, T, P, D = x_tokens_bt_p_d.shape
+        assert D == self.embed_dim, f"expected token dim {self.embed_dim}, got {D}"
+
+        # layernorm to match your original head contract
+        x = self.norm_final(x_tokens_bt_p_d)
+
+        # split off the data sub-token
+        x_data = x[..., : self.d_data]  # [B,T,P,d_data]
+
+        # unproject per-patch to pixels
+        flat = x_data.reshape(B * T, P, self.d_data)  # [B*T,P,d_data]
+        pix = self.unproj(flat)  # [B*T,P,C*ps*ps]
+        if self.undo_scale:
+            pix = pix / float(
+                self.ps * self.ps
+            )  # undo any patch_area_scale, if you keep it elsewhere
+        pix = pix.transpose(1, 2)  # [B*T,C*ps*ps,P]
+
+        # exact unpatch
+        H, W = self.input_resolution
+        Ho = ceil(H / self.ps) * self.ps
+        Wo = ceil(W / self.ps) * self.ps
+        y = F.fold(pix, output_size=(Ho, Wo), kernel_size=self.ps, stride=self.ps) # [B*T,C,Ho,Wo]
+        y = y.view(B, T, self.out_channels, Ho, Wo)
+        # If you pad elsewhere, your outer forward will depad to real size.
+        return y
+
+
+import torch
+import torch.nn as nn
+
+class DWConvResidual3D(nn.Module):
+    """
+    Drop-in local mixing for token sequences.
+    - Input:  [B, L, C] where L == T * (h*w)
+    - Output: [B, L, C] (same shape)
+    Internally reshapes to [B*T, C, h, w], applies DW/PW convs, and reshapes back.
+    """
+
+    def __init__(self, C: int, grid_hw: tuple[int, int], time_dim: int,
+                 expand: float = 2.0, dilation: int = 1, ls_init: float = 1e-2):
+        super().__init__()
+        self.C = int(C)
+        self.h, self.w = int(grid_hw[0]), int(grid_hw[1])
+        self.T = int(time_dim)                 # history_length (or the T at this stage)
+        hidden = max(1, int(self.C * expand))
+
+        self.dw  = nn.Conv2d(self.C, self.C, kernel_size=3,
+                             padding=dilation, dilation=dilation,
+                             groups=self.C, bias=True)
+        self.pw1 = nn.Conv2d(self.C, hidden, kernel_size=1, bias=True)
+        self.act = nn.GELU()
+        self.pw2 = nn.Conv2d(hidden, self.C, kernel_size=1, bias=True)
+
+        # tiny LayerScale so it's near-identity at init
+        self.ls  = nn.Parameter(torch.ones(self.C) * ls_init)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, L, C]
+        assert x.dim() == 3, f"DWConvResidual3D expects [B,L,C], got {tuple(x.shape)}"
+        B, L, C = x.shape
+        assert C == self.C, f"C={C} != {self.C}"
+        P = self.h * self.w
+        expected_L = self.T * P
+        assert L == expected_L, f"L={L} != T*P={self.T}*{P}={expected_L}"
+
+        # [B, L(=T*P), C] -> [B, T, P, C] -> [B*T, C, h, w]
+        x_btpc = x.view(B, self.T, P, C)
+        x_2d = x_btpc.view(B * self.T, self.h, self.w, C).permute(0, 3, 1, 2).contiguous()
+
+        y = self.dw(x_2d)
+        y = self.pw2(self.act(self.pw1(y)))
+        y = y * self.ls.view(1, -1, 1, 1) + x_2d
+
+        # back to [B, L, C]
+        y_btpc = y.permute(0, 2, 3, 1).contiguous().view(B, self.T, P, C)
+        y_seq  = y_btpc.view(B, L, C)
+        return y_seq
+
+class FiLM1D(nn.Module):
+    """
+    Simple FiLM (Feature-wise Linear Modulation) on tokens.
+    x_data, x_cond: [B,T,P,C]. Applies (1+gamma) * x_data + beta, where gamma,beta are linear projections of x_cond.
+    """
+    def __init__(self, C: int):
+        super().__init__()
+        self.to_gamma = nn.Linear(C, C)
+        self.to_beta  = nn.Linear(C, C)
+
+        nn.init.zeros_(self.to_gamma.weight); nn.init.zeros_(self.to_gamma.bias)
+        nn.init.zeros_(self.to_beta.weight);  nn.init.zeros_(self.to_beta.bias)
+
+    def forward(self, x_data: torch.Tensor, x_cond: torch.Tensor) -> torch.Tensor:
+        gamma = self.to_gamma(x_cond)
+        beta  = self.to_beta(x_cond)
+        return (1.0 + gamma) * x_data + beta
 
 class EncoderBlock(nn.Module):
     def __init__(
@@ -366,7 +640,7 @@ class OverlapPatchEmbed(nn.Module):
 
         self.fuse = nn.Linear(2 * embed_dim, embed_dim)
 
-        self.patch_area_scale = math.sqrt(self.patch_size * self.patch_size)
+        self.patch_area_scale = sqrt(self.patch_size * self.patch_size)
 
     def _proj(self, x, is_data):  # x: [B, T, C, H, W] -> [B, T, P, D]
         B, T, C, H, W = x.shape
