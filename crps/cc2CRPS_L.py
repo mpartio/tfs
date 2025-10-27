@@ -149,6 +149,7 @@ class cc2CRPSModel(L.LightningModule):
 
         # Read input_resolution from data
         self.input_resolution = self.trainer.datamodule.input_resolution
+        rank_zero_info(f"Data resolution is {self.input_resolution}")
 
         self._build_model()
 
@@ -183,6 +184,11 @@ class cc2CRPSModel(L.LightningModule):
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
             from pgu_ens.loss import loss_fn
+        elif self.hparams.model_family == "swinu":
+            from swinu.cc2 import cc2CRPS
+            from swinu.loss import LOSS_FUNCTIONS
+            from swinu.util import roll_forecast
+            loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
 
         self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast
