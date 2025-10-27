@@ -238,128 +238,138 @@ def plot_psd(
     sx_o = obs_psd["sx"].to("cpu")
     psd_o = obs_psd["psd"].to("cpu")
 
-    # ---------------- Absolute PSD ----------------
-    init_plot()
-    plt.title("Power Spectral Density", fontsize=14)
-    plt.grid(True, alpha=0.7)
+    def absolute_psd():
 
-    # Copy to cpu
-    for i in range(len(run_name)):
-        pred_psds[i]["sx"] = pred_psds[i]["sx"].cpu()
-        pred_psds[i]["psd"] = pred_psds[i]["psd"].cpu()
-        pred_psds_r1[i]["sx"] = pred_psds_r1[i]["sx"].cpu()
-        pred_psds_r1[i]["psd"] = pred_psds_r1[i]["psd"].cpu()
+        # ---------------- Absolute PSD ----------------
+        init_plot()
+        plt.title("Power Spectral Density", fontsize=14)
+        plt.grid(True, alpha=0.7)
 
-    for i in range(len(run_name)):
-        sx = pred_psds[i]["sx"]
-        psd = pred_psds[i]["psd"]
-        if sx[0] > sx[-1]:
-            sx = torch.flip(sx, dims=[0])
-            psd = torch.flip(psd, dims=[0])
-        psd_interp = interp1d_torch(sx_o, sx, psd)
-        plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
+        # Copy to cpu
+        for i in range(len(run_name)):
+            pred_psds[i]["sx"] = pred_psds[i]["sx"].cpu()
+            pred_psds[i]["psd"] = pred_psds[i]["psd"].cpu()
+            pred_psds_r1[i]["sx"] = pred_psds_r1[i]["sx"].cpu()
+            pred_psds_r1[i]["psd"] = pred_psds_r1[i]["psd"].cpu()
 
-    ax = plt.gca()
-    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
-    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
-    ax.invert_xaxis()
-    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
-    plt.legend(fontsize=10)
-    set_x_axis(ax, sx_o)
+        for i in range(len(run_name)):
+            sx = pred_psds[i]["sx"]
+            psd = pred_psds[i]["psd"]
+            if sx[0] > sx[-1]:
+                sx = torch.flip(sx, dims=[0])
+                psd = torch.flip(psd, dims=[0])
+            psd_interp = interp1d_torch(sx_o, sx, psd)
+            plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
 
-    filename = f"{save_path}/figures/psd.png"
-    plt.savefig(filename, dpi=200)
-    print(f"Plot saved to {filename}")
-    plt.close()
+        ax = plt.gca()
+        ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+        ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
+        ax.invert_xaxis()
+        ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+        plt.legend(fontsize=10)
+        set_x_axis(ax, sx_o)
 
-    # ---------------- Anomaly vs Observed ----------------
-    plt.figure(figsize=(8, 5))
-    plt.title("PSD Anomaly vs Observed", fontsize=14)
-    plt.xlabel("Horizontal Scale (km)", fontsize=12)
-    plt.ylabel("log10(pred/obs)", fontsize=12)
-    plt.grid(True, alpha=0.7)
-    plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
+        filename = f"{save_path}/figures/psd.png"
+        plt.savefig(filename, dpi=200)
+        print(f"Plot saved to {filename}")
+        plt.close()
 
-    for i in range(len(run_name)):
-        sx = pred_psds[i]["sx"]
-        psd = pred_psds[i]["psd"]
-        if sx[0] > sx[-1]:
-            sx = torch.flip(sx, dims=[0])
-            psd = torch.flip(psd, dims=[0])
-        psd_interp = interp1d_torch(sx_o, sx, psd)
-        anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
-        plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+    def absolute_1h_psd():
+        # ---------------- Rollout-1 Absolute ----------------
+        init_plot()
+        plt.title("Power Spectral Density Rollout 1", fontsize=14)
+        plt.grid(True, alpha=0.7)
 
-    ax = plt.gca()
-    ax.invert_xaxis()
-    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
-    plt.legend(fontsize=10, ncol=2)
+        for i in range(len(run_name)):
+            sx = pred_psds_r1[i]["sx"].cpu()
+            psd = pred_psds_r1[i]["psd"].cpu()
+            if sx[0] > sx[-1]:
+                sx = torch.flip(sx, dims=[0])
+                psd = torch.flip(psd, dims=[0])
+            psd_interp = interp1d_torch(sx_o, sx, psd)
+            plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
 
-    set_x_axis(ax, sx_o)
+        ax = plt.gca()
+        ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
+        ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
+        ax.invert_xaxis()
+        ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+        plt.legend(fontsize=10)
 
-    filename = f"{save_path}/figures/psd_anomaly.png"
-    plt.savefig(filename, dpi=200)
-    print(f"Plot saved to {filename}")
-    plt.close()
-    plt.clf()
+        set_x_axis(ax, sx_o)
 
-    # ---------------- Rollout-1 Absolute ----------------
-    init_plot()
-    plt.title("Power Spectral Density Rollout 1", fontsize=14)
-    plt.grid(True, alpha=0.7)
+        filename = f"{save_path}/figures/psd_r1.png"
+        plt.savefig(filename, dpi=200)
+        print(f"Plot saved to {filename}")
+        plt.close()
+        plt.clf()
 
-    for i in range(len(run_name)):
-        sx = pred_psds_r1[i]["sx"]
-        psd = pred_psds_r1[i]["psd"]
-        if sx[0] > sx[-1]:
-            sx = torch.flip(sx, dims=[0])
-            psd = torch.flip(psd, dims=[0])
-        psd_interp = interp1d_torch(sx_o, sx, psd)
-        plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
 
-    ax = plt.gca()
-    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
-    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs="auto", numticks=10))
-    ax.invert_xaxis()
-    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
-    plt.legend(fontsize=10)
+    def anomaly_psd():
+        # ---------------- Anomaly vs Observed ----------------
+        plt.figure(figsize=(8, 5))
+        plt.title("PSD Anomaly vs Observed", fontsize=14)
+        plt.xlabel("Horizontal Scale (km)", fontsize=12)
+        plt.ylabel("log10(pred/obs)", fontsize=12)
+        plt.grid(True, alpha=0.7)
+        plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
 
-    set_x_axis(ax, sx_o)
+        for i in range(len(run_name)):
+            sx = pred_psds[i]["sx"].cpu()
+            psd = pred_psds[i]["psd"].cpu()
+            if sx[0] > sx[-1]:
+                sx = torch.flip(sx, dims=[0])
+                psd = torch.flip(psd, dims=[0])
+            psd_interp = interp1d_torch(sx_o, sx, psd)
+            anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
+            plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
 
-    filename = f"{save_path}/figures/psd_r1.png"
-    plt.savefig(filename, dpi=200)
-    print(f"Plot saved to {filename}")
-    plt.close()
-    plt.clf()
+        ax = plt.gca()
+        ax.invert_xaxis()
+        ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+        plt.legend(fontsize=10, ncol=2)
 
-    # ---------------- Rollout-1 Anomaly ----------------
-    plt.figure(figsize=(8, 5))
-    plt.title("PSD Anomaly vs Observed Rollout 1", fontsize=14)
-    plt.xlabel("Horizontal Scale (km)", fontsize=12)
-    plt.ylabel("log10(pred/obs)", fontsize=12)
-    plt.grid(True, alpha=0.7)
-    # Horizontal reference line at 0 (observed spectrum)
-    plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
+        set_x_axis(ax, sx_o)
 
-    for i in range(len(run_name)):
-        sx = pred_psds_r1[i]["sx"]
-        psd = pred_psds_r1[i]["psd"]
-        if sx[0] > sx[-1]:
-            sx = torch.flip(sx, dims=[0])
-            psd = torch.flip(psd, dims=[0])
-        psd_interp = interp1d_torch(sx_o, sx, psd)
-        anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
-        plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+        filename = f"{save_path}/figures/psd_anomaly.png"
+        plt.savefig(filename, dpi=200)
+        print(f"Plot saved to {filename}")
+        plt.close()
+        plt.clf()
 
-    ax = plt.gca()
-    ax.invert_xaxis()
-    ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
-    plt.legend(fontsize=10, ncol=2)
+    def anomaly_1h_psd():
+        # ---------------- Rollout-1 Anomaly ----------------
+        plt.figure(figsize=(8, 5))
+        plt.title("PSD Anomaly vs Observed Rollout 1", fontsize=14)
+        plt.xlabel("Horizontal Scale (km)", fontsize=12)
+        plt.ylabel("log10(pred/obs)", fontsize=12)
+        plt.grid(True, alpha=0.7)
+        # Horizontal reference line at 0 (observed spectrum)
+        plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
 
-    set_x_axis(ax, sx_o)
+        for i in range(len(run_name)):
+            sx = pred_psds_r1[i]["sx"].cpu()
+            psd = pred_psds_r1[i]["psd"].cpu()
+            if sx[0] > sx[-1]:
+                sx = torch.flip(sx, dims=[0]).cpu()
+                psd = torch.flip(psd, dims=[0]).cpu()
+            psd_interp = interp1d_torch(sx_o, sx, psd)
+            anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
+            plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
 
-    filename = f"{save_path}/figures/psd_r1_anomaly.png"
-    plt.savefig(filename, dpi=200)
-    print(f"Plot saved to {filename}")
-    plt.close()
-    plt.clf()
+        ax = plt.gca()
+        ax.invert_xaxis()
+        ax.set_xlim(float(sx_o.max()), float(sx_o.min()))
+        plt.legend(fontsize=10, ncol=2)
+
+        set_x_axis(ax, sx_o)
+
+        filename = f"{save_path}/figures/psd_r1_anomaly.png"
+        plt.savefig(filename, dpi=200)
+        print(f"Plot saved to {filename}")
+        plt.close()
+        plt.clf()
+
+
+    anomaly_psd()
+    anomaly_1h_psd()
