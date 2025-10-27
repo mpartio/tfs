@@ -654,6 +654,9 @@ class cc2DataModule(L.LightningDataModule):
             self.ds_train = Subset(ds_full, train_indices)
             self.ds_val = Subset(ds_full, val_indices)
 
+        if stage == "validate":
+            self.ds_val = Subset(ds_full, val_indices)
+
         # stage='test' or stage=None will setup test
         if stage == "test" or stage is None:
             self.ds_test = Subset(ds_full, test_indices)
@@ -704,6 +707,9 @@ class cc2DataModule(L.LightningDataModule):
         return self._get_dataloader(self.ds_train, shuffle=True, stage="fit")
 
     def val_dataloader(self):
+        if self.ds_val is None:
+            # ensure validation split exists when validate-only runs
+            self.setup(stage="validate")
         return self._get_dataloader(self.ds_val, shuffle=False, stage="fit")
 
     def test_dataloader(self):
