@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from lightning.pytorch.callbacks import ModelCheckpoint
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
 from torch.optim.lr_scheduler import (
     ChainedScheduler,
     LinearLR,
@@ -468,3 +468,11 @@ class cc2CRPSModel(L.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
+
+    def on_save_checkpoint(self, checkpoint):
+        dm = self.trainer.datamodule
+        if dm and dm._full_dataset and hasattr(dm._full_dataset, "data"):
+            stats = dm._full_dataset.data.statistics
+            checkpoint["data_statistics"] = stats
+        else:
+            rank_zero_warn("Statistics not saved to checkpoint")

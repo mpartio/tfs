@@ -8,7 +8,7 @@ import lightning as L
 import numpy as np
 from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
 
 
 def get_default_normalization_methods(custom_methods):
@@ -59,7 +59,7 @@ def get_default_normalization_methods(custom_methods):
     if custom_methods is not None:
         default_methods.update(custom_methods)
 
-    rank_zero_info(f"normalization methods: {default_methods}")
+    # rank_zero_info(f"normalization methods: {default_methods}")
 
     return default_methods
 
@@ -156,6 +156,7 @@ class AnemoiDataset(Dataset):
         disable_normalization: bool,
         return_metadata: bool = False,
         data_options: dict[str, str | int | list] = {},
+        statistics: dict | None = {},
     ):
         self.data = open_dataset(zarr_path, **data_options)
         self.group_size = group_size
@@ -197,15 +198,25 @@ class AnemoiDataset(Dataset):
         self.disable_normalization = disable_normalization
         self.data_options = data_options
 
+        self.input_resolution = self.data.field_shape  # H, W
+        self.return_metadata = return_metadata
+        self.dates = self.data.dates
+
+        if statistics:
+            self.statistics = statistics
+            rank_zero_info("Using statistics from checkpoint")
+        else:
+            self.statistics = self.data.statistics
+            rank_zero_info("Using statistics from data")
+
+        assert self.statistics, f"Statistics is: {self.statistics}"
+
         if self.disable_normalization is False:
             self.normalization_methods = normalization_methods
             assert self.normalization_methods is not None
 
             self._setup_normalization()
 
-        self.input_resolution = self.data.field_shape  # H, W
-        self.return_metadata = return_metadata
-        self.dates = self.data.dates
 
     def _setup_normalization(self):
         # Pre-compute combined indexes and params for dynamic data
@@ -291,28 +302,28 @@ class AnemoiDataset(Dataset):
         self.total_channels = len(self.all_combined_indexes)
 
         # Pre-reshape statistics for all combined channels (dynamic + static)
-        # Assuming self.data.statistics also contains stats for static forcings if registered
+        # Assuming self.statistics also contains stats for static forcings if registered
         self.mins = torch.tensor(
-            self.data.statistics["minimum"][self.all_combined_indexes].reshape(
+            self.statistics["minimum"][self.all_combined_indexes].reshape(
                 1, self.total_channels, 1, 1
             ),
             dtype=dtype,
         )
 
         self.maxs = torch.tensor(
-            self.data.statistics["maximum"][self.all_combined_indexes].reshape(
+            self.statistics["maximum"][self.all_combined_indexes].reshape(
                 1, self.total_channels, 1, 1
             ),
             dtype=dtype,
         )
         self.means = torch.tensor(
-            self.data.statistics["mean"][self.all_combined_indexes].reshape(
+            self.statistics["mean"][self.all_combined_indexes].reshape(
                 1, self.total_channels, 1, 1
             ),
             dtype=dtype,
         )
         self.stds = torch.tensor(
-            self.data.statistics["stdev"][self.all_combined_indexes].reshape(
+            self.statistics["stdev"][self.all_combined_indexes].reshape(
                 1, self.total_channels, 1, 1
             ),
             dtype=dtype,
@@ -529,6 +540,7 @@ class cc2DataModule(L.LightningDataModule):
         self.ds_val: Subset | None = None
         self.ds_test: Subset | None = None
         self._full_dataset: AnemoiDataset | None = None  # Cache the full dataset
+        self._forced_statistics: dict | None = None
 
     @property
     def input_resolution(self) -> tuple[int, int]:
@@ -537,6 +549,9 @@ class cc2DataModule(L.LightningDataModule):
             # Trigger dataset creation if not already done
             self._get_or_create_full_dataset()
         return self._full_dataset.input_resolution
+
+    def inject_statistics(self, stats: dict | None):
+        self._forced_statistics = stats
 
     def _get_or_create_full_dataset(self) -> AnemoiDataset:
         if self._full_dataset is None:
@@ -560,7 +575,9 @@ class cc2DataModule(L.LightningDataModule):
                 normalization_methods=norm_methods,
                 disable_normalization=self.hparams.disable_normalization,
                 data_options=self.hparams.data_options,
+                statistics=self._forced_statistics,
             )
+
         return self._full_dataset
 
     def setup(self, stage: str | None = None):

@@ -112,6 +112,15 @@ def setup_mlflow_logger(trainer):
             rank_zero_info(f"MLFlowLogger run_name set to: {run_name}")
 
 
+def _load_stats(ckpt_path):
+    if not ckpt_path:
+        return None
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    return ckpt.get("data_statistics") or ckpt.get("hyper_parameters", {}).get(
+        "data_statistics"
+    )
+
+
 class cc2trainer(LightningCLI):
     def before_instantiate_classes(self):
         super().before_instantiate_classes()
@@ -138,6 +147,8 @@ class cc2trainer(LightningCLI):
             os.environ["CC2_RUN_DIR"] = run_dir
 
     def before_fit(self):
+        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("fit")))
+
         if self.trainer.global_rank == 0:
             setup_mlflow_logger(self.trainer)
 
@@ -159,6 +170,19 @@ class cc2trainer(LightningCLI):
             rank_zero_info(f"Run name: {os.environ['CC2_RUN_NAME']}")
             rank_zero_info(f"Version: {os.environ['CC2_RUN_NUMBER']}")
             rank_zero_info(f"Versioned directory: {os.environ['CC2_RUN_DIR']}")
+
+    def _stage_ckpt(self, stage):
+        cfg = getattr(self.config, stage, None)
+        return getattr(cfg, "ckpt_path", None) if cfg else None
+
+    def before_validate(self):
+        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("validate")))
+
+    def before_test(self):
+        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("test")))
+
+    def before_predict(self):
+        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("predict")))
 
 
 torch.set_float32_matmul_precision("high")
