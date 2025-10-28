@@ -493,8 +493,6 @@ class cc2DataModule(L.LightningDataModule):
         forcing_params: tuple[str, ...],
         static_forcing_path: str | None = None,
         static_forcing_params: list[str] = [],
-        history_length: int = None,
-        rollout_length: int = None,
         val_split: float = 0.1,
         test_split: float = 0.0,
         train_start: str | None = None,
@@ -510,31 +508,11 @@ class cc2DataModule(L.LightningDataModule):
         normalization: dict[str, str] | None = None,
         disable_normalization: bool = False,
         apply_smoothing: bool = False,
-        input_resolution: tuple[int, int] | None = None,
         data_options: dict[str, str | int | list] = {},
     ):
         super().__init__()
 
-        if input_resolution is not None:
-            import warnings
-
-            warnings.warn(
-                "'input_resolution' parameter for dataloader is deprecated and will be removed in a future version.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        if rollout_length is not None:
-            import warnings
-
-            warnings.warn(
-                "'rollout_length' parameter for dataloader is deprecated and will be removed in a future version.",
-                FutureWarning,
-                stacklevel=2,
-            )
-
-        self.save_hyperparameters(
-            ignore=["history_length", "rollout_length", "input_resolution"]
-        )
+        self.save_hyperparameters()
 
         self.ds_train: Subset | None = None
         self.ds_val: Subset | None = None
