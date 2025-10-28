@@ -76,33 +76,33 @@ def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
 
 @torch.no_grad()
 def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return peak_signal_noise_ratio(y_pred, y_true, data_range=2.0).item()
+    psnr = peak_signal_noise_ratio(y_pred, y_true, data_range=2.0)
+    return (1 - torch.exp(-psnr / 20)).item()
 
 
 @torch.no_grad()
 def _rase(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return relative_average_spectral_error(
-        _ensure_bchw(y_pred), _ensure_bchw(y_true)
-    ).item()
+    rase = relative_average_spectral_error(_ensure_bchw(y_pred), _ensure_bchw(y_true))
+    return (torch.exp(-rase / 15)).item()
 
 
 @torch.no_grad()
 def _scc(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return spatial_correlation_coefficient(y_pred, y_true).item()
+    return spatial_correlation_coefficient(_ensure_bchw(y_pred), _ensure_bchw(y_true)).item()
 
 
 @torch.no_grad()
 def _tv(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return (
-        total_variation(_ensure_bchw(y_true)) - total_variation(_ensure_bchw(y_pred))
-    ).item()
-
+    tv_error = total_variation(_ensure_bchw(y_true - y_pred)).item()
+    return 1 / (1 + tv_error)
 
 @torch.no_grad()
 def _wasserstein(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return wasserstein_distance(
+    wass = wasserstein_distance(
         y_pred.cpu().flatten().numpy(), y_true.cpu().flatten().numpy()
     )
+
+    return 1 / (1 + wass)
 
 
 @torch.no_grad()
@@ -383,8 +383,8 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "psnr": float(sum(psnr_list) / len(psnr_list)),
         "rase": float(sum(rase_list) / len(rase_list)),
         "scc": float(sum(scc_list) / len(scc_list)),
-        "tv": float(sum(tv_list) / len(tv_list)),
-        "wasserstein": float(sum(wass_list) / len(wass_list)),
+        "tv_of_err": float(sum(tv_list) / len(tv_list)),
+        "wasserstein_distance": float(sum(wass_list) / len(wass_list)),
     }
 
     prev_true = x_hist[:, -1]  # [B,C,H,W]
