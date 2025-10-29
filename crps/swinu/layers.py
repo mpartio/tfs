@@ -6,6 +6,21 @@ from math import sqrt, ceil
 from timm.models.layers import DropPath
 
 
+def make_window_key_mask(H, W, Hpad, Wpad, ws, device, repeat_factor):
+    # 1 inside real image, 0 in padded area
+    base = torch.zeros((Hpad, Wpad), dtype=torch.bool, device=device)
+    base[:H, :W] = False  # valid -> False (not masked)
+    base[H:, :] = True  # pad -> True
+    base[:, W:] = True
+    nH, nW = Hpad // ws, Wpad // ws
+    mask = (
+        base.view(nH, ws, nW, ws).permute(0, 2, 1, 3).reshape(nH * nW, ws * ws)
+    )  # [nWin, L]
+    mask = mask.unsqueeze(0).repeat(repeat_factor, 1, 1)  # [B*T, nWin, L]
+    mask = mask.reshape(-1, ws * ws)  # [Bwin, L]
+    return mask
+
+
 def get_padded_size(H, W, patch_size, num_merges=1):
     # Calculate required factor for divisibility
     required_factor = patch_size * (2**num_merges)
@@ -83,12 +98,12 @@ def depad_tensor(tensor, padding_info):
 class PatchEmbedLossless(nn.Module):
     def __init__(
         self,
-        input_resolution,  # (H, W)
-        patch_size,  # int or (ph,pw)
-        data_channels,  # C_data (e.g., 1)
-        forcing_channels,  # C_forc (e.g., 32)
-        embed_dim,  # D (e.g., 128)
-        data_dim_override=None,  # optionally force d_data; default = C_data*ps*ps (clipped to embed_dim-1)
+        input_resolution,
+        patch_size,
+        data_channels,
+        forcing_channels,
+        embed_dim,
+        data_dim_override=None,
     ):
         super().__init__()
         assert type(input_resolution) in (list, tuple)
@@ -110,7 +125,6 @@ class PatchEmbedLossless(nn.Module):
         self.Cf = int(forcing_channels)
         self.embed_dim = int(embed_dim)
 
-        # --- Lossless (exact) patchify for data ---
         self.unfold_data = nn.Unfold(kernel_size=ps, stride=ps)  # exact
 
         # Choose d_data so we can reconstruct data exactly (start with full C*ps*ps, but cap by embed_dim-1)
@@ -206,13 +220,6 @@ class PatchEmbedLossless(nn.Module):
 
 
 class ProjectToImageFold(nn.Module):
-    """
-    Drop-in head that reconstructs the image from the *data part* of tokens.
-    Uses a Linear "unproj" to C*ps*ps per patch + Fold (exact unpatch).
-    Ignoring the forcing sub-token here is intentional: forcings help forecast
-    via the backbone, not via the pixel reconstruction path.
-    """
-
     def __init__(
         self,
         input_resolution,
@@ -343,7 +350,6 @@ class DWConvResidual3D(nn.Module):
         return y_seq
 
 
-
 class PatchExpand(nn.Module):
     def __init__(self, input_dim, output_dim, scale_factor=2):
         super().__init__()
@@ -369,28 +375,6 @@ class PatchExpand(nn.Module):
         x = rearrange(x, "b h w c -> b (h w) c")
 
         return x, H * self.scale_factor, W * self.scale_factor
-
-
-class SkipConnection(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        # Main feature transform
-        self.transform = nn.Sequential(
-            nn.LayerNorm(dim), nn.Linear(dim, dim), nn.GELU(), nn.Linear(dim, dim)
-        )
-
-    def forward(self, x_encoder, x_decoder):
-        # x_encoder: [B, L, C]
-        # x_decoder: [B, L, C]
-        # noise_embedding: [B, noise_dim]
-
-        # Transform encoder features
-        x_skip = self.transform(x_encoder)  # [B, L, C]
-
-        # Combine
-        x_combined = x_skip
-
-        return x_decoder + x_combined
 
 
 class PatchMerge(nn.Module):
@@ -440,7 +424,6 @@ class PatchMerge(nn.Module):
         return x
 
 
-
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout=0.0):
         super().__init__()
@@ -484,12 +467,14 @@ class SwinEncoderBlock(nn.Module):
         assert 0 <= self.shift_size < self.window_size, "shift must be < window_size"
 
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(
+
+        self.attn = WindowAttentionRPB(
             embed_dim=dim,
             num_heads=num_heads,
             dropout=attn_drop,
-            batch_first=True,
             bias=qkv_bias,
+            batch_first=True,
+            window_size=window_size,
         )
 
         self.drop_path = (
@@ -558,31 +543,43 @@ class SwinEncoderBlock(nn.Module):
         ws = self.window_size
         pad_h = (ws - (H % ws)) % ws
         pad_w = (ws - (W % ws)) % ws
+
         if pad_h or pad_w:
-            y = F.pad(y, (0, 0, 0, pad_w, 0, pad_h))  # pad W then H
-            Hpad, Wpad = H + pad_h, W + pad_w
-        else:
-            Hpad, Wpad = H, W
+            y = F.pad(y, (0, 0, 0, pad_w, 0, pad_h))
+        Hpad, Wpad = H + pad_h, W + pad_w
+        nH, nW = Hpad // ws, Wpad // ws
+        Bmul = B * T
+        Ppad = Hpad * Wpad
 
-        # partition windows -> [Bwin, ws*ws, C]
-        yw, nH, nW = self._partition_windows(y)
+        # build per-window key mask (no cost when no pad)
+        key_mask = None
+        if (Hpad != H) or (Wpad != W):
+            key_mask = make_window_key_mask(
+                H, W, Hpad, Wpad, ws, y.device, repeat_factor=Bmul
+            )  # [Bwin, L]
 
-        # local attention per window
-        # attn expects [Bwin, L, C] and returns same (batch_first=True)
-        attn_out, _ = self.attn(yw, yw, yw)
+        # partition -> [Bwin, L, C]
+        yw = (
+            y.view(Bmul, nH, ws, nW, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(Bmul * nH * nW, ws * ws, C)
+        )
 
-        # merge windows -> [B*T, Hpad, Wpad, C]
-        y = self._reverse_windows(attn_out, nH, nW)
+        # self-attention with RPB + mask
+        attn_out, _ = self.attn(yw, key_padding_mask=key_mask)  # drop-in replacement
 
-        # remove pad
+        # reverse windows -> [B*T, Hpad, Wpad, C]
+        y = (
+            attn_out.view(Bmul, nH, nW, ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(Bmul, Hpad, Wpad, C)
+        )
+
+        # unpad, reverse shift, reshape back (as you already do)
         if (Hpad != H) or (Wpad != W):
             y = y[:, :H, :W, :]
-
-        # reverse cyclic shift
         if self.shift_size > 0:
             y = torch.roll(y, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-
-        # [B*T, H, W, C] -> [B, T, P, C] -> [B, T*P, C]
         y = y.reshape(B, T, P, C).reshape(B, T * P, C)
 
         # residual + MLP
@@ -619,29 +616,31 @@ class SwinDecoderBlock(nn.Module):
 
         assert 0 <= self.shift_size < self.window_size, "shift must be < window_size"
 
-        # --- 1. Windowed Self-Attention ---
         self.norm1 = nn.LayerNorm(dim)
-        self.self_attn = nn.MultiheadAttention(
+        self.self_attn = WindowAttentionRPB(
             embed_dim=dim,
             num_heads=num_heads,
             dropout=attn_drop,
             bias=qkv_bias,
             batch_first=True,
+            window_size=window_size,
         )
+
         self.drop_path1 = (
             DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
         )
         self.gamma_attn1 = nn.Parameter(torch.ones(1))
 
-        # --- 2. Windowed Cross-Attention ---
         self.norm2 = nn.LayerNorm(dim)
-        self.norm_context = nn.LayerNorm(dim)  # Norm for the context (skip connection)
-        self.cross_attn = nn.MultiheadAttention(
+        self.norm_context = nn.LayerNorm(dim)
+
+        self.cross_attn = WindowAttentionRPB(
             embed_dim=dim,
             num_heads=num_heads,
             dropout=attn_drop,
             bias=qkv_bias,
             batch_first=True,
+            window_size=window_size,
         )
         self.drop_path2 = (
             DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
@@ -657,10 +656,6 @@ class SwinDecoderBlock(nn.Module):
         self.gamma_mlp = nn.Parameter(torch.ones(1) * 0.1)
 
     def _partition_windows(self, x4):
-        """
-        x4: [B*, Hpad, Wpad, C]
-        returns windows: [Bwin, Ws*Ws, C], plus nH, nW to reverse later
-        """
         B_, H, W, C = x4.shape
         ws = self.window_size
         assert (
@@ -677,9 +672,6 @@ class SwinDecoderBlock(nn.Module):
         return xw, nH, nW
 
     def _reverse_windows(self, xw, nH, nW):
-        """
-        xw: [Bwin, Ws*Ws, C] -> [B*, Hpad, Wpad, C]
-        """
         ws = self.window_size
         Bwin, L, C = xw.shape
         B_ = Bwin // (nH * nW)
@@ -689,67 +681,67 @@ class SwinDecoderBlock(nn.Module):
         return x4
 
     def _window_attn(self, x, attn_layer, kv_in=None):
-        """
-        Helper function to run windowed attention (self or cross).
-        x: [B, N, C] (N = T*P)
-        attn_layer: The nn.MultiheadAttention layer to use
-        kv_in: [B, N, C] (optional) context for cross-attention
-        """
         B, N, C = x.shape
         H, W, T, P = self.H, self.W, self.T, self.P
+        ws = self.window_size
 
-        # Determine if this is self-attention or cross-attention
-        is_cross_attn = kv_in is not None
-        if is_cross_attn:
-            # kv_in is the context
-            kv = kv_in
-        else:
-            # kv_in is None, so it's self-attention
-            kv = x  # Self-attention
-
-        # Reshape Query and Key/Value
-        # [B, T*P, C] -> [B, T, P, C] -> [B*T, P, C] -> [B*T, H, W, C]
+        # reshape Q and KV to [B*T, H, W, C]
         q = x.view(B, T, P, C).reshape(B * T, P, C).view(B * T, H, W, C)
-        kv = kv.view(B, T, P, C).reshape(B * T, P, C).view(B * T, H, W, C)
+        kv = (
+            q
+            if kv_in is None
+            else kv_in.view(B, T, P, C).reshape(B * T, P, C).view(B * T, H, W, C)
+        )
 
-        # Cyclic shift
+        # cyclic shift
         if self.shift_size > 0:
             q = torch.roll(q, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             kv = torch.roll(
                 kv, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
             )
 
-        # Pad H/W
-        ws = self.window_size
+        # pad
         pad_h = (ws - (H % ws)) % ws
         pad_w = (ws - (W % ws)) % ws
         if pad_h or pad_w:
             q = F.pad(q, (0, 0, 0, pad_w, 0, pad_h))
             kv = F.pad(kv, (0, 0, 0, pad_w, 0, pad_h))
-            Hpad, Wpad = H + pad_h, W + pad_w
-        else:
-            Hpad, Wpad = H, W
+        Hpad, Wpad = H + pad_h, W + pad_w
+        nH, nW = Hpad // ws, Wpad // ws
+        Bmul = B * T
 
-        # Partition windows -> [Bwin, ws*ws, C]
-        q_win, nH, nW = self._partition_windows(q)
-        kv_win, _, _ = self._partition_windows(kv)  # nH, nW are same
+        # build mask (shared for self/cross; it applies to keys)
+        key_mask = None
+        if (Hpad != H) or (Wpad != W):
+            key_mask = make_window_key_mask(
+                H, W, Hpad, Wpad, ws, q.device, repeat_factor=Bmul
+            )
 
-        # Attention
-        # self.attn(query, key, value)
-        attn_out, _ = attn_layer(q_win, kv_win, kv_win)
+        # windows -> [Bwin, L, C]
+        q_win = (
+            q.view(Bmul, nH, ws, nW, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(Bmul * nH * nW, ws * ws, C)
+        )
+        kv_win = (
+            kv.view(Bmul, nH, ws, nW, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(Bmul * nH * nW, ws * ws, C)
+        )
 
-        # Merge windows -> [B*T, Hpad, Wpad, C]
-        y = self._reverse_windows(attn_out, nH, nW)
+        # RPB attention (+mask)
+        out, _ = attn_layer(q_win, kv_win, kv_win, key_padding_mask=key_mask)  # drop-in
 
-        # Remove pad
+        # merge, unpad, reverse shift, reshape back
+        y = (
+            out.view(Bmul, nH, nW, ws, ws, C)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(Bmul, Hpad, Wpad, C)
+        )
         if (Hpad != H) or (Wpad != W):
             y = y[:, :H, :W, :]
-
-        # Reverse cyclic shift
         if self.shift_size > 0:
             y = torch.roll(y, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-
-        # [B*T, H, W, C] -> [B, T, P, C] -> [B, T*P, C]
         y = y.reshape(B, T, P, C).reshape(B, T * P, C)
         return y
 
@@ -780,3 +772,103 @@ class SwinDecoderBlock(nn.Module):
         x = x_res + self.drop_path3(self.gamma_mlp * y_m)
 
         return x
+
+
+class WindowAttentionRPB(nn.Module):
+    """
+    Self/Cross window attention with learnable Relative Position Bias (RPB)
+    and optional per-window key mask for padded tokens.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float,
+        window_size: int,
+        bias: bool,
+        batch_first: bool,
+    ):
+        super().__init__()
+        assert batch_first
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.head_dim = embed_dim // num_heads
+        assert embed_dim % num_heads == 0
+        self.scale = self.head_dim**-0.5
+
+        # qkv projections
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj_drop = nn.Dropout(dropout)
+
+        # --- Relative Position Bias table ---
+        ws = window_size
+        self.bias_table = nn.Parameter(
+            torch.zeros((2 * ws - 1) * (2 * ws - 1), num_heads)
+        )
+        coords = torch.stack(
+            torch.meshgrid(torch.arange(ws), torch.arange(ws), indexing="ij")
+        )  # [2, ws, ws]
+        coords_flat = coords.flatten(1)  # [2, ws*ws]
+        rel = coords_flat[:, :, None] - coords_flat[:, None, :]  # [2, L, L]
+        rel = rel.permute(1, 2, 0) + ws - 1  # [L, L, 2]
+        rel_idx = rel[..., 0] * (2 * ws - 1) + rel[..., 1]  # [L, L]
+        self.register_buffer("rel_index", rel_idx, persistent=False)
+        nn.init.trunc_normal_(self.bias_table, std=0.02)
+
+    def forward(
+        self,
+        query,
+        key=None,
+        value=None,
+        key_padding_mask=None,
+        need_weights=False,
+        attn_mask=None,
+    ):
+        if key is None:
+            key = query
+        if value is None:
+            value = key
+        B, L, C = query.shape
+        H = self.num_heads
+        D = self.head_dim
+
+        q = self.q_proj(query).reshape(B, L, H, D).transpose(1, 2)  # [B, H, L, D]
+        k = self.k_proj(key).reshape(B, L, H, D).transpose(1, 2)
+        v = self.v_proj(value).reshape(B, L, H, D).transpose(1, 2)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, H, L, L]
+
+        ws = self.window_size
+        Lr = ws * ws
+        if L == Lr:  # Only add bias if this is windowed attention
+            bias = (
+                self.bias_table[self.rel_index.reshape(-1)]
+                .reshape(Lr, Lr, H)
+                .permute(2, 0, 1)
+            )
+            attn = attn + bias.unsqueeze(0)
+
+        if key_padding_mask is not None:
+            attn = attn.masked_fill(key_padding_mask[:, None, None, :], float("-inf"))
+
+        if attn_mask is not None:
+            attn = attn + attn_mask
+
+        attn = F.softmax(attn, dim=-1)
+        attn = self.attn_drop(attn)
+
+        out = (attn @ v).transpose(1, 2).reshape(B, L, C)
+        out = self.proj(out)
+        out = self.proj_drop(out)
+
+        if need_weights:
+            attn_weights = attn.mean(dim=1)
+            return out, attn_weights
+        else:
+            return out, None
