@@ -40,12 +40,12 @@ class cc2CRPS(nn.Module):
         )
 
         self.patch_embed = PatchEmbedLossless(
-            input_resolution=input_resolution, 
+            input_resolution=input_resolution,
             patch_size=self.patch_size,
             data_channels=self.num_prognostic,
             forcing_channels=self.num_forcings,
             embed_dim=self.embed_dim,
-            data_dim_override=self.embed_dim//2,  # keep None: d_data = C*ps*ps
+            data_dim_override=self.embed_dim // 2,
         )
         self.h_patches = self.patch_embed.h_patches
         self.w_patches = self.patch_embed.w_patches
@@ -202,6 +202,18 @@ class cc2CRPS(nn.Module):
             ]
         )
 
+        self.dwres_d2 = nn.ModuleList(
+            [
+                DWConvResidual3D(
+                    self.embed_dim * 2,
+                    (h0, w0),
+                    time_dim=1,
+                    dilation=(1 if i % 2 == 0 else 2),
+                )
+                for i in range(config.decoder1_depth)
+            ]
+        )
+
         # Final norm and output projection
         self.norm_final = nn.LayerNorm(self.embed_dim * 2)
 
@@ -303,12 +315,13 @@ class cc2CRPS(nn.Module):
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
-            for block in self.encoder1:
+            for block, dwres in zip(self.encoder1, self.dwres_e1):
                 x = checkpoint(block, x, use_reentrant=False)
+                x = checkpoint(dwres, x, use_reentrant=False)
         else:
-            for i, block in enumerate(self.encoder1):
+            for block, dwres in zip(self.encoder1, self.dwres_e1):
                 x = block(x)
-                # x = self.dwres_e1[i](x)
+                x = dwres(x)
 
         skip = x.clone()  # skip connection, B, T*P, D
         skip = skip.reshape(B, T, -1, D)
@@ -319,12 +332,13 @@ class cc2CRPS(nn.Module):
 
         # Pass through encoder blocks
         if self.use_gradient_checkpointing:
-            for block in self.encoder2:
+            for block, dwres in zip(self.encoder2, self.dwres_e2):
                 x = checkpoint(block, x, use_reentrant=False)
+                x = checkpoint(dwres, x, use_reentrant=False)
         else:
-            for i, block in enumerate(self.encoder2):
+            for block, dwres in zip(self.encoder2, self.dwres_e2):
                 x = block(x)
-                # x = self.dwres_e2[i](x)
+                x = dwres(x)
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
@@ -395,12 +409,13 @@ class cc2CRPS(nn.Module):
 
         # Process through decoder blocks
         if self.use_gradient_checkpointing:
-            for block in self.decoder1:
+            for block, dwres in zip(self.decoder1, self.dwres_d1):
                 x = checkpoint(block, x, encoded_flat, use_reentrant=False)
+                x = checkpoint(dwres, x, use_reentrant=False)
         else:
-            for i, block in enumerate(self.decoder1):
+            for block, dwres in zip(self.decoder1, self.dwres_d1):
                 x = block(x, encoded_flat)
-                # x = self.dwres_d1[i](x)
+                x = dwres(x)
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
