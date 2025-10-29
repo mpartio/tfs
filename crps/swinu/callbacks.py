@@ -44,22 +44,14 @@ def get_gradient_names():
 
 
 # Create a custom colormap with white around zero
-def create_colormap(base_cmap="RdBu_r", white_range=0.05, vmin=-1, vmax=1):
+def create_colormap(white_range=0.05, vmin=-1, vmax=1):
     """
-    Create a diverging colormap with white around zero
-
-    Parameters:
-    -----------
-    base_cmap : str or colormap
-        Base colormap to use (default: 'RdBu_r')
-    white_range : float
-        Range around zero to make white (default: 0.01)
-    vmin, vmax : float
-        Min and max values for the data range
+    Create a blue-white-red colormap with white around zero
+    Blue = negative, Red = positive
     """
-    # Get the base colormap
-    if isinstance(base_cmap, str):
-        base_cmap = plt.cm.get_cmap(base_cmap)
+    # Get base colormaps
+    blues = plt.cm.get_cmap("Blues")
+    reds = plt.cm.get_cmap("Reds")
 
     # Calculate positions in 0-1 range
     zero_pos = -vmin / (vmax - vmin)  # Position of zero in normalized space
@@ -69,30 +61,30 @@ def create_colormap(base_cmap="RdBu_r", white_range=0.05, vmin=-1, vmax=1):
     colors = []
     positions = []
 
-    # Before white region
+    # Blue region (negative values)
     positions.append(0)
-    colors.append(base_cmap(0))
+    colors.append(blues(0.9))  # Dark blue
 
     positions.append(zero_pos - white_width)
-    colors.append(base_cmap(0.5 - 0.02))  # Slightly before center
+    colors.append(blues(0.3))  # Light blue
 
-    # White region
+    # White region around zero
     positions.append(zero_pos - white_width)
     colors.append("white")
 
     positions.append(zero_pos + white_width)
     colors.append("white")
 
-    # After white region
+    # Red region (positive values)
     positions.append(zero_pos + white_width)
-    colors.append(base_cmap(0.5 + 0.02))  # Slightly after center
+    colors.append(reds(0.3))  # Light red
 
     positions.append(1)
-    colors.append(base_cmap(1))
+    colors.append(reds(0.9))  # Dark red
 
     # Create the colormap
     cmap = mcolors.LinearSegmentedColormap.from_list(
-        "custom_diverging", list(zip(positions, colors))
+        "blue_white_red", list(zip(positions, colors))
     )
 
     return cmap
@@ -104,35 +96,6 @@ def run_info():
     run_dir = os.environ["CC2_RUN_DIR"]
 
     return run_name, run_number, run_dir
-
-
-def envelope_binning(x: torch.tensor, n_bins: int = 1000):
-    # divide data into bins and calculate min and max from each bin,
-    # and plot those
-    N = x.shape[0]
-
-    if N == 0:
-        empty = x.new_empty(0)
-        empty = empty.long()
-        return empty, empty, empty
-
-    B = max(1, min(n_bins, N))
-    W = N // B  # now W >= 1
-    trimmed = x[: B * W]
-
-    blocks = trimmed.view(B, W)
-    mins, _ = blocks.min(dim=1)
-    maxs, _ = blocks.max(dim=1)
-    xs = torch.arange(B) * W
-    xs = xs.long()
-    return xs, mins, maxs
-
-
-def dynamic_ma(x: torch.tensor, n_bins: int):
-    N = x.shape[0]
-    W = max(40, N // n_bins)
-    # your existing moving_average(x, W) function
-    return moving_average(x, W)
 
 
 def analyze_gradients(model):
