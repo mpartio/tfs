@@ -3,6 +3,7 @@ import os
 import sys
 from argparse import Namespace
 from omegaconf import OmegaConf
+from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
 def namespace_to_dict_recursive(obj):
@@ -35,8 +36,7 @@ class CustomSaveConfigCallback(SaveConfigCallback):
 
         config_dict = namespace_to_dict_recursive(self.config)
         conf = OmegaConf.create(config_dict)
-        print(OmegaConf.to_yaml(conf))
-        # path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        rank_zero_info(OmegaConf.to_yaml(conf))
         path = os.getcwd()
         self.config_filename = f"{path}/{os.environ['CC2_RUN_DIR']}/config.yaml"
         super().setup(trainer, pl_module, stage)
