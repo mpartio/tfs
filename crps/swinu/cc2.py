@@ -61,8 +61,6 @@ class cc2CRPS(nn.Module):
         self.norm_input = nn.LayerNorm(self.embed_dim)
         self.dropout = nn.Dropout(config.drop_rate)
 
-        self.use_swin_encoder = config.use_swin_encoder
-
         # Transformer encoder blocks
         self.encoder1 = nn.ModuleList(
             [
