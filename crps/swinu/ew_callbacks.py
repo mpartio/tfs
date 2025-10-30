@@ -8,8 +8,6 @@ import lightning as L
 from torchmetrics.functional.image import (
     structural_similarity_index_measure,
     peak_signal_noise_ratio,
-    spatial_correlation_coefficient,
-    total_variation,
 )
 from scipy.stats import wasserstein_distance
 
@@ -77,19 +75,6 @@ def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
 def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
     psnr = peak_signal_noise_ratio(y_pred, y_true, data_range=2.0)
     return (1 - torch.exp(-psnr / 20)).item()
-
-
-@torch.no_grad()
-def _scc(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return spatial_correlation_coefficient(
-        _ensure_bchw(y_pred), _ensure_bchw(y_true)
-    ).item()
-
-
-@torch.no_grad()
-def _tv(y_pred: torch.Tensor, y_true: torch.Tensor):
-    tv_error = total_variation(_ensure_bchw(y_true - y_pred)).item()
-    return 1 / (1 + tv_error)
 
 
 @torch.no_grad()
@@ -228,7 +213,7 @@ def _psd_coherence_once(
     }
 
 
-def _fss_once(y_pred, y_true, threshold, radius, eps=1e-8, less_than=False):
+def _fss_once(y_pred, y_true, category, radius, eps=1e-8, less_than=False):
     """
     Fraction Skill Score at one threshold & radius on a single frame.
     y_pred, y_true: [C,H,W] or [H,W] with values in [0,1] (cloud cover/occupancy).
@@ -239,12 +224,19 @@ def _fss_once(y_pred, y_true, threshold, radius, eps=1e-8, less_than=False):
         y_pred = y_pred.mean(dim=0)
         y_true = y_true.mean(dim=0)
     # Binarize exceedance
-    if less_than:
-        yp = (y_pred <= threshold).to(torch.float32)[None, None]  # [1,1,H,W]
-        yt = (y_true <= threshold).to(torch.float32)[None, None]
+    if category == "overcast":
+        yp = (y_pred >= 0.875).to(torch.float32)[None, None]  # [1,1,H,W]
+        yt = (y_true >= 0.875).to(torch.float32)[None, None]
+    elif category == "broken":
+        yp = (y_pred < 0.875 and y_pred >= 0.5).to(torch.float32)[None, None]
+        yt = (y_true < 0.875 and y_true >= 0.5).to(torch.float32)[None, None]
+    elif category == "scattered":
+        yp = (y_pred < 0.5 and y_pred >= 0.125).to(torch.float32)[None, None]
+        yt = (y_true < 0.5 and y_true >= 0.125).to(torch.float32)[None, None]
     else:
-        yp = (y_pred >= threshold).to(torch.float32)[None, None]  # [1,1,H,W]
-        yt = (y_true >= threshold).to(torch.float32)[None, None]
+        assert category == "clear"
+        yp = (y_pred < 0.125).to(torch.float32)[None, None]
+        yt = (y_true < 0.125).to(torch.float32)[None, None]
 
     k = 2 * radius + 1
     kernel = torch.ones((1, 1, k, k), device=yp.device) / (k * k)
@@ -319,17 +311,18 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
     (
         bias_list,
         mae_list,
-        fss_ovc_list,
-        fss_cavok_list,
+        fss_ovc_list_30,
+        fss_bkn_list_30,
+        fss_sct_list_30,
+        fss_cavok_list_30,
         vk_list,
         coh_mid_list,
         coh_hi_list,
+        psd_anom_list_60_100,
         psd_anom_list_30_60,
         psd_anom_list_10_30,
         ssim_list,
         psnr_list,
-        scc_list,
-        tv_list,
         wass_list,
     ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [])
     for b in range(yp.shape[0]):
@@ -343,18 +336,19 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         coh = _psd_coherence_once(yp_b, yt_b)
         coh_mid_list.append(coh["coherence_mid"])
         coh_hi_list.append(coh["coherence_high"])
-        fss_ovc_list.append(_fss_once(yp_b, yt_b, threshold=0.9, radius=6))
-        fss_cavok_list.append(
-            _fss_once(yp_b, yt_b, threshold=0.1, radius=6, less_than=True)
-        )
+        fss_ovc_list.append(_fss_once(yp_b, yt_b, "overcast", radius=6))
+        fss_bkn_list.append(_fss_once(yp_b, yt_b, "broken", radius=6))
+        fss_few_list.append(_fss_once(yp_b, yt_b, "scattered", radius=6))
+        fss_cavok_list.append(_fss_once(yp_b, yt_b, "clear", radius=6))
 
+        psd_anom_list_60_100.append(
+            _psd_anomaly_once(yp_b, yt_b, lo_px=20.0, hi_px=12.0)
+        )
         psd_anom_list_30_60.append(_psd_anomaly_once(yp_b, yt_b, lo_px=12.0, hi_px=6.0))
         psd_anom_list_10_30.append(_psd_anomaly_once(yp_b, yt_b, lo_px=6.0, hi_px=2.0))
 
         ssim_list.append(_ssim(yp_b, yt_b))
         psnr_list.append(_psnr(yp_b, yt_b))
-        scc_list.append(_scc(yp_b, yt_b))
-        tv_list.append(_tv(yp_b, yt_b))
         wass_list.append(_wasserstein(yp_b, yt_b))
 
     hk_list = []
@@ -369,14 +363,17 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "high_k_power_ratio": min(float(sum(hk_list) / len(hk_list)), 8),
         "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
         "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
-        "fss_ovc": float(sum(fss_ovc_list) / len(fss_ovc_list)),
-        "fss_cavok": float(sum(fss_cavok_list) / len(fss_cavok_list)),
+        "fss_overcast_30km": float(sum(fss_ovc_list) / len(fss_ovc_list)),
+        "fss_broken_30km": float(sum(fss_bln_list) / len(fss_bkn_list)),
+        "fss_scattered_30km": float(sum(fss_sct_list) / len(fss_sct_list)),
+        "fss_clear": float(sum(fss_cavok_list) / len(fss_cavok_list)),
+        "psd_anom_60_100km": float(
+            sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
+        ),
         "psd_anom_30_60km": float(sum(psd_anom_list_30_60) / len(psd_anom_list_30_60)),
         "psd_anom_10_30km": float(sum(psd_anom_list_10_30) / len(psd_anom_list_10_30)),
         "ssim": float(sum(ssim_list) / len(ssim_list)),
         "psnr": float(sum(psnr_list) / len(psnr_list)),
-        "scc": float(sum(scc_list) / len(scc_list)),
-        "tv_of_err": float(sum(tv_list) / len(tv_list)),
         "wasserstein_distance": float(sum(wass_list) / len(wass_list)),
     }
 
