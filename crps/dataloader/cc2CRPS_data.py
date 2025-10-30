@@ -492,12 +492,12 @@ class cc2DataModule(L.LightningDataModule):
         forcing_params: tuple[str, ...],
         static_forcing_path: str | None = None,
         static_forcing_params: list[str] = [],
-        val_split: float = 0.1,
-        test_split: float = 0.0,
         train_start: str | None = None,
         train_end: str | None = None,
         val_start: str | None = None,
         val_end: str | None = None,
+        test_start: str | None = None,
+        test_end: str | None = None,
         seed: int = 0,
         batch_size: int = 32,
         num_workers: int = 6,
@@ -569,20 +569,20 @@ class cc2DataModule(L.LightningDataModule):
 
         ds_full = self._get_or_create_full_dataset()
 
+        # Build splits aligned to valid_indices
+        # 1) positions  into valid_indices
+        valid_pos = np.arange(len(ds_full.valid_indices))
+        # 2) actual start dates for each valid window
+        all_dates = np.array(ds_full.dates, dtype="datetime64[ns]")
+        actual_pos = np.array(ds_full.valid_indices, dtype=int)
+        date_starts = all_dates[actual_pos]
+
         if (
             self.hparams.train_start
             and self.hparams.train_end
             and self.hparams.val_start
             and self.hparams.val_end
         ):
-            # Build splits aligned to valid_indices
-            # 1) positions  into valid_indices
-            valid_pos = np.arange(len(ds_full.valid_indices))
-            # 2) actual start dates for each valid window
-            all_dates = np.array(ds_full.dates, dtype="datetime64[ns]")
-            actual_pos = np.array(ds_full.valid_indices, dtype=int)
-            date_starts = all_dates[actual_pos]
-
             # parse to numpy datetimes
             t0 = np.datetime64(self.hparams.train_start)
             t1 = np.datetime64(self.hparams.train_end)
@@ -592,11 +592,9 @@ class cc2DataModule(L.LightningDataModule):
             # only keep windows whose first date falls into each span
             train_mask = (date_starts >= t0) & (date_starts < t1)
             val_mask = (date_starts >= v0) & (date_starts < v1)
-            test_mask = ~train_mask & ~val_mask
 
             train_indices = valid_pos[train_mask]
             val_indices = valid_pos[val_mask]
-            test_indices = valid_pos[test_mask]
 
             rank_zero_info(
                 "Training dataset ({} to {}) contains {} samples".format(
@@ -610,39 +608,17 @@ class cc2DataModule(L.LightningDataModule):
                     self.hparams.val_start, self.hparams.val_end, val_indices.shape[0]
                 )
             )
+
+        if self.hparams.test_start and self.hparams.test_end:
+            t0 = np.datetime64(self.hparams.test_start)
+            t1 = np.datetime64(self.hparams.test_end)
+
+            test_mask = (date_starts >= t0) & (date_starts < t1)
+            test_indices = valid_pos[test_mask]
+
             rank_zero_info(
                 "Test dataset contains {} samples".format(test_indices.shape[0])
             )
-
-        else:
-            num_total_valid_samples = len(ds_full)
-
-            indices = np.arange(num_total_valid_samples)
-            num_samples_to_split = num_total_valid_samples
-
-            # Shuffle indices before splitting
-            if stage == "fit":
-                rng = np.random.RandomState(self.hparams.seed)
-                rng.shuffle(indices)
-
-            # Calculate split sizes based on the potentially limited number of samples
-            val_size = int(self.hparams.val_split * num_samples_to_split)
-            test_size = int(self.hparams.test_split * num_samples_to_split)
-            train_size = num_samples_to_split - val_size - test_size
-
-            if train_size < 0:
-                raise ValueError(
-                    f"Dataset size {num_samples_to_split} (after limit/validation) is too small for val_split={self.hparams.val_split} and test_split={self.hparams.test_split}"
-                )
-
-            rank_zero_info(
-                f"Dataset split sizes (based on {num_samples_to_split} samples): Train={train_size}, Validation={val_size}, Test={test_size}"
-            )
-
-            # Get the actual indices corresponding to the shuffled array segments
-            train_indices = indices[val_size + test_size :]
-            val_indices = indices[:val_size]
-            test_indices = indices[val_size : val_size + test_size]
 
         # Create Subset datasets based on the stage
         # stage='fit' or stage=None will setup train and val
