@@ -14,3 +14,4 @@ anemoi-datasets
 rioxarray
 jsonargparse[signatures]>=4.27.7
 mlflow
+omegaconf
