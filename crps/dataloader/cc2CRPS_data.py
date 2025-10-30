@@ -217,7 +217,6 @@ class AnemoiDataset(Dataset):
 
             self._setup_normalization()
 
-
     def _setup_normalization(self):
         # Pre-compute combined indexes and params for dynamic data
         self.combined_dynamic_indexes = self.data_indexes + self.forcings_indexes
@@ -539,13 +538,15 @@ class cc2DataModule(L.LightningDataModule):
                     self.hparams.normalization
                 )
 
-            history_length = self.trainer.model.hparams.history_length
-            rollout_length = self.trainer.model.hparams.rollout_length
+            model = self.trainer.model
+            model = model.module if hasattr(model, "module") else model
 
-            assert rollout_length is not None
+            self.history_length = model.hparams.history_length
+            self.rollout_length = model.hparams.rollout_length
+
             self._full_dataset = AnemoiDataset(
                 zarr_path=self.hparams.data_path,
-                group_size=history_length + rollout_length,
+                group_size=self.history_length + self.rollout_length,
                 prognostic_params=self.hparams.prognostic_params,
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
@@ -677,11 +678,9 @@ class cc2DataModule(L.LightningDataModule):
             is_test_or_predict = stage == "test" or stage == "predict"
             dataset.dataset.return_metadata = is_test_or_predict
 
-        history_length = self.trainer.model.hparams.history_length
-
         wrapped_dataset = SplitWrapper(
             dataset=dataset,
-            n_x=history_length,
+            n_x=self.history_length,
             apply_smoothing=self.hparams.apply_smoothing,
         )
 
