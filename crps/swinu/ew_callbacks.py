@@ -64,6 +64,46 @@ def _radial_bins(Hf, Wf, device, n_bins=None):
     return bin_index, counts, n_bins
 
 
+@torch.no_grad
+def _compute_conditional_bias(
+    initial_cc: torch.Tensor, y_pred: torch.Tensor, y_true: torch.Tensor
+):
+    bins = [
+        ("clear", 0.0, 0.125),
+        ("scattered", 0.125, 0.5),
+        ("broken", 0.5, 0.875),
+        ("overcast", 0.875, 1.0),
+    ]
+
+    initial_cc = _ensure_btchw(initial_cc)
+    y_pred = _ensure_btchw(y_pred)
+    y_true = _ensure_btchw(y_true)
+
+    results = {}
+
+    for name, low, high in bins:
+        # Create mask for this category
+        if name == "overcast":
+            # Include upper bound for overcast
+            mask = (initial_cc >= low) & (initial_cc <= high)
+        else:
+            mask = (initial_cc >= low) & (initial_cc < high)
+
+        n_pixels = mask.sum()
+
+        if n_pixels > 0:
+            # Compute bias for pixels in this category
+            error = y_pred[mask] - y_true[mask]
+            bias = error.mean()
+            results[f"conditional_bias_{name}"] = bias.item()
+            results[f"conditional_bias_n_{name}"] = n_pixels.item()  # sample size
+        else:
+            results[f"conditional_bias_{name}"] = None
+            results[f"conditional_bias_n_{name}"] = 0
+
+    return results
+
+
 @torch.no_grad()
 def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
     return structural_similarity_index_measure(
@@ -228,11 +268,11 @@ def _fss_once(y_pred, y_true, category, radius, eps=1e-8, less_than=False):
         yp = (y_pred >= 0.875).to(torch.float32)[None, None]  # [1,1,H,W]
         yt = (y_true >= 0.875).to(torch.float32)[None, None]
     elif category == "broken":
-        yp = (y_pred < 0.875 and y_pred >= 0.5).to(torch.float32)[None, None]
-        yt = (y_true < 0.875 and y_true >= 0.5).to(torch.float32)[None, None]
+        yp = ((y_pred < 0.875) & (y_pred >= 0.5)).to(torch.float32)[None, None]
+        yt = ((y_true < 0.875) & (y_true >= 0.5)).to(torch.float32)[None, None]
     elif category == "scattered":
-        yp = (y_pred < 0.5 and y_pred >= 0.125).to(torch.float32)[None, None]
-        yt = (y_true < 0.5 and y_true >= 0.125).to(torch.float32)[None, None]
+        yp = ((y_pred < 0.5) & (y_pred >= 0.125)).to(torch.float32)[None, None]
+        yt = ((y_true < 0.5) & (y_true >= 0.125)).to(torch.float32)[None, None]
     else:
         assert category == "clear"
         yp = (y_pred < 0.125).to(torch.float32)[None, None]
@@ -324,7 +364,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         ssim_list,
         psnr_list,
         wass_list,
-    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [])
+    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
     for b in range(yp.shape[0]):
         yp_b = yp[b]
         yt_b = yt[b]
@@ -336,10 +376,10 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         coh = _psd_coherence_once(yp_b, yt_b)
         coh_mid_list.append(coh["coherence_mid"])
         coh_hi_list.append(coh["coherence_high"])
-        fss_ovc_list.append(_fss_once(yp_b, yt_b, "overcast", radius=6))
-        fss_bkn_list.append(_fss_once(yp_b, yt_b, "broken", radius=6))
-        fss_few_list.append(_fss_once(yp_b, yt_b, "scattered", radius=6))
-        fss_cavok_list.append(_fss_once(yp_b, yt_b, "clear", radius=6))
+        fss_ovc_list_30.append(_fss_once(yp_b, yt_b, "overcast", radius=6))
+        fss_bkn_list_30.append(_fss_once(yp_b, yt_b, "broken", radius=6))
+        fss_sct_list_30.append(_fss_once(yp_b, yt_b, "scattered", radius=6))
+        fss_cavok_list_30.append(_fss_once(yp_b, yt_b, "clear", radius=6))
 
         psd_anom_list_60_100.append(
             _psd_anomaly_once(yp_b, yt_b, lo_px=20.0, hi_px=12.0)
@@ -363,10 +403,10 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "high_k_power_ratio": min(float(sum(hk_list) / len(hk_list)), 8),
         "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
         "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
-        "fss_overcast_30km": float(sum(fss_ovc_list) / len(fss_ovc_list)),
-        "fss_broken_30km": float(sum(fss_bln_list) / len(fss_bkn_list)),
-        "fss_scattered_30km": float(sum(fss_sct_list) / len(fss_sct_list)),
-        "fss_clear": float(sum(fss_cavok_list) / len(fss_cavok_list)),
+        "fss_overcast_30km": float(sum(fss_ovc_list_30) / len(fss_ovc_list_30)),
+        "fss_broken_30km": float(sum(fss_bkn_list_30) / len(fss_bkn_list_30)),
+        "fss_scattered_30km": float(sum(fss_sct_list_30) / len(fss_sct_list_30)),
+        "fss_clear": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
         "psd_anom_60_100km": float(
             sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
         ),
@@ -385,6 +425,11 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
     for key, val in tend_corr.items():
         base[key] = val
     for key, val in stat_ratio.items():
+        base[key] = val
+
+    cbias = _compute_conditional_bias(prev_true, y_pred, y_true)
+
+    for key, val in cbias.items():
         base[key] = val
 
     return base
