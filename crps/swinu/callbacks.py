@@ -50,9 +50,8 @@ def create_colormap(white_range=0.05, vmin=-1, vmax=1):
     Blue = negative, Red = positive
     """
     # Get base colormaps
-    blues = plt.cm.get_cmap("Blues")
-    reds = plt.cm.get_cmap("Reds")
-
+    blues = plt.colormaps["Blues"]
+    reds = plt.colormaps["Reds"]
     # Calculate positions in 0-1 range
     zero_pos = -vmin / (vmax - vmin)  # Position of zero in normalized space
     white_width = white_range / (vmax - vmin)  # Width of white region
