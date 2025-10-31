@@ -406,7 +406,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "fss_overcast_30km": float(sum(fss_ovc_list_30) / len(fss_ovc_list_30)),
         "fss_broken_30km": float(sum(fss_bkn_list_30) / len(fss_bkn_list_30)),
         "fss_scattered_30km": float(sum(fss_sct_list_30) / len(fss_sct_list_30)),
-        "fss_clear": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
+        "fss_clear_30km": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
         "psd_anom_60_100km": float(
             sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
         ),
