@@ -30,9 +30,6 @@ from typing import Optional
 class cc2CRPSModel(L.LightningModule):
     def __init__(
         self,
-        prognostic_params: list[str],
-        forcing_params: list[str],
-        static_forcing_params: list[str],
         history_length: int = 2,
         hidden_dim: int = 96,
         patch_size: int = 4,
