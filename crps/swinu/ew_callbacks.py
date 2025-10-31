@@ -96,10 +96,10 @@ def _compute_conditional_bias(
             error = y_pred[mask] - y_true[mask]
             bias = error.mean()
             results[f"conditional_bias_{name}"] = bias.item()
-            results[f"conditional_bias_n_{name}"] = n_pixels.item()  # sample size
+            results[f"conditional_bias_frac_{name}"] = n_pixels.item() / mask.numel()  # sample size frac
         else:
             results[f"conditional_bias_{name}"] = None
-            results[f"conditional_bias_n_{name}"] = 0
+            results[f"conditional_bias_frac_{name}"] = 0
 
     return results
 
@@ -406,7 +406,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "fss_overcast_30km": float(sum(fss_ovc_list_30) / len(fss_ovc_list_30)),
         "fss_broken_30km": float(sum(fss_bkn_list_30) / len(fss_bkn_list_30)),
         "fss_scattered_30km": float(sum(fss_sct_list_30) / len(fss_sct_list_30)),
-        "fss_clear": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
+        "fss_clear_30km": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
         "psd_anom_60_100km": float(
             sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
         ),
@@ -461,10 +461,10 @@ class EarlyWarningMetricsCallback(L.Callback):
             pl_module.log(
                 f"metrics/{prefix}/{k}",
                 float(v),
-                on_step=False,
-                on_epoch=True,
+                on_step=True,
+                on_epoch=False,
                 prog_bar=False,
-                sync_dist=False,
+                sync_dist=True,
             )
 
     @rank_zero_only
