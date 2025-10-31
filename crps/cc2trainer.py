@@ -3,7 +3,7 @@ import torch
 import os
 import randomname
 import traceback
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import lightning as L
 import json
 import time
@@ -11,7 +11,7 @@ from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.loggers import MLFlowLogger
 from dataloader.cc2CRPS_data import cc2DataModule
 from common.util import get_next_run_number, get_rank
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger
 from common.sc_callback import CustomSaveConfigCallback
 

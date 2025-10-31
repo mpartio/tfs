@@ -8,7 +8,7 @@ import lightning as L
 import numpy as np
 from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
-from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
+from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_warn
 
 
 def get_default_normalization_methods(custom_methods):

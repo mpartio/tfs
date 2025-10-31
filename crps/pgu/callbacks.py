@@ -13,8 +13,8 @@ import shutil
 from common.util import calculate_wavelet_snr, moving_average, get_rank
 from datetime import datetime
 from matplotlib.ticker import ScalarFormatter
-from pytorch_lightning.loggers import CSVLogger
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.utilities import rank_zero_only
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 matplotlib.use("Agg")

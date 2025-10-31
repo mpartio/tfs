@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.fft import rfft2, rfftfreq, fftfreq
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 import lightning as L
 
 

@@ -3,7 +3,7 @@ import os
 import sys
 from argparse import Namespace
 from omegaconf import OmegaConf
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 
 def namespace_to_dict_recursive(obj):

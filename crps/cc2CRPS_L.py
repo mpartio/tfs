@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from lightning.pytorch.callbacks import ModelCheckpoint
-from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_warn
+from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_warn
 from torch.optim.lr_scheduler import (
     ChainedScheduler,
     LinearLR,
