@@ -66,7 +66,6 @@ class cc2CRPSModel(L.LightningModule):
         loss_function: str = "huber_loss",
         use_ste: bool = False,
         autoregressive_mode: bool = True,
-        input_resolution: tuple[int, int] | None = None,
         overlap_patch_embed: bool = False,
         use_future_forcings: bool = False,
         freeze_layers: list[str] = [],
@@ -76,15 +75,6 @@ class cc2CRPSModel(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        if input_resolution is not None:
-            import warnings
-
-            warnings.warn(
-                "'input_resolution' model parameter is deprecated and will be removed in a future version.",
-                FutureWarning,
-                stacklevel=2,
-            )
-
         self.model_configured = False
 
         # Extract only model-specific parameters
@@ -93,7 +83,6 @@ class cc2CRPSModel(L.LightningModule):
             for k, v in self.hparams.items()
             if k
             in [
-                "input_resolution",
                 "history_length",
                 "hidden_dim",
                 "patch_size",
