@@ -461,8 +461,8 @@ class EarlyWarningMetricsCallback(L.Callback):
             pl_module.log(
                 f"metrics/{prefix}/{k}",
                 float(v),
-                on_step=True,
-                on_epoch=False,
+                on_step=False,
+                on_epoch=True,
                 prog_bar=False,
                 sync_dist=True,
             )
