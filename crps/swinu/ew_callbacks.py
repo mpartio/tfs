@@ -96,10 +96,10 @@ def _compute_conditional_bias(
             error = y_pred[mask] - y_true[mask]
             bias = error.mean()
             results[f"conditional_bias_{name}"] = bias.item()
-            results[f"conditional_bias_frac_{name}"] = n_pixels.item() / mask.numel()  # sample size frac
+            # results[f"conditional_bias_frac_{name}"] = n_pixels.item() / mask.numel()  # sample size frac
         else:
             results[f"conditional_bias_{name}"] = None
-            results[f"conditional_bias_frac_{name}"] = 0
+            # results[f"conditional_bias_frac_{name}"] = 0
 
     return results
 
