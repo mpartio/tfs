@@ -151,29 +151,20 @@ def get_next_run_number(base_dir):
     rank = get_rank()
     next_run_file = f"next_run.txt"
 
-    if rank == 0:
-        # Only rank 0 determines the next run number
-        if not os.path.exists(base_dir):
-            next_num = 1
-        else:
-            subdirs = [
-                d
-                for d in os.listdir(base_dir)
-                if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
-            ]
-            next_num = max([int(d) for d in subdirs], default=0) + 1
+    assert rank == 0, f"rank is {rank}, not 0"
 
-        # Write for other ranks to read
-        with open(f"next_run.txt", "w") as f:
-            f.write(str(next_num))
+    # Only rank 0 determines the next run number
+    if not os.path.exists(base_dir):
+        next_num = 1
+    else:
+        subdirs = [
+            d
+            for d in os.listdir(base_dir)
+            if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
+        ]
+        next_num = max([int(d) for d in subdirs], default=0) + 1
 
-    # All ranks wait for the file
-    while not os.path.exists(f"next_run.txt"):
-        time.sleep(0.1)
-
-    # All ranks read the same number
-    with open(f"next_run.txt", "r") as f:
-        return int(f.read().strip())
+    return next_num
 
 
 def get_latest_run_dir(base_dir):
