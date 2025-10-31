@@ -98,9 +98,6 @@ class cc2CRPSModel(L.LightningModule):
                 "drop_rate",
                 "attn_drop_rate",
                 "drop_path_rate",
-                "prognostic_params",
-                "forcing_params",
-                "static_forcing_params",
                 "use_gradient_checkpointing",
                 "use_scheduled_sampling",
                 "add_refinement_head",
@@ -143,6 +140,15 @@ class cc2CRPSModel(L.LightningModule):
         # Read input_resolution from data
         self.input_resolution = self.trainer.datamodule.input_resolution
         rank_zero_info(f"Data resolution is {self.input_resolution}")
+
+        self.model_kwargs.update(
+            {
+                "input_resolution": self.trainer.datamodule.input_resolution,
+                "prognostic_params": self.trainer.datamodule.hparams.prognostic_params,
+                "forcing_params": self.trainer.datamodule.hparams.forcing_params,
+                "static_forcing_params": self.trainer.datamodule.hparams.static_forcing_params,
+            }
+        )
 
         self._build_model()
 
@@ -188,7 +194,6 @@ class cc2CRPSModel(L.LightningModule):
         self._roll_forecast = roll_forecast
         self._loss_fn = loss_fn
 
-        self.model_kwargs["input_resolution"] = self.input_resolution
         self.model = cc2CRPS(config=self.model_kwargs)
 
         self.run_name = os.environ["CC2_RUN_NAME"]
