@@ -426,7 +426,7 @@ class cc2CRPSModel(L.LightningModule):
             weight_decay=self.hparams.weight_decay,
         )
 
-        if self.trainer.max_epochs is not None:
+        if self.trainer.max_epochs > 0:
             effective_batch_size = (
                 (self.trainer.num_devices * self.trainer.num_nodes)  # Total devices
                 * self.trainer.accumulate_grad_batches
@@ -442,12 +442,16 @@ class cc2CRPSModel(L.LightningModule):
             T_max = num_iterations - self.hparams.warmup_iterations
 
         elif self.trainer.max_steps is not None:
+            assert (
+                self.trainer.max_steps > self.hparams.warmup_iterations
+            ), f"max_steps {self.trainer.max_steps} is smaller than warmup_iterations {self.hparams.warmup_iterations}"
+
             T_max = self.trainer.max_steps - self.hparams.warmup_iterations
 
         else:
             raise ValueError("Either max_epochs or max_steps needs to be defined")
 
-        assert T_max > 0
+        assert T_max > 0, f"max iterations is {T_max}"
 
         cosine_scheduler = CosineAnnealingLR(
             optimizer,
