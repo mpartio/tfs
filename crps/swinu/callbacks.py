@@ -127,11 +127,15 @@ def analyze_gradients(model):
 
 
 class PredictionPlotterCallback(L.Callback):
-    def __init__(self):
-        pass
+    def __init__(self, after_train: bool = True, after_val: bool = True):
+        self.after_train = after_train
+        self.after_val = after_val
 
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
+        if not self.after_train:
+            return
+
         pl_module.eval()
 
         predictions = pl_module.latest_train_predictions
@@ -151,6 +155,8 @@ class PredictionPlotterCallback(L.Callback):
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
+        if not self.after_val:
+            return
         pl_module.eval()
 
         predictions = pl_module.latest_val_predictions
