@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.fft import rfft2, rfftfreq, fftfreq
 
 
-def _radial_bins_rfft(Hf, Wf, device, n_bins=None):
+def _radial_bins_rfft(Hf, Wf, device, n_bins):
     fy = fftfreq(Hf, d=1.0, device=device)  # [-0.5,0.5)
     fx = rfftfreq(2 * (Wf - 1), d=1.0, device=device)  # [0,0.5]
     FY, FX = torch.meshgrid(fy, fx, indexing="ij")
@@ -19,23 +19,17 @@ def _radial_bins_rfft(Hf, Wf, device, n_bins=None):
     return bin_index, counts, n_bins
 
 
-def _amse2d_per_time(y_pred, y_true, n_bins=None, hann_window=True, eps=1e-8):
-    """
-    y_pred, y_true: [B,T,C,H,W]
-    Returns per-time AMSE values: [T]
-    """
+def _amse2d_per_time(y_pred, y_true, n_bins):
+    eps = 1e-8
+
     B, T, C, H, W = y_pred.shape
     device = y_pred.device
 
-    # optional Hann windowing
-    if hann_window:
-        wh = torch.hann_window(H, device=device).unsqueeze(1)
-        ww = torch.hann_window(W, device=device).unsqueeze(0)
-        win = (wh @ ww).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        yp = y_pred * win
-        yt = y_true * win
-    else:
-        yp, yt = y_pred, y_true
+    wh = torch.hann_window(H, device=device).unsqueeze(1)
+    ww = torch.hann_window(W, device=device).unsqueeze(0)
+    win = (wh @ ww).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+    yp = y_pred * win
+    yt = y_true * win
 
     yp = yp.to(torch.float32)
     yt = yt.to(torch.float32)
@@ -45,7 +39,7 @@ def _amse2d_per_time(y_pred, y_true, n_bins=None, hann_window=True, eps=1e-8):
     Y = rfft2(yt, dim=(-2, -1), norm="ortho")
 
     Hf, Wf = X.shape[-2], X.shape[-1]
-    bin_index, counts, n_bins = _radial_bins_rfft(Hf, Wf, device)
+    bin_index, counts, n_bins = _radial_bins_rfft(Hf, Wf, device, n_bins)
 
     # Magnitudes & cross, channel-mean
     PX = (X.real**2 + X.imag**2).mean(dim=2)  # [B,T,Hf,Wf]
@@ -79,24 +73,15 @@ def _amse2d_per_time(y_pred, y_true, n_bins=None, hann_window=True, eps=1e-8):
     return amse_t
 
 
-def clamp_ste(x: torch.tensor, lo=-1.0, hi=1.0):
-    """Clamp to [lo,hi] in forward, identity in backward."""
-    x_clamped = torch.clamp(x, lo, hi)
-    return x + (x_clamped - x).detach()
-
-
 def mse_plus_amse_loss(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,
     *,
     n_bins: int = None,
-    hann_window: bool = True,
-    eps: float = 1e-8,
     lambda_spectral: float = 0.05,
 ):
     """
     Combined pixel-wise MSE + spectral AMSE.
-    y_*: [B,T,C,H,W] (or [B,C,H,W] -> treated as T=1)
     """
     if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
         y_true = y_true.unsqueeze(1)
@@ -106,9 +91,7 @@ def mse_plus_amse_loss(
     mse_loss = F.mse_loss(y_pred.float(), y_true.float())
 
     # spectral AMSE
-    amse_t = _amse2d_per_time(
-        y_pred, y_true, n_bins=n_bins, hann_window=hann_window, eps=eps
-    )  # [T]
+    amse_t = _amse2d_per_time(y_pred, y_true, n_bins)  # [T]
     amse_loss = amse_t.mean()
 
     total_loss = mse_loss + lambda_spectral * amse_loss
@@ -119,3 +102,23 @@ def mse_plus_amse_loss(
         "pixel_mse": mse_loss.detach(),
         "spectral_amse": amse_t,
     }
+
+
+class MSEAMSELoss:
+    def __init__(
+        self,
+        n_bins: int = None,
+        lambda_spectral: float = 0.05,
+    ):
+        super().__init__()
+
+        self.n_bins = n_bins
+        self.lambda_spectral = lambda_spectral
+
+    def forward(self, y_true: torch.Tensor, y_pred: torch.Tensor):
+        return mse_plus_amse_loss(
+            y_true,
+            y_pred,
+            n_bins=self.n_bins,
+            lambda_spectral=self.lambda_spectral,
+        )

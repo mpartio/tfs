@@ -24,7 +24,7 @@ from common.util import (
     adapt_checkpoint_to_model,
 )
 from pgu.layers import get_padded_size
-from typing import Optional
+from typing import Optional, Callable
 
 
 class cc2CRPSModel(L.LightningModule):
@@ -60,7 +60,7 @@ class cc2CRPSModel(L.LightningModule):
         ss_pred_max: float = 1.0,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
-        loss_function: str = "huber_loss",
+        loss_function: str | None = None,
         use_ste: bool = False,
         autoregressive_mode: bool = True,
         overlap_patch_embed: bool = False,
@@ -68,6 +68,7 @@ class cc2CRPSModel(L.LightningModule):
         freeze_layers: list[str] = [],
         use_lossless_patch_embed: bool = False,
         use_dw_conv_residual: bool = False,
+        loss_fn: Callable | nn.Module | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -130,6 +131,16 @@ class cc2CRPSModel(L.LightningModule):
         self.ss_pred_max = ss_pred_max
         self.autoregressive_mode = autoregressive_mode
 
+        self._loss_fn = loss_fn
+
+        if loss_fn is not None and loss_function is not None:
+            rank_zero_warn(
+                "Both loss_fn and loss_function specified, first will override the latter"
+            )
+
+        elif loss_function is not None:
+            rank_zero_warn("loss_function specified, switch to loss_fn")
+
     def configure_model(self) -> None:
         if self.model_configured:
             return
@@ -175,21 +186,29 @@ class cc2CRPSModel(L.LightningModule):
             else:
                 from pgu.util import roll_forecast_direct as roll_forecast
 
-            loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+            if self._loss_fn is None:
+                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+
         elif self.hparams.model_family == "pgu_ens":
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
             from pgu_ens.loss import loss_fn
+
+            if self._loss_fn is None:
+                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+
         elif self.hparams.model_family == "swinu":
             from swinu.cc2 import cc2CRPS
             from swinu.loss import LOSS_FUNCTIONS
             from swinu.util import roll_forecast
 
-            loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+            if self._loss_fn is None:
+                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
+
+        assert self._loss_fn is not None, "Loss function not specified"
 
         self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast
-        self._loss_fn = loss_fn
 
         self.model = cc2CRPS(config=self.model_kwargs)
 

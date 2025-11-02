@@ -6,11 +6,17 @@ from pgu.weighted_mse_plus_amse import weighted_mse_plus_amse_loss
 
 
 def mse_loss(y_true: torch.tensor, y_pred: torch.tensor):
-
     loss = ((y_true - y_pred) ** 2).mean()
     assert torch.isfinite(loss).all(), "Non-finite values at loss: {}".format(loss)
-
     return {"loss": loss, "mse_loss": loss}
+
+
+class MSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, y_true: torch.Tensor, y_pred: torch.Tensor):
+        return mse_loss(y_true, y_pred)
 
 
 LOSS_FUNCTIONS = {
