@@ -9,7 +9,7 @@ from torchmetrics.functional.image import (
     structural_similarity_index_measure,
     peak_signal_noise_ratio,
 )
-from scipy.stats import wasserstein_distance, energy_distance
+from scipy.stats import energy_distance
 
 
 def _ensure_bchw(y):
@@ -115,15 +115,6 @@ def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
 def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
     psnr = peak_signal_noise_ratio(y_pred, y_true, data_range=2.0)
     return (1 - torch.exp(-psnr / 20)).item()
-
-
-@torch.no_grad()
-def _wasserstein(y_pred: torch.Tensor, y_true: torch.Tensor):
-    wass = wasserstein_distance(
-        y_pred.cpu().flatten().numpy(), y_true.cpu().flatten().numpy()
-    )
-
-    return 1 / (1 + wass)
 
 
 @torch.no_grad
@@ -374,9 +365,8 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         psd_anom_list_10_30,
         ssim_list,
         psnr_list,
-        wass_list,
         energy_list,
-    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
+    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
     for b in range(yp.shape[0]):
         yp_b = yp[b]
         yt_b = yt[b]
@@ -401,7 +391,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
 
         ssim_list.append(_ssim(yp_b, yt_b))
         psnr_list.append(_psnr(yp_b, yt_b))
-        wass_list.append(_wasserstein(yp_b, yt_b))
         energy_list.append(_energy_distance(yp_b, yt_b))
 
     hk_list = []
@@ -427,7 +416,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "psd_anom_10_30km": float(sum(psd_anom_list_10_30) / len(psd_anom_list_10_30)),
         "ssim": float(sum(ssim_list) / len(ssim_list)),
         "psnr": float(sum(psnr_list) / len(psnr_list)),
-        "wasserstein_distance": float(sum(wass_list) / len(wass_list)),
         "energy_distance": float(sum(energy_list) / len(energy_list)),
     }
 
