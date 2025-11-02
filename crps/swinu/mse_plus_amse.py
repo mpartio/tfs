@@ -104,7 +104,7 @@ def mse_plus_amse_loss(
     }
 
 
-class MSEAMSELoss:
+class MSEAMSELoss(nn.Module):
     def __init__(
         self,
         n_bins: int = None,
