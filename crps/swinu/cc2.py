@@ -61,6 +61,9 @@ class cc2CRPS(nn.Module):
         self.norm_input = nn.LayerNorm(self.embed_dim)
         self.dropout = nn.Dropout(config.drop_rate)
 
+        if not isinstance(config.drop_path_rate, list):
+            config.drop_path_rate = [config.drop_path_rate] * 4
+
         # Transformer encoder blocks
         self.encoder1 = nn.ModuleList(
             [
@@ -71,7 +74,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
+                    drop_path_rate=config.drop_path_rate[0],
                     window_size=config.window_size,
                     shift_size=0 if i % 2 == 0 else config.window_size // 2,
                     H=self.h_patches,
@@ -115,7 +118,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
+                    drop_path_rate=config.drop_path_rate[1],
                     window_size=config.window_size_deep,
                     shift_size=0 if i % 2 == 0 else config.window_size_deep // 2,
                     H=self.h_patches // 2,
@@ -151,7 +154,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
+                    drop_path_rate=config.drop_path_rate[2],
                     window_size=config.window_size_deep,
                     shift_size=0 if i % 2 == 0 else config.window_size_deep // 2,
                     H=self.h_patches // 2,
@@ -189,7 +192,7 @@ class cc2CRPS(nn.Module):
                     qkv_bias=True,
                     drop=config.drop_rate,
                     attn_drop=config.attn_drop_rate,
-                    drop_path_rate=config.drop_path_rate,
+                    drop_path_rate=config.drop_path_rate[3],
                     window_size=config.window_size,
                     shift_size=0 if i % 2 == 0 else config.window_size // 2,
                     H=self.h_patches,

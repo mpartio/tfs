@@ -44,7 +44,7 @@ class cc2CRPSModel(L.LightningModule):
         mlp_ratio: float = 4.0,
         drop_rate: float = 0.1,
         attn_drop_rate: float = 0.1,
-        drop_path_rate: float = 0.0,
+        drop_path_rate: float | list[float] = 0.0,
         learning_rate: float = 1e-3,
         warmup_iterations: int = 1000,
         weight_decay: float = 1e-3,
