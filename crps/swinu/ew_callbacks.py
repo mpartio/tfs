@@ -9,7 +9,7 @@ from torchmetrics.functional.image import (
     structural_similarity_index_measure,
     peak_signal_noise_ratio,
 )
-from scipy.stats import wasserstein_distance
+from scipy.stats import wasserstein_distance, energy_distance
 
 
 def _ensure_bchw(y):
@@ -124,6 +124,17 @@ def _wasserstein(y_pred: torch.Tensor, y_true: torch.Tensor):
     )
 
     return 1 / (1 + wass)
+
+
+@torch.no_grad
+def _energy_distance(y_pred: torch.Tensor, y_true: torch.Tensor):
+    assert y_true.shape == y_pred.shape
+
+    y_true_flat = y_true.cpu().flatten().numpy()
+    y_pred_flat = y_pred.cpu().flatten().numpy()
+    ed = energy_distance(y_true_flat, y_pred_flat)
+
+    return ed
 
 
 @torch.no_grad()
@@ -364,7 +375,8 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         ssim_list,
         psnr_list,
         wass_list,
-    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
+        energy_list,
+    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
     for b in range(yp.shape[0]):
         yp_b = yp[b]
         yt_b = yt[b]
@@ -390,6 +402,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         ssim_list.append(_ssim(yp_b, yt_b))
         psnr_list.append(_psnr(yp_b, yt_b))
         wass_list.append(_wasserstein(yp_b, yt_b))
+        energy_list.append(_energy_distance(yp_b, yt_b))
 
     hk_list = []
     for b in range(yp.shape[0]):
@@ -415,6 +428,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
         "ssim": float(sum(ssim_list) / len(ssim_list)),
         "psnr": float(sum(psnr_list) / len(psnr_list)),
         "wasserstein_distance": float(sum(wass_list) / len(wass_list)),
+        "energy_distance": float(sum(energy_list) / len(energy_list)),
     }
 
     prev_true = x_hist[:, -1]  # [B,C,H,W]
