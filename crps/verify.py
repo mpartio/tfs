@@ -19,7 +19,7 @@ from verif.spectral_coherence import (
 )
 from verif.change_metrics import (
     change_metrics,
-    plot_change_prf_timeseries,
+    # plot_change_prf_timeseries,
     plot_change_corr_stationarity_timeseries,
 )
 from verif.composite_score import (
@@ -417,7 +417,7 @@ if __name__ == "__main__":
                 )
 
             print(results)
-            plot_change_prf_timeseries(results, args.save_path)
+            # plot_change_prf_timeseries(results, args.save_path)
             plot_change_corr_stationarity_timeseries(results, args.save_path)
 
         all_results.append(results)
