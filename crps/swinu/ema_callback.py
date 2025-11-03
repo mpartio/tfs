@@ -113,6 +113,7 @@ class EMACallback(L.Callback):
         ema_sd = checkpoint.get("ema_state_dict", None)
         if ema_sd is None:
             return
+        print("Loading EMA checkpoint")
         if self.ema_model is None:
             dev = next(pl_module.parameters()).device
             self.ema_model = deepcopy(pl_module).to(device=dev, dtype=torch.float32)
