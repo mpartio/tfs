@@ -1,5 +1,5 @@
 timm==1.0.9
-torch==2.4.1
+torch
 einops==0.8.0
 numpy>=2.1.0
 matplotlib
@@ -8,7 +8,6 @@ zarr
 xarray
 scipy
 lightning==2.5.1
-PyWavelets
 dask
 anemoi-datasets
 rioxarray
