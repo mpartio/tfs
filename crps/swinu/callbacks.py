@@ -10,7 +10,7 @@ import sys
 import os
 import warnings
 import shutil
-from common.util import calculate_wavelet_snr, moving_average, get_rank
+from common.util import get_rank
 from datetime import datetime
 from matplotlib.ticker import ScalarFormatter
 from lightning.pytorch.loggers import CSVLogger

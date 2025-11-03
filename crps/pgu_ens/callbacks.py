@@ -10,7 +10,7 @@ import sys
 import warnings
 import os
 import shutil
-from common.util import calculate_wavelet_snr, moving_average, get_rank
+from common.util import get_rank
 from datetime import datetime
 from dataclasses import asdict
 from matplotlib.ticker import ScalarFormatter
@@ -31,18 +31,6 @@ colors = [
     "grey",
     "magenta",
 ]
-
-
-def get_gradient_names():
-    return [
-        "encoder1",
-        "encoder2",
-        "upsample",
-        "downsample",
-        "decoder1",
-        "decoder2",
-        "expand",
-    ]
 
 
 def run_info():
@@ -67,35 +55,6 @@ def rmse_std_ratio(predictions, y):
     ratio = rmse / std
 
     return std, rmse, ratio
-
-
-def analyze_gradients(model):
-    # Pre-compile patterns to check once
-    sections = get_gradient_names()
-    gradient_stats = {k: [] for k in sections}
-
-    # Batch all gradient stats by section in a single pass
-    with torch.no_grad():  # Avoid tracking history for these operations
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                continue
-
-            for section in sections:
-                if section in name:
-                    gradient_stats[section].append(param.grad.abs().mean())
-                    break  # Parameter can only belong to one section
-
-    # Calculate statistics using PyTorch operations
-    stats = {}
-    for section, grads in gradient_stats.items():
-        if grads:
-            grads_tensor = torch.stack(grads)
-            stats[section] = {
-                "mean": grads_tensor.mean().item(),
-                "std": grads_tensor.std().item(),
-            }
-
-    return stats
 
 
 class PredictionPlotterCallback(L.Callback):
@@ -232,10 +191,6 @@ class DiagnosticCallback(L.Callback):
         self.train_loss = []
         self.val_loss = []
         self.lr = []
-        self.val_snr_real = []
-        self.val_snr_pred = []
-        self.gradients_mean = {}
-        self.gradients_std = {}
         self.train_loss_components = {}
         self.val_loss_components = {}
         self.train_var = []
@@ -244,43 +199,29 @@ class DiagnosticCallback(L.Callback):
         self.val_mae = []
 
         self.loss_names = []
-        self.grad_names = get_gradient_names()
-        self._current_step_grads = None
 
         self.check_frequency = check_frequency
 
     def state_dict(self):
         return {
-            "gradients_mean": self.gradients_mean,
-            "gradients_std": self.gradients_std,
             "lr": self.lr,
             "train_loss": self.train_loss,
             "train_loss_components": self.train_loss_components,
             "val_loss": self.val_loss,
             "val_loss_components": self.val_loss_components,
-            "val_snr_real": self.val_snr_real,
-            "val_snr_pred": self.val_snr_pred,
         }
 
     def load_state_dict(self, state_dict):
         try:
-            self.gradients_mean = state_dict["gradients_mean"]
-            self.gradients_std = state_dict["gradients_std"]
             self.lr = state_dict["lr"]
             self.train_loss = state_dict["train_loss"]
             self.train_loss_components = state_dict["train_loss_components"]
             self.val_loss = state_dict["val_loss"]
             self.val_loss_components = state_dict["val_loss_components"]
-            self.val_snr_real = state_dict["val_snr_real"]
-            self.val_snr_pred = state_dict["val_snr_pred"]
         except KeyError as e:
             print(
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
             )
-
-    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
-        if (trainer.global_step + 1) % self.check_frequency == 0:
-            self._current_step_grads = analyze_gradients(pl_module)
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
 
@@ -303,30 +244,7 @@ class DiagnosticCallback(L.Callback):
         lr = trainer.optimizers[0].param_groups[0]["lr"]
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
 
-        # c) gradients
-        if self._current_step_grads:
-            for k in self._current_step_grads.keys():
-                mean = self._current_step_grads[k]["mean"]
-                std = self._current_step_grads[k]["std"]
-
-                pl_module.log(
-                    f"train/grad_{k}_mean",
-                    mean,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
-                pl_module.log(
-                    f"train/grad_{k}_std",
-                    std,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
-
-            self._current_step_grads = None
-
-        # d) variance and l1
+        # c) variance and l1
         if (batch_idx + 1) % self.check_frequency == 0:
 
             predictions = outputs["predictions"]  # B, M, T, C, H, W
@@ -369,37 +287,7 @@ class DiagnosticCallback(L.Callback):
         )
 
         if batch_idx % self.check_frequency == 0:
-            # b) signal to noise ratio
-            predictions = outputs["predictions"]
-
-            data, _ = batch
-            _, y = data
-
-            # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze().to(torch.float32)
-
-            # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
-
-            snr_pred = calculate_wavelet_snr(pred, None)
-            snr_real = calculate_wavelet_snr(truth, None)
-
-            pl_module.log(
-                "val/snr_real",
-                snr_real["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-            pl_module.log(
-                "val/snr_pred",
-                snr_pred["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-
-            # d) variance and l1
+            # b) variance and l1
             std, rmse, ratio = rmse_std_ratio(
                 predictions.to(torch.float32), y.to(torch.float32)
             )

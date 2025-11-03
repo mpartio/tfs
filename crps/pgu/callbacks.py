@@ -10,7 +10,7 @@ import sys
 import os
 import warnings
 import shutil
-from common.util import calculate_wavelet_snr, moving_average, get_rank
+from common.util import get_rank
 from datetime import datetime
 from matplotlib.ticker import ScalarFormatter
 from lightning.pytorch.loggers import CSVLogger
@@ -31,82 +31,12 @@ colors = [
 ]
 
 
-def get_gradient_names():
-    return [
-        "encoder1",
-        "encoder2",
-        "upsample",
-        "downsample",
-        "decoder1",
-        "decoder2",
-        "expand",
-    ]
-
-
 def run_info():
     run_name = os.environ["CC2_RUN_NAME"]
     run_number = os.environ["CC2_RUN_NUMBER"]
     run_dir = os.environ["CC2_RUN_DIR"]
 
     return run_name, run_number, run_dir
-
-
-def envelope_binning(x: torch.tensor, n_bins: int = 1000):
-    # divide data into bins and calculate min and max from each bin,
-    # and plot those
-    N = x.shape[0]
-
-    if N == 0:
-        empty = x.new_empty(0)
-        empty = empty.long()
-        return empty, empty, empty
-
-    B = max(1, min(n_bins, N))
-    W = N // B  # now W >= 1
-    trimmed = x[: B * W]
-
-    blocks = trimmed.view(B, W)
-    mins, _ = blocks.min(dim=1)
-    maxs, _ = blocks.max(dim=1)
-    xs = torch.arange(B) * W
-    xs = xs.long()
-    return xs, mins, maxs
-
-
-def dynamic_ma(x: torch.tensor, n_bins: int):
-    N = x.shape[0]
-    W = max(40, N // n_bins)
-    # your existing moving_average(x, W) function
-    return moving_average(x, W)
-
-
-def analyze_gradients(model):
-    # Pre-compile patterns to check once
-    sections = get_gradient_names()
-    gradient_stats = {k: [] for k in sections}
-
-    # Batch all gradient stats by section in a single pass
-    with torch.no_grad():  # Avoid tracking history for these operations
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                continue
-
-            for section in sections:
-                if section in name:
-                    gradient_stats[section].append(param.grad.abs().mean())
-                    break  # Parameter can only belong to one section
-
-    # Calculate statistics using PyTorch operations
-    stats = {}
-    for section, grads in gradient_stats.items():
-        if grads:
-            grads_tensor = torch.stack(grads)
-            stats[section] = {
-                "mean": grads_tensor.mean().item(),
-                "std": grads_tensor.std().item(),
-            }
-
-    return stats
 
 
 class PredictionPlotterCallback(L.Callback):
@@ -239,42 +169,29 @@ class DiagnosticCallback(L.Callback):
         self.train_loss = []
         self.val_loss = []
         self.lr = []
-        self.val_snr_real = []
-        self.val_snr_pred = []
-        self.gradients_mean = {}
-        self.gradients_std = {}
         self.train_loss_components = {}
         self.val_loss_components = {}
 
         self.loss_names = []
-        self.grad_names = get_gradient_names()
 
         self.check_frequency = check_frequency
 
     def state_dict(self):
         return {
-            "gradients_mean": self.gradients_mean,
-            "gradients_std": self.gradients_std,
             "lr": self.lr,
             "train_loss": self.train_loss,
             "train_loss_components": self.train_loss_components,
             "val_loss": self.val_loss,
             "val_loss_components": self.val_loss_components,
-            "val_snr_real": self.val_snr_real,
-            "val_snr_pred": self.val_snr_pred,
         }
 
     def load_state_dict(self, state_dict):
         try:
-            self.gradients_mean = state_dict["gradients_mean"]
-            self.gradients_std = state_dict["gradients_std"]
             self.lr = state_dict["lr"]
             self.train_loss = state_dict["train_loss"]
             self.train_loss_components = state_dict["train_loss_components"]
             self.val_loss = state_dict["val_loss"]
             self.val_loss_components = state_dict["val_loss_components"]
-            self.val_snr_real = state_dict["val_snr_real"]
-            self.val_snr_pred = state_dict["val_snr_pred"]
         except KeyError as e:
             print(
                 f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
@@ -317,28 +234,6 @@ class DiagnosticCallback(L.Callback):
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
-        return
-
-        # c) gradients
-        if batch_idx % self.check_frequency == 0:
-            grads = analyze_gradients(pl_module)
-
-            for k in grads.keys():
-                mean, std = grads[k]["mean"], grads[k]["std"]
-                pl_module.log(
-                    f"train/grad_{k}_mean",
-                    mean,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
-                pl_module.log(
-                    f"train/grad_{k}_std",
-                    std,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not trainer.is_global_zero:
@@ -367,37 +262,6 @@ class DiagnosticCallback(L.Callback):
                 sync_dist=False,
             )
 
-        if batch_idx % self.check_frequency == 0:
-            # b) signal to noise ratio
-            predictions = outputs["predictions"]
-
-            data, _ = batch
-            _, y = data
-
-            # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze().to(torch.float32)
-
-            # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
-
-            snr_pred = calculate_wavelet_snr(pred, None)
-            snr_real = calculate_wavelet_snr(truth, None)
-
-            pl_module.log(
-                "val/snr_real",
-                snr_real["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-            pl_module.log(
-                "val/snr_pred",
-                snr_pred["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.sanity_checking:
@@ -415,21 +279,6 @@ class DiagnosticCallback(L.Callback):
                 self.train_loss_components[k].append(val)
             except KeyError:
                 self.train_loss_components[k] = [val]
-
-        for k in self.grad_names:
-            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
-
-            try:
-                self.gradients_mean[k].append(val)
-            except KeyError:
-                self.gradients_mean[k] = [val]
-
-            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
-
-            try:
-                self.gradients_std[k].append(val)
-            except KeyError:
-                self.gradients_std[k] = [val]
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
