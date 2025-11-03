@@ -1,5 +1,4 @@
 import numpy as np
-import pywt
 import torch.distributed as dist
 import torch.nn.functional as F
 import os
