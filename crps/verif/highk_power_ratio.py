@@ -112,6 +112,6 @@ def plot_highk_power_ratio(df: pd.DataFrame, save_path="runs/verification"):
     plt.grid(True, axis="y", linestyle="--", alpha=0.7)
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     filename = f"{save_path}/figures/highk_power_ratio_timeseries.png"
-    plt.savefig(save_path)
+    plt.savefig(filename)
     print(f"Plot saved to {filename}")
     plt.close()
