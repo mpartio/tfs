@@ -31,18 +31,6 @@ colors = [
 ]
 
 
-def get_gradient_names():
-    return [
-        "encoder1",
-        "encoder2",
-        "upsample",
-        "downsample",
-        "decoder1",
-        "decoder2",
-        "expand",
-    ]
-
-
 # Create a custom colormap with white around zero
 def create_colormap(white_range=0.05, vmin=-1, vmax=1):
     """
@@ -95,35 +83,6 @@ def run_info():
     run_dir = os.environ["CC2_RUN_DIR"]
 
     return run_name, run_number, run_dir
-
-
-def analyze_gradients(model):
-    # Pre-compile patterns to check once
-    sections = get_gradient_names()
-    gradient_stats = {k: [] for k in sections}
-
-    # Batch all gradient stats by section in a single pass
-    with torch.no_grad():  # Avoid tracking history for these operations
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                continue
-
-            for section in sections:
-                if section in name:
-                    gradient_stats[section].append(param.grad.abs().mean())
-                    break  # Parameter can only belong to one section
-
-    # Calculate statistics using PyTorch operations
-    stats = {}
-    for section, grads in gradient_stats.items():
-        if grads:
-            grads_tensor = torch.stack(grads)
-            stats[section] = {
-                "mean": grads_tensor.mean().item(),
-                "std": grads_tensor.std().item(),
-            }
-
-    return stats
 
 
 class PredictionPlotterCallback(L.Callback):
@@ -259,49 +218,14 @@ class PredictionPlotterCallback(L.Callback):
 class DiagnosticCallback(L.Callback):
     def __init__(self, check_frequency: int = 50):
 
-        self.train_loss = []
         self.val_loss = []
         self.lr = []
-        self.val_snr_real = []
-        self.val_snr_pred = []
-        self.gradients_mean = {}
-        self.gradients_std = {}
         self.train_loss_components = {}
         self.val_loss_components = {}
 
         self.loss_names = []
-        self.grad_names = get_gradient_names()
 
         self.check_frequency = check_frequency
-
-    def state_dict(self):
-        return {
-            "gradients_mean": self.gradients_mean,
-            "gradients_std": self.gradients_std,
-            "lr": self.lr,
-            "train_loss": self.train_loss,
-            "train_loss_components": self.train_loss_components,
-            "val_loss": self.val_loss,
-            "val_loss_components": self.val_loss_components,
-            "val_snr_real": self.val_snr_real,
-            "val_snr_pred": self.val_snr_pred,
-        }
-
-    def load_state_dict(self, state_dict):
-        try:
-            self.gradients_mean = state_dict["gradients_mean"]
-            self.gradients_std = state_dict["gradients_std"]
-            self.lr = state_dict["lr"]
-            self.train_loss = state_dict["train_loss"]
-            self.train_loss_components = state_dict["train_loss_components"]
-            self.val_loss = state_dict["val_loss"]
-            self.val_loss_components = state_dict["val_loss_components"]
-            self.val_snr_real = state_dict["val_snr_real"]
-            self.val_snr_pred = state_dict["val_snr_pred"]
-        except KeyError as e:
-            print(
-                f"Warning: Missing key in DiagnosticCallback state_dict: {e}. Continuing anyway."
-            )
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not trainer.is_global_zero:
@@ -310,7 +234,7 @@ class DiagnosticCallback(L.Callback):
         # a) train loss
         train_loss = outputs["loss"]
         pl_module.log(
-            "train/loss",
+            "train_loss",
             train_loss,
             on_step=True,
             on_epoch=True,
@@ -324,7 +248,7 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"train/{k}",
+                f"train_loss_{k}",
                 torch.sum(v),
                 on_step=True,
                 on_epoch=True,
@@ -342,27 +266,7 @@ class DiagnosticCallback(L.Callback):
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
         return
 
-        # c) gradients
-        if batch_idx % self.check_frequency == 0:
-            grads = analyze_gradients(pl_module)
-
-            for k in grads.keys():
-                mean, std = grads[k]["mean"], grads[k]["std"]
-                pl_module.log(
-                    f"train/grad_{k}_mean",
-                    mean,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
-                pl_module.log(
-                    f"train/grad_{k}_std",
-                    std,
-                    on_step=True,
-                    on_epoch=False,
-                    sync_dist=False,
-                )
-
+    @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not trainer.is_global_zero:
             return
@@ -370,7 +274,7 @@ class DiagnosticCallback(L.Callback):
         # a) Validation loss
         val_loss = outputs["loss"]
         pl_module.log(
-            "val/loss_epoch",
+            "val_loss",
             val_loss,
             on_step=False,
             on_epoch=True,
@@ -383,76 +287,12 @@ class DiagnosticCallback(L.Callback):
                 continue
 
             pl_module.log(
-                f"val/{k}",
+                f"val_loss_{k}",
                 torch.sum(v),
                 on_step=False,
                 on_epoch=True,
                 sync_dist=False,
             )
-
-        if batch_idx % self.check_frequency == 0:
-            # b) signal to noise ratio
-            predictions = outputs["predictions"]
-
-            data, _ = batch
-            _, y = data
-
-            # Select first of batch and last of time
-            truth = y[0][-1].cpu().squeeze().to(torch.float32)
-
-            # ... and first of members
-            pred = predictions[0][-1][0].cpu().squeeze().to(torch.float32)
-
-            snr_pred = calculate_wavelet_snr(pred, None)
-            snr_real = calculate_wavelet_snr(truth, None)
-
-            pl_module.log(
-                "val/snr_real",
-                snr_real["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-            pl_module.log(
-                "val/snr_pred",
-                snr_pred["snr_db"],
-                on_step=False,
-                on_epoch=True,
-                sync_dist=False,
-            )
-
-    @rank_zero_only
-    def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.sanity_checking:
-            return
-
-        current_train_loss = trainer.logged_metrics.get(
-            "train/loss_epoch", float("nan")
-        )
-        self.train_loss.append(current_train_loss)
-
-        for k in self.loss_names:
-            val = trainer.logged_metrics.get(f"train/{k}_epoch", float("nan"))
-
-            try:
-                self.train_loss_components[k].append(val)
-            except KeyError:
-                self.train_loss_components[k] = [val]
-
-        for k in self.grad_names:
-            val = trainer.logged_metrics.get(f"train/grad_{k}_mean_epoch", float("nan"))
-
-            try:
-                self.gradients_mean[k].append(val)
-            except KeyError:
-                self.gradients_mean[k] = [val]
-
-            val = trainer.logged_metrics.get(f"train/grad_{k}_std_epoch", float("nan"))
-
-            try:
-                self.gradients_std[k].append(val)
-            except KeyError:
-                self.gradients_std[k] = [val]
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
