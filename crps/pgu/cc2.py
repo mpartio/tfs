@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from pgu.layers import (
     FeedForward,
-    OverlapPatchEmbed,
     PatchEmbed,
     PatchMerge,
     PatchExpand,
@@ -13,7 +12,6 @@ from pgu.layers import (
     DualStem,
     ProjectToImageFold,
     PatchEmbedLossless,
-    FiLM1D,
     DWConvResidual3D,
     get_padded_size,
     pad_tensors,
@@ -39,31 +37,14 @@ class cc2CRPS(nn.Module):
             config.input_resolution[0], config.input_resolution[1], self.patch_size, 1
         )
 
-        self.overlap_patch_embed = config.overlap_patch_embed
-
         self.num_prognostic = len(config.prognostic_params)
         self.num_forcings = len(config.forcing_params) + len(
             config.static_forcing_params
         )
 
-        self.stem_ch = 32
         self.use_lossless_patch_embed = config.use_lossless_patch_embed
 
-        if config.overlap_patch_embed:
-            self.patch_embed = OverlapPatchEmbed(
-                input_resolution=input_resolution,
-                patch_size=self.patch_size,
-                stride=self.patch_size // 2,
-                stem_ch=self.stem_ch,
-                embed_dim=self.embed_dim,
-            )
-
-            in_ch = self.num_prognostic + self.num_forcings
-            self.stem = DualStem(
-                self.num_prognostic, self.num_forcings, stem_ch=self.stem_ch
-            )
-
-        elif config.use_lossless_patch_embed:
+        if config.use_lossless_patch_embed:
             self.patch_embed = PatchEmbedLossless(
                 input_resolution=self.real_input_resolution,  # or whatever you pass now
                 patch_size=self.patch_size,
@@ -313,14 +294,7 @@ class cc2CRPS(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def patch_embedding(self, x, forcing):
-        if self.overlap_patch_embed:
-            x_stem, f_stem = self.stem(x, forcing)
-            x_tokens, f_future = self.patch_embed(x_stem, f_stem)
-
-        else:
-            x_tokens, f_future = self.patch_embed(
-                x, forcing
-            )  # [B, T, patches, embed_dim]
+        x_tokens, f_future = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
 
         B, T, P, D = x_tokens.shape
 

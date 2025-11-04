@@ -279,7 +279,9 @@ class ProjectToImageFold(nn.Module):
         H, W = self.input_resolution
         Ho = ceil(H / self.ps) * self.ps
         Wo = ceil(W / self.ps) * self.ps
-        y = F.fold(pix, output_size=(Ho, Wo), kernel_size=self.ps, stride=self.ps) # [B*T,C,Ho,Wo]
+        y = F.fold(
+            pix, output_size=(Ho, Wo), kernel_size=self.ps, stride=self.ps
+        )  # [B*T,C,Ho,Wo]
         y = y.view(B, T, self.out_channels, Ho, Wo)
         # If you pad elsewhere, your outer forward will depad to real size.
         return y
@@ -287,6 +289,7 @@ class ProjectToImageFold(nn.Module):
 
 import torch
 import torch.nn as nn
+
 
 class DWConvResidual3D(nn.Module):
     """
@@ -296,23 +299,36 @@ class DWConvResidual3D(nn.Module):
     Internally reshapes to [B*T, C, h, w], applies DW/PW convs, and reshapes back.
     """
 
-    def __init__(self, C: int, grid_hw: tuple[int, int], time_dim: int,
-                 expand: float = 2.0, dilation: int = 1, ls_init: float = 1e-2):
+    def __init__(
+        self,
+        C: int,
+        grid_hw: tuple[int, int],
+        time_dim: int,
+        expand: float = 2.0,
+        dilation: int = 1,
+        ls_init: float = 1e-2,
+    ):
         super().__init__()
         self.C = int(C)
         self.h, self.w = int(grid_hw[0]), int(grid_hw[1])
-        self.T = int(time_dim)                 # history_length (or the T at this stage)
+        self.T = int(time_dim)  # history_length (or the T at this stage)
         hidden = max(1, int(self.C * expand))
 
-        self.dw  = nn.Conv2d(self.C, self.C, kernel_size=3,
-                             padding=dilation, dilation=dilation,
-                             groups=self.C, bias=True)
+        self.dw = nn.Conv2d(
+            self.C,
+            self.C,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation,
+            groups=self.C,
+            bias=True,
+        )
         self.pw1 = nn.Conv2d(self.C, hidden, kernel_size=1, bias=True)
         self.act = nn.GELU()
         self.pw2 = nn.Conv2d(hidden, self.C, kernel_size=1, bias=True)
 
         # tiny LayerScale so it's near-identity at init
-        self.ls  = nn.Parameter(torch.ones(self.C) * ls_init)
+        self.ls = nn.Parameter(torch.ones(self.C) * ls_init)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, L, C]
@@ -325,7 +341,9 @@ class DWConvResidual3D(nn.Module):
 
         # [B, L(=T*P), C] -> [B, T, P, C] -> [B*T, C, h, w]
         x_btpc = x.view(B, self.T, P, C)
-        x_2d = x_btpc.view(B * self.T, self.h, self.w, C).permute(0, 3, 1, 2).contiguous()
+        x_2d = (
+            x_btpc.view(B * self.T, self.h, self.w, C).permute(0, 3, 1, 2).contiguous()
+        )
 
         y = self.dw(x_2d)
         y = self.pw2(self.act(self.pw1(y)))
@@ -333,26 +351,9 @@ class DWConvResidual3D(nn.Module):
 
         # back to [B, L, C]
         y_btpc = y.permute(0, 2, 3, 1).contiguous().view(B, self.T, P, C)
-        y_seq  = y_btpc.view(B, L, C)
+        y_seq = y_btpc.view(B, L, C)
         return y_seq
 
-class FiLM1D(nn.Module):
-    """
-    Simple FiLM (Feature-wise Linear Modulation) on tokens.
-    x_data, x_cond: [B,T,P,C]. Applies (1+gamma) * x_data + beta, where gamma,beta are linear projections of x_cond.
-    """
-    def __init__(self, C: int):
-        super().__init__()
-        self.to_gamma = nn.Linear(C, C)
-        self.to_beta  = nn.Linear(C, C)
-
-        nn.init.zeros_(self.to_gamma.weight); nn.init.zeros_(self.to_gamma.bias)
-        nn.init.zeros_(self.to_beta.weight);  nn.init.zeros_(self.to_beta.bias)
-
-    def forward(self, x_data: torch.Tensor, x_cond: torch.Tensor) -> torch.Tensor:
-        gamma = self.to_gamma(x_cond)
-        beta  = self.to_beta(x_cond)
-        return (1.0 + gamma) * x_data + beta
 
 class EncoderBlock(nn.Module):
     def __init__(
@@ -610,70 +611,6 @@ class DualStem(nn.Module):
         f_stem = self.stem_forcing(f).reshape(Bf, Tf, -1, H, W)
 
         return x_stem, f_stem
-
-
-class OverlapPatchEmbed(nn.Module):
-    def __init__(
-        self,
-        input_resolution,
-        patch_size,
-        stride,
-        stem_ch,
-        embed_dim,
-    ):
-        super().__init__()
-        self.patch_size = patch_size
-        self.stride = stride
-
-        self.proj_data = nn.Conv2d(
-            stem_ch, embed_dim, kernel_size=patch_size, stride=stride
-        )
-        self.proj_forcing = nn.Conv2d(
-            stem_ch, embed_dim, kernel_size=patch_size, stride=stride
-        )
-
-        H, W = input_resolution
-        # number of tokens in each dim
-        self.h_patches = (H - patch_size) // stride + 1
-        self.w_patches = (W - patch_size) // stride + 1
-        self.num_patches = self.h_patches * self.w_patches
-
-        self.fuse = nn.Linear(2 * embed_dim, embed_dim)
-
-        self.patch_area_scale = sqrt(self.patch_size * self.patch_size)
-
-    def _proj(self, x, is_data):  # x: [B, T, C, H, W] -> [B, T, P, D]
-        B, T, C, H, W = x.shape
-        x = x.reshape(B * T, C, H, W)
-        proj = self.proj_data if is_data else self.proj_forcing
-        x = proj(x)  # [B*T, D, h_t, w_t]
-        x = x.flatten(2).transpose(1, 2)  # [B*T, P, D]
-        x = x.reshape(B, T, -1, x.shape[-1])  # [B, T, P, D]
-        return x
-
-    def forward(self, x_stem, f_stem):
-        x_tok = self._proj(x_stem, is_data=True)  # [B, T,   P, D]
-        f_tok = self._proj(f_stem, is_data=False)  # [B, T_f, P, D]
-
-        x_tok = x_tok * self.patch_area_scale
-        f_tok = f_tok * self.patch_area_scale
-
-        B, T, P, D = x_tok.shape
-        Tf = f_tok.shape[1]
-
-        if Tf >= T:
-            f_hist = f_tok[:, :T]  # forcings aligned with history
-            f_future = f_tok[:, T : T + 1]  # the "future" forcing (shape [B, 1, P, D])
-        else:
-            # should not ever get here
-            repeat = (T + Tf - 1) // Tf
-            f_hist = f_tok.repeat(1, repeat, 1, 1)[:, :T]
-            f_future = None
-
-        fused = torch.cat([x_tok, f_hist], dim=3)  # [B, T, P, 2D]
-        fused = self.fuse(fused)  # [B, T, P, D]
-
-        return fused, f_future
 
 
 class PatchEmbed(nn.Module):
