@@ -56,7 +56,7 @@ def _amse2d_per_time(y_pred, y_true, n_bins):
 
     PSDx = reduce_bt(PX).clamp_min(eps)  # [B*T, n_bins]
     PSDy = reduce_bt(PY).clamp_min(eps)
-    Sxy_mag = reduce_bt(torch.abs(Sxy)).clamp_min(eps)
+    Sxy_mag = torch.abs(reduce_bt(Sxy)).clamp_min(eps)
 
     sqrtx = PSDx.sqrt()
     sqrty = PSDy.sqrt()
