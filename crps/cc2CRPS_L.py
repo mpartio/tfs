@@ -438,11 +438,22 @@ class cc2CRPSModel(L.LightningModule):
         print(f"Wrote files predictions.pt, truth.pt and dates.pt to {output_dir}")
 
     def configure_optimizers(self):
+        decay, no_decay = [], []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if any(nd in name for nd in ["bias", "pos_embed", "norm"]):
+                no_decay.append(param)
+            else:
+                decay.append(param)
+
         optimizer = optim.AdamW(
-            self.parameters(),
+            [
+                {"params": decay, "weight_decay": self.hparams.weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
             lr=self.hparams.learning_rate,
             betas=(0.9, 0.95),
-            weight_decay=self.hparams.weight_decay,
         )
 
         if self.trainer.max_epochs > 0:
