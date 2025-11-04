@@ -256,11 +256,8 @@ class cc2CRPS(nn.Module):
         self.apply(self._init_weights)
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
-        self.add_skip_connection = config.add_skip_connection
-
-        if config.add_skip_connection:
-            self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
-            self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
+        self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
+        self.skip_fusion = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
         self.use_scheduled_sampling = config.use_scheduled_sampling
@@ -354,11 +351,8 @@ class cc2CRPS(nn.Module):
                 if self.use_dw_conv_residual:
                     x = self.dwres_e1[i](x)
 
-        if self.add_skip_connection:
-            skip = x.clone()  # skip connection, B, T*P, D
-            skip = skip.reshape(B, T, -1, D)
-        else:
-            skip = None
+        skip = x.clone()  # skip connection, B, T*P, D
+        skip = skip.reshape(B, T, -1, D)
 
         # Downsample
         x = self.downsample(x)
@@ -472,13 +466,12 @@ class cc2CRPS(nn.Module):
         P_new, D_new = upsampled_delta.shape[2], upsampled_delta.shape[3]
         x2 = upsampled_delta.reshape(B, -1, D_new)
 
-        if self.add_skip_connection:
-            skip_token = skip[:, -1, :, :]  # shape: [B, num_tokens, embed_dim]
-            assert skip_token.ndim == 3
-            skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
+        skip_token = skip[:, -1, :, :]  # shape: [B, num_tokens, embed_dim]
+        assert skip_token.ndim == 3
+        skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
 
-            x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
-            x2 = self.skip_fusion(x2)
+        x2 = torch.cat([x2, skip_proj], dim=-1)  # [B, num_tokens, embed_dim*4]
+        x2 = self.skip_fusion(x2)
 
         if self.use_gradient_checkpointing:
             for block in self.decoder2:
