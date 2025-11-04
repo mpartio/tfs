@@ -25,7 +25,7 @@ def _safe_mean(series):
 def composite_score(
     run_name: list[str],
     values: dict,
-    preset: str = "balanced",
+    preset: str = "sharpness",
     mae_ref: float | None = None,
     tol_var: float = 0.10,
     tol_hk: float = 0.15,
@@ -289,16 +289,6 @@ def plot_component_contributions(
                 "S_hk": 0.15,
                 "S_var": 0.10,
                 "S_change": 0.15,
-            }
-        else:
-            # Fallback to balanced
-            preset_weights = {
-                "S_mae": 0.30,
-                "S_fss": 0.15,
-                "S_coh": 0.15,
-                "S_hk": 0.10,
-                "S_var": 0.10,
-                "S_change": 0.20,
             }
 
     # Sort models by final score

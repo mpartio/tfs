@@ -441,7 +441,7 @@ if __name__ == "__main__":
 
     if len(composite_score_values.keys()) == 6:
         composite_result = composite_score(args.run_name, composite_score_values)
-        plot_composite_bars(composite_result, save_path=args.save_path)
+        # plot_composite_bars(composite_result, save_path=args.save_path)
         plot_component_contributions(composite_result, save_path=args.save_path)
 
     else:
