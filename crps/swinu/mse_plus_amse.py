@@ -9,20 +9,25 @@ def _radial_bins_rfft(Hf, Wf, device, n_bins):
     fx = rfftfreq(2 * (Wf - 1), d=1.0, device=device)  # [0,0.5]
     FY, FX = torch.meshgrid(fy, fx, indexing="ij")
     r = torch.sqrt(FY**2 + FX**2)
+    is_dc = r == 0.0
     r = r / r.max().clamp(min=1e-8)
     if n_bins is None:
         n_bins = max(8, min(Hf, 2 * (Wf - 1)) // 2)
-    edges = torch.linspace(0, 1.0000001, n_bins + 1, device=device)
+    edges = torch.linspace(1e-8, 1.0000001, n_bins + 1, device=device)
     bin_index = torch.bucketize(r.reshape(-1), edges) - 1
-    bin_index = bin_index.reshape(Hf, Wf).clamp(0, n_bins - 1)
-    counts = torch.bincount(bin_index.flatten(), minlength=n_bins).clamp(min=1)
-    return bin_index, counts, n_bins
+    bin_index[is_dc.flatten()] = -1  # exclude dc bins
+    bin_index = bin_index.reshape(Hf, Wf)
+    mask = bin_index >= 0
+    counts = torch.bincount(bin_index[mask].flatten(), minlength=n_bins).clamp(min=1)
+    return bin_index, mask, counts, n_bins
 
 
 def _amse2d_per_time(y_pred, y_true, n_bins):
     eps = 1e-8
 
     B, T, C, H, W = y_pred.shape
+
+    assert C == 1, f"Support only one output channel (tcc), got: {C}"
     device = y_pred.device
 
     wh = torch.hann_window(H, device=device).unsqueeze(1)
@@ -35,21 +40,23 @@ def _amse2d_per_time(y_pred, y_true, n_bins):
     yt = yt.to(torch.float32)
 
     # rfft2 over H,W; average PSD/cross over channels
-    X = rfft2(yp, dim=(-2, -1), norm="ortho")  # [B,T,C,Hf,Wf]
-    Y = rfft2(yt, dim=(-2, -1), norm="ortho")
+    X = rfft2(yp, dim=(-2, -1), norm="ortho").squeeze(dim=2)  # [B,T,Hf,Wf]
+    Y = rfft2(yt, dim=(-2, -1), norm="ortho").squeeze(dim=2)
 
     Hf, Wf = X.shape[-2], X.shape[-1]
-    bin_index, counts, n_bins = _radial_bins_rfft(Hf, Wf, device, n_bins)
+    bin_index, mask, counts, n_bins = _radial_bins_rfft(Hf, Wf, device, n_bins)
 
     # Magnitudes & cross, channel-mean
-    PX = (X.real**2 + X.imag**2).mean(dim=2)  # [B,T,Hf,Wf]
-    PY = (Y.real**2 + Y.imag**2).mean(dim=2)
-    Sxy = (X * torch.conj(Y)).mean(dim=2)  # complex [B,T,Hf,Wf]
+    PX = X.real**2 + X.imag**2  # [B,T,Hf,Wf]
+    PY = Y.real**2 + Y.imag**2
 
-    flat_idx = bin_index.flatten()
+    # Cross spectrum
+    Sxy = X * torch.conj(Y)  # complex [B,T,Hf,Wf]
+
+    flat_idx = bin_index[mask].flatten()
 
     def reduce_bt(Z):  # Z: [B,T,Hf,Wf] -> [B*T, n_bins]
-        Zbt = Z.reshape(B * T, Hf * Wf)
+        Zbt = Z.reshape(B * T, Hf * Wf)[:, mask.flatten()]
         sums = torch.zeros(B * T, n_bins, device=device, dtype=Z.dtype)
         sums.index_add_(1, flat_idx, Zbt)
         return sums / counts
