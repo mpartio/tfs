@@ -73,11 +73,18 @@ def _amse2d_per_time(y_pred, y_true, n_bins):
     Coh = (Sxy_mag / denom).clamp(0.0, 1.0)
 
     amp_term = (sqrtx - sqrty) ** 2
-    coh_term = 2.0 * (1.0 - Coh) * torch.maximum(PSDx, PSDy)
+    amp_term = amp_term.mean(dim=1)
 
-    amse_bt = (amp_term + coh_term).mean(dim=1)  # [B*T]
-    amse_t = amse_bt.view(B, T).mean(dim=0)  # [T]
-    return amse_t
+    coh_term = 2.0 * (1.0 - Coh) * torch.maximum(PSDx, PSDy)
+    coh_term = coh_term.mean(dim=1)
+
+    amse_bt = amp_term + coh_term  # [B*T]
+    amse_term = amse_bt.view(B, T).mean(dim=0)  # [T]
+    return (
+        amse_term,
+        coh_term.view(B, T).mean(dim=0).detach(),
+        amp_term.view(B, T).mean(dim=0).detach(),
+    )
 
 
 class AMSELoss(nn.Module):
@@ -93,11 +100,13 @@ class AMSELoss(nn.Module):
             y_true = y_true.unsqueeze(1)
             y_pred = y_pred.unsqueeze(1)
 
-        amse_t = _amse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
-        total_loss = amse_t.mean()
+        amse, coh, amp = _amse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
+        total_loss = amse.mean()
 
         assert torch.isfinite(total_loss), f"Non-finite loss: {total_loss}"
 
         return {
             "loss": total_loss,
+            "coherence": coh.mean(),
+            "amplitude": amp.mean(),
         }
