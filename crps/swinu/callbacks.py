@@ -249,7 +249,7 @@ class DiagnosticCallback(L.Callback):
 
             pl_module.log(
                 f"train_loss_{k}",
-                torch.sum(v),
+                torch.sum(v).item(),
                 on_step=True,
                 on_epoch=True,
                 sync_dist=False,
@@ -288,7 +288,7 @@ class DiagnosticCallback(L.Callback):
 
             pl_module.log(
                 f"val_loss_{k}",
-                torch.sum(v),
+                torch.sum(v).item(),
                 on_step=False,
                 on_epoch=True,
                 sync_dist=False,
