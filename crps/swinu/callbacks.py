@@ -244,11 +244,8 @@ class DiagnosticCallback(L.Callback):
 
         _loss_names = []
         for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
             pl_module.log(
-                f"train_loss_{k}",
+                f"loss/train/{k}",
                 torch.sum(v).item(),
                 on_step=True,
                 on_epoch=True,
@@ -264,7 +261,6 @@ class DiagnosticCallback(L.Callback):
         # b) learning rate
         lr = trainer.optimizers[0].param_groups[0]["lr"]
         pl_module.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
-        return
 
     @rank_zero_only
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
@@ -283,11 +279,8 @@ class DiagnosticCallback(L.Callback):
         )
 
         for k, v in outputs["loss_components"].items():
-            if k == "loss":
-                continue
-
             pl_module.log(
-                f"val_loss_{k}",
+                f"loss/val/{k}",
                 torch.sum(v).item(),
                 on_step=False,
                 on_epoch=True,
