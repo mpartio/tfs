@@ -111,7 +111,7 @@ class DSELoss(nn.Module):
         )  # [T]
 
         # 2. Calculate Direct Spectral Error (DSE) Loss
-        dse_metrics = self._dse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
+        dse_metrics = self._dse2d_per_time(y_pred, y_true)  # [T]
         dse_loss = dse_metrics["dse"].mean()
 
         # 3. Combine Losses
