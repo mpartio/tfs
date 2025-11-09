@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.fft import rfft2, rfftfreq, fftfreq
+from torch.fft import rfft2
 from swinu.util import radial_bins_rfft
 
 
@@ -20,7 +20,7 @@ class DSELoss(nn.Module):
         self.n_bins = n_bins
         self.lambda_dse = lambda_dse
 
-    def _diag(PSDx, PSDy, n_bins, device):
+    def _diag(self, PSDx, PSDy, n_bins, device):
 
         k = torch.linspace(0, 1, n_bins, device=device)
         low = k < 0.20
@@ -33,10 +33,10 @@ class DSELoss(nn.Module):
         def band_mean(x, m):
             return x[:, m].mean().detach()
 
-        max_r = 10
+        max_r = torch.tensor(10).to(device)
         metrics = {
             "r_low": torch.clamp_max(max_r, band_mean(r, low)),
-            "r_mid": torch.clam_max(max_r, band_mean(r, mid)),
+            "r_mid": torch.clamp_max(max_r, band_mean(r, mid)),
             "r_high": torch.clamp_max(max_r, band_mean(r, high)),
             "lpe_low": band_mean(lpe.abs(), low),
             "lpe_mid": band_mean(lpe.abs(), mid),
@@ -45,14 +45,14 @@ class DSELoss(nn.Module):
 
         return metrics
 
-    def _apply_window(field: torch.tensor, H: int, W: int):
+    def _apply_window(self, field: torch.tensor, H: int, W: int):
         wh = torch.hann_window(H, device=field.device).unsqueeze(1)  # (H, 1)
         ww = torch.hann_window(W, device=field.device).unsqueeze(0)  # (1, W)
         win = (wh @ ww).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
         win_rms = (win**2).mean().sqrt()
         return field * win / win_rms
 
-    def _dse2d_per_time(y_pred: torch.tensor, y_true: torch.tensor, n_bins: int):
+    def _dse2d_per_time(self, y_pred: torch.tensor, y_true: torch.tensor, n_bins: int):
         eps = 1e-8
         B, T, C, H, W = y_pred.shape
         assert C == 1, f"Support only one output channel (tcc), got: {C}"
@@ -110,7 +110,7 @@ class DSELoss(nn.Module):
         )  # [T]
 
         # 2. Calculate Direct Spectral Error (DSE) Loss
-        dse_metrics = _dse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
+        dse_metrics = self._dse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
         dse_loss = dse_metrics["dse"].mean()
 
         # 3. Combine Losses
