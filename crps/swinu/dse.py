@@ -99,7 +99,6 @@ class DSELoss(nn.Module):
         return train_metrics
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):
-        # Ensure y_pred and y_true have shape [B, T, C, H, W] for consistent summation
         if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
             y_true = y_true.unsqueeze(1)
             y_pred = y_pred.unsqueeze(1)
@@ -120,9 +119,12 @@ class DSELoss(nn.Module):
 
         assert torch.isfinite(combined_loss), f"Non-finite loss: {combined_loss}"
 
+        mse_loss = mse_loss_t.mean()
+
         loss = {
             "loss": combined_loss,
-            "mse": mse_loss_t.mean(),
+            "mse": mse_loss,
+            "dse_mse_ratio": dse_loss / (mse_loss + 1e-12),
         }
 
         loss.update(dse_metrics)
