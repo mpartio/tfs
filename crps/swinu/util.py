@@ -213,8 +213,8 @@ def roll_forecast(
             next_state = ste_clamp(next_pred, False)
 
         # Store the prediction
-        all_predictions.append(next_state)
-        all_tendencies.append(tendency)
+        all_predictions.append(next_state.detach())
+        all_tendencies.append(tendency.detach())
 
         # Update current state for next iteration
         previous_state = current_state
@@ -244,6 +244,7 @@ def roll_forecast(
         for k, v in loss.items():
             if k == "loss":
                 continue
+
             loss[k] = torch.stack(loss[k])
 
     assert tendencies.ndim == 5
