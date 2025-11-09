@@ -5,6 +5,25 @@ import lightning.pytorch as pl
 from typing import Dict
 
 
+def radial_bins_rfft(Hf: int, Wf: int, device: str, n_bins: int | None):
+    # This function is used to create the radial bins for DSE calculation
+    fy = fftfreq(Hf, d=1.0, device=device)
+    fx = rfftfreq(2 * (Wf - 1), d=1.0, device=device)
+    FY, FX = torch.meshgrid(fy, fx, indexing="ij")
+    r = torch.sqrt(FY**2 + FX**2)
+    is_dc = r == 0.0
+    r = r / r.max().clamp(min=1e-8)
+    if n_bins is None:
+        n_bins = max(8, min(Hf, 2 * (Wf - 1)) // 2)
+    edges = torch.linspace(1e-8, 1.0000001, n_bins + 1, device=device)
+    bin_index = torch.bucketize(r.reshape(-1), edges) - 1
+    bin_index[is_dc.flatten()] = -1
+    bin_index = bin_index.reshape(Hf, Wf)
+    mask = bin_index >= 0
+    counts = torch.bincount(bin_index[mask].flatten(), minlength=n_bins).clamp(min=1)
+    return bin_index, mask, counts, n_bins
+
+
 def scheduled_sampling_inputs(
     previous_state: torch.Tensor,
     current_state: torch.Tensor,

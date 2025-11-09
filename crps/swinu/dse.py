@@ -1,0 +1,129 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.fft import rfft2, rfftfreq, fftfreq
+from swinu.util import radial_bins_rfft
+
+
+class DSELoss(nn.Module):
+    """
+    Combines pixel-wise Mean Squared Error (MSE) with the Direct Spectral Error (DSE).
+    L_Total = L_MSE + lambda_dse * L_DSE
+    """
+
+    def __init__(
+        self,
+        lambda_dse: float = 1.0,  # Weight for the DSE component
+        n_bins: int = None,
+    ):
+        super().__init__()
+        self.n_bins = n_bins
+        self.lambda_dse = lambda_dse
+
+    def _diag(PSDx, PSDy, n_bins, device):
+
+        k = torch.linspace(0, 1, n_bins, device=device)
+        low = k < 0.20
+        mid = (k >= 0.20) & (k < 0.45)
+        high = k >= 0.45
+
+        r = PSDx / (PSDy + 1e-12)
+        lpe = torch.log(PSDx) - torch.log(PSDy)
+
+        def band_mean(x, m):
+            return x[:, m].mean().detach()
+
+        max_r = 10
+        metrics = {
+            "r_low": torch.clamp_max(max_r, band_mean(r, low)),
+            "r_mid": torch.clam_max(max_r, band_mean(r, mid)),
+            "r_high": torch.clamp_max(max_r, band_mean(r, high)),
+            "lpe_low": band_mean(lpe.abs(), low),
+            "lpe_mid": band_mean(lpe.abs(), mid),
+            "lpe_high": band_mean(lpe.abs(), high),
+        }
+
+        return metrics
+
+    def _apply_window(field: torch.tensor, H: int, W: int):
+        wh = torch.hann_window(H, device=field.device).unsqueeze(1)  # (H, 1)
+        ww = torch.hann_window(W, device=field.device).unsqueeze(0)  # (1, W)
+        win = (wh @ ww).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        win_rms = (win**2).mean().sqrt()
+        return field * win / win_rms
+
+    def _dse2d_per_time(y_pred: torch.tensor, y_true: torch.tensor, n_bins: int):
+        eps = 1e-8
+        B, T, C, H, W = y_pred.shape
+        assert C == 1, f"Support only one output channel (tcc), got: {C}"
+        device = y_pred.device
+
+        yp = self._apply_window(y_pred, H, W)
+        yt = self._apply_window(y_true, H, W)
+
+        yp = yp.to(torch.float32)
+        yt = yt.to(torch.float32)
+
+        # FFT and Binning setup
+        X = rfft2(yp, dim=(-2, -1), norm="ortho").squeeze(dim=2)
+        Y = rfft2(yt, dim=(-2, -1), norm="ortho").squeeze(dim=2)
+        Hf, Wf = X.shape[-2], X.shape[-1]
+        bin_index, mask, counts, n_bins = radial_bins_rfft(Hf, Wf, device, n_bins)
+        PX = X.real**2 + X.imag**2
+        PY = Y.real**2 + Y.imag**2
+
+        flat_idx = bin_index[mask].flatten()
+
+        def reduce_bt(Z):
+            Zbt = Z.reshape(B * T, Hf * Wf)[:, mask.flatten()]
+            sums = torch.zeros(B * T, n_bins, device=device, dtype=Z.dtype)
+            sums.index_add_(1, flat_idx, Zbt)
+            return sums / counts
+
+        PSDx = reduce_bt(PX).clamp_min(eps)
+        PSDy = reduce_bt(PY).clamp_min(eps)
+
+        # DSE Calculation
+        sqrtx = PSDx.sqrt()
+        sqrty = PSDy.sqrt()
+        dse_bin = (sqrtx - sqrty) ** 2
+
+        dse_bt = dse_bin.mean(dim=1)
+        dse_t = dse_bt.view(B, T).mean(dim=0)
+
+        train_metrics = self._diag(PSDx, PSDy, n_bins, device)
+
+        train_metrics["dse"] = dse_t
+
+        return train_metrics
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):
+        # Ensure y_pred and y_true have shape [B, T, C, H, W] for consistent summation
+        if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
+            y_true = y_true.unsqueeze(1)
+            y_pred = y_pred.unsqueeze(1)
+
+        # 1. Calculate Pixel-wise MSE Loss
+        # We average over Batch, Channel, Height, and Width, leaving the Time dimension [T]
+        mse_loss_t = F.mse_loss(y_pred, y_true, reduction="none").mean(
+            dim=[0, 2, 3, 4]
+        )  # [T]
+
+        # 2. Calculate Direct Spectral Error (DSE) Loss
+        dse_metrics = _dse2d_per_time(y_pred, y_true, self.n_bins)  # [T]
+        dse_loss = dse_metrics["dse"].mean()
+
+        # 3. Combine Losses
+        combined_loss = mse_loss_t.mean() + self.lambda_dse * dse_loss
+        # combined_loss = combined_loss_t.mean()  # Final scalar loss (mean over Time)
+
+        assert torch.isfinite(combined_loss), f"Non-finite loss: {combined_loss}"
+
+        loss = {
+            "loss": combined_loss,
+            "mse": mse_loss_t.mean(),
+        }
+
+        loss.update(dse_metrics)
+
+        return loss
