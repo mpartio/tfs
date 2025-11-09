@@ -14,15 +14,15 @@ class DSELoss(nn.Module):
     def __init__(
         self,
         lambda_dse: float = 1.0,  # Weight for the DSE component
-        n_bins: int = None,
+        n_bins: int | None = None,
     ):
         super().__init__()
         self.n_bins = n_bins
         self.lambda_dse = lambda_dse
 
-    def _diag(self, PSDx, PSDy, n_bins, device):
+    def _diag(self, PSDx, PSDy, device):
 
-        k = torch.linspace(0, 1, n_bins, device=device)
+        k = torch.linspace(0, 1, self.n_bins, device=device)
         low = k < 0.20
         mid = (k >= 0.20) & (k < 0.45)
         high = k >= 0.45
@@ -52,7 +52,7 @@ class DSELoss(nn.Module):
         win_rms = (win**2).mean().sqrt()
         return field * win / win_rms
 
-    def _dse2d_per_time(self, y_pred: torch.tensor, y_true: torch.tensor, n_bins: int):
+    def _dse2d_per_time(self, y_pred: torch.tensor, y_true: torch.tensor):
         eps = 1e-8
         B, T, C, H, W = y_pred.shape
         assert C == 1, f"Support only one output channel (tcc), got: {C}"
@@ -68,7 +68,8 @@ class DSELoss(nn.Module):
         X = rfft2(yp, dim=(-2, -1), norm="ortho").squeeze(dim=2)
         Y = rfft2(yt, dim=(-2, -1), norm="ortho").squeeze(dim=2)
         Hf, Wf = X.shape[-2], X.shape[-1]
-        bin_index, mask, counts, n_bins = radial_bins_rfft(Hf, Wf, device, n_bins)
+        bin_index, mask, counts, n_bins = radial_bins_rfft(Hf, Wf, device, self.n_bins)
+        self.n_bins = n_bins
         PX = X.real**2 + X.imag**2
         PY = Y.real**2 + Y.imag**2
 
@@ -76,7 +77,7 @@ class DSELoss(nn.Module):
 
         def reduce_bt(Z):
             Zbt = Z.reshape(B * T, Hf * Wf)[:, mask.flatten()]
-            sums = torch.zeros(B * T, n_bins, device=device, dtype=Z.dtype)
+            sums = torch.zeros(B * T, self.n_bins, device=device, dtype=Z.dtype)
             sums.index_add_(1, flat_idx, Zbt)
             return sums / counts
 
@@ -91,7 +92,7 @@ class DSELoss(nn.Module):
         dse_bt = dse_bin.mean(dim=1)
         dse_t = dse_bt.view(B, T).mean(dim=0)
 
-        train_metrics = self._diag(PSDx, PSDy, n_bins, device)
+        train_metrics = self._diag(PSDx, PSDy, device)
 
         train_metrics["dse"] = dse_t
 
