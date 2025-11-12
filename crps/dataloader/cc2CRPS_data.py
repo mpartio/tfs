@@ -41,19 +41,19 @@ def get_default_normalization_methods(custom_methods):
         "z_700": "standard",
         "z_850": "standard",
         "z_925": "standard",
-        # environment forcings
+        # environment dynamic forcings
         "insolation": "none",
         "cos_julian_day": "none",
         "sin_julian_day": "none",
+        "cos_local_time": "none",
+        "sin_local_time": "none",
+        # environment static forcings
+        "lsm": "none",
+        "z": "minmax",
         "cos_latitude": "none",
         "sin_latitude": "none",
         "cos_longitude": "none",
         "sin_longitude": "none",
-        "cos_local_time": "none",
-        "sin_local_time": "none",
-        # static forcings
-        "lsm": "none",
-        "z": "minmax",
     }
 
     if custom_methods is not None:
