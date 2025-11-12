@@ -153,7 +153,6 @@ class AnemoiDataset(Dataset):
         static_forcing_path: str | None,
         static_forcing_params: list[str],
         normalization_methods: dict,
-        disable_normalization: bool,
         return_metadata: bool = False,
         data_options: dict[str, str | int | list] = {},
         statistics: dict | None = {},
@@ -195,7 +194,6 @@ class AnemoiDataset(Dataset):
             if not self._sequence_has_missing_data(i)
         ]
 
-        self.disable_normalization = disable_normalization
         self.data_options = data_options
 
         self.input_resolution = self.data.field_shape  # H, W
@@ -211,11 +209,10 @@ class AnemoiDataset(Dataset):
 
         assert self.statistics, f"Statistics is: {self.statistics}"
 
-        if self.disable_normalization is False:
-            self.normalization_methods = normalization_methods
-            assert self.normalization_methods is not None
+        self.normalization_methods = normalization_methods
+        assert self.normalization_methods is not None
 
-            self._setup_normalization()
+        self._setup_normalization()
 
     def _setup_normalization(self):
         # Pre-compute combined indexes and params for dynamic data
@@ -397,10 +394,9 @@ class AnemoiDataset(Dataset):
         combined_dynamic = torch.from_numpy(combined_dynamic)
 
         # Normalize the dynamic data only
-        if self.disable_normalization is False:
-            combined_dynamic = self.normalize(
-                combined_dynamic, self.combined_dynamic_params
-            )
+        combined_dynamic = self.normalize(
+            combined_dynamic, self.combined_dynamic_params
+        )
 
         # Separate prognostic from dynamic forcings (both now normalized)
         prognostic_normalized = combined_dynamic[:, : len(self.data_indexes), :, :]
@@ -505,7 +501,6 @@ class cc2DataModule(L.LightningDataModule):
         prefetch_factor: int | None = 3,
         pin_memory: bool = True,
         normalization: dict[str, str] | None = None,
-        disable_normalization: bool = False,
         apply_smoothing: bool = False,
         data_options: dict[str, str | int | list] = {},
     ):
@@ -532,12 +527,6 @@ class cc2DataModule(L.LightningDataModule):
 
     def _get_or_create_full_dataset(self) -> AnemoiDataset:
         if self._full_dataset is None:
-            norm_methods = None
-            if not self.hparams.disable_normalization:
-                norm_methods = get_default_normalization_methods(
-                    self.hparams.normalization
-                )
-
             model = self.trainer.model
             model = model.module if hasattr(model, "module") else model
 
@@ -551,8 +540,7 @@ class cc2DataModule(L.LightningDataModule):
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
                 static_forcing_params=self.hparams.static_forcing_params,
-                normalization_methods=norm_methods,
-                disable_normalization=self.hparams.disable_normalization,
+                normalization_methods=get_default_normalization_methods(self.hparams.normalization),
                 data_options=self.hparams.data_options,
                 statistics=self._forced_statistics,
             )
