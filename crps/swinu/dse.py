@@ -15,17 +15,19 @@ class DSELoss(nn.Module):
         self,
         lambda_dse: float = 1.0,  # Weight for the DSE component
         n_bins: int | None = None,
+        beta: float = 1.0,  # Control wavenumber weighting
     ):
         super().__init__()
         self.n_bins = n_bins
         self.lambda_dse = lambda_dse
+        self.beta = beta
+        self.k = None
 
     def _diag(self, PSDx, PSDy, device):
 
-        k = torch.linspace(0, 1, self.n_bins, device=device)
-        low = k < 0.20
-        mid = (k >= 0.20) & (k < 0.45)
-        high = k >= 0.45
+        low = self.k < 0.20
+        mid = (self.k >= 0.20) & (self.k < 0.45)
+        high = self.k >= 0.45
 
         r = PSDx / (PSDy + 1e-12)
         lpe = torch.log(PSDx) - torch.log(PSDy)
@@ -70,6 +72,8 @@ class DSELoss(nn.Module):
         Hf, Wf = X.shape[-2], X.shape[-1]
         bin_index, mask, counts, n_bins = radial_bins_rfft(Hf, Wf, device, self.n_bins)
         self.n_bins = n_bins
+        self.k = torch.linspace(0, 1, self.n_bins, device=device)
+
         PX = X.real**2 + X.imag**2
         PY = Y.real**2 + Y.imag**2
 
@@ -88,6 +92,10 @@ class DSELoss(nn.Module):
         sqrtx = PSDx.sqrt()
         sqrty = PSDy.sqrt()
         dse_bin = (sqrtx - sqrty) ** 2
+
+        # Apply power law and normalize the weights
+        w = (self.k**self.beta) / ((self.k**self.beta).mean())
+        dse_bin = w * dse_bin
 
         dse_bt = dse_bin.mean(dim=1)
         dse_t = dse_bt.view(B, T).mean(dim=0)
