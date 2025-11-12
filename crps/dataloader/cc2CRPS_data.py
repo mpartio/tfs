@@ -596,16 +596,23 @@ class cc2DataModule(L.LightningDataModule):
             train_indices = valid_pos[train_mask]
             val_indices = valid_pos[val_mask]
 
+            num_training_samples = train_indices.shape[0]
+            num_val_samples = val_indices.shape[0]
+
+            if num_training_samples == 0 or num_val_samples == 0:
+                raise ValueError(
+                    f"Number of training samples={num_training_samples}, val samples={num_val_samples}"
+                )
             rank_zero_info(
                 "Training dataset ({} to {}) contains {} samples".format(
                     self.hparams.train_start,
                     self.hparams.train_end,
-                    train_indices.shape[0],
+                    num_training_samples,
                 )
             )
             rank_zero_info(
                 "Val dataset ({} to {}) contains {} samples".format(
-                    self.hparams.val_start, self.hparams.val_end, val_indices.shape[0]
+                    self.hparams.val_start, self.hparams.val_end, num_val_samples
                 )
             )
 
