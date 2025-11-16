@@ -27,7 +27,7 @@ from verif.composite_score import (
     plot_composite_bars,
     plot_component_contributions,
 )
-
+from verif.ssim import ssim, plot_ssim
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -49,6 +49,7 @@ def get_args():
             "spectral_coherence",
             "change_metrics",
             "error-spread",
+            "ssim",
         ],
         help="Score to produce",
     )
@@ -312,7 +313,6 @@ if __name__ == "__main__":
     if args.plot_only is False:
         all_truth, all_predictions, all_dates = prepare_data(args)
 
-    pivot_df = None
     all_results = []
     for score in args.score:
         print(f"Score: {score}")
@@ -323,7 +323,6 @@ if __name__ == "__main__":
                 results = mae(args.run_name, all_truth, all_predictions, args.save_path)
             plot_mae_timeseries(results, args.save_path)
             print(results)
-            pivot_df = results.pivot(index="model", columns="timestep", values="mae")
 
         elif score == "mae2d":
             if args.plot_only:
@@ -420,7 +419,17 @@ if __name__ == "__main__":
             # plot_change_prf_timeseries(results, args.save_path)
             plot_change_corr_stationarity_timeseries(results, args.save_path)
 
+        elif score == "ssim":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = ssim(args.run_name, all_truth, all_predictions, args.save_path)
+            plot_ssim(results, args.save_path)
+            print(results)
+
+
         all_results.append(results)
+
 
     composite_score_metrics = [
         "mae",
@@ -429,6 +438,7 @@ if __name__ == "__main__":
         "highk_power_ratio",
         "spectral_coherence",
         "change_metrics",
+        "ssim",
     ]
 
     composite_score_values = {}
@@ -439,11 +449,12 @@ if __name__ == "__main__":
         i = args.score.index(s)
         composite_score_values[s] = all_results[i]
 
-    if len(composite_score_values.keys()) == 6:
+    if len(composite_score_values.keys()) == len(composite_score_metrics):
         composite_result = composite_score(args.run_name, composite_score_values)
         # plot_composite_bars(composite_result, save_path=args.save_path)
         plot_component_contributions(composite_result, save_path=args.save_path)
-
+        print("Produced composite scores")
+        print(composite_result)
     else:
         print("Not producing composite score: some scores not calculated")
 
@@ -451,6 +462,3 @@ if __name__ == "__main__":
         plot_stamps(
             args.run_name, all_truth, all_predictions, all_dates, args.save_path
         )
-
-    if pivot_df is not None:
-        print(pivot_df)
