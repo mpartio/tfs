@@ -872,3 +872,75 @@ class WindowAttentionRPB(nn.Module):
             return out, attn_weights
         else:
             return out, None
+
+
+class RefineBlock(nn.Module):
+    """
+    Local residual block with mixed dilations.
+    Keeps low-k content, boosts mid/high-k.
+    """
+
+    def __init__(self, C: int, dilation: int = 1):
+        super().__init__()
+        padding1 = 1
+        padding2 = dilation
+
+        self.conv1 = nn.Conv2d(C, C, 3, padding=padding1, dilation=1)
+        self.conv2 = nn.Conv2d(C, C, 3, padding=padding2, dilation=dilation)
+        self.norm1 = nn.GroupNorm(8, C)
+        self.norm2 = nn.GroupNorm(8, C)
+        self.act = nn.GELU()
+
+        # LayerScale for the block
+        self.gamma = nn.Parameter(torch.zeros(1, C, 1, 1))
+
+    def forward(self, x):
+        y = self.norm1(x)
+        y = self.act(y)
+        y = self.conv1(y)
+
+        y = self.norm2(y)
+        y = self.act(y)
+        y = self.conv2(y)
+
+        return x + self.gamma * y
+
+
+class MultiScaleRefinementHead(nn.Module):
+    """
+    Strong refinement head operating at full resolution.
+
+    - in_channels/out_channels: prognostic channels (1 in your current setup)
+    - base_channels: width of the refinement path
+    - blocks use dilations [1, 2, 3, 1] by default
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 1,
+        out_channels: int = 1,
+        base_channels: int = 64,
+        dilations=(1, 2, 3, 1),
+    ):
+        super().__init__()
+        C = base_channels
+
+        self.conv_in = nn.Conv2d(in_channels, C, 3, padding=1)
+
+        self.blocks = nn.ModuleList([RefineBlock(C, d) for d in dilations])
+
+        self.conv_out = nn.Conv2d(C, out_channels, 3, padding=1)
+
+        # Global scale so head starts near-zero (i.e. network near identity)
+        self.global_gamma = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x):
+        """
+        x: [B, C, H, W]
+        returns: refinement delta, same shape
+        """
+        y = self.conv_in(x)
+        for blk in self.blocks:
+            y = blk(y)
+        y = self.conv_out(y)
+        return self.global_gamma * y

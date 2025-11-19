@@ -10,6 +10,7 @@ from swinu.layers import (
     ProjectToImageFold,
     PatchEmbedLossless,
     DWConvResidual3D,
+    MultiScaleRefinementHead,
     get_padded_size,
     pad_tensors,
     pad_tensor,
@@ -203,6 +204,13 @@ class cc2CRPS(nn.Module):
             ]
         )
 
+        expand = 2.0
+        ls_init = 1e-2
+
+        if config.use_deep_refinement_head:
+            expand = 4.0
+            ls_init = 5e-2
+
         self.dwres_d2 = nn.ModuleList(
             [
                 DWConvResidual3D(
@@ -210,8 +218,10 @@ class cc2CRPS(nn.Module):
                     (h0, w0),
                     time_dim=1,
                     dilation=(1 if i % 2 == 0 else 2),
+                    expand=expand,
+                    ls_init=ls_init,
                 )
-                for i in range(config.decoder1_depth)
+                for i in range(config.decoder2_depth)
             ]
         )
 
@@ -250,11 +260,19 @@ class cc2CRPS(nn.Module):
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
         self.use_scheduled_sampling = config.use_scheduled_sampling
 
-        self.refinement_head = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(32, 1, 3, padding=1),
-        )
+        if config.use_deep_refinement_head:
+            self.refinement_head = MultiScaleRefinementHead(
+                in_channels=1,
+                out_channels=1,
+                base_channels=64,
+                dilations=(1, 2, 3, 1, 4),
+            )
+        else:
+            self.refinement_head = nn.Sequential(
+                nn.Conv2d(1, 32, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(32, 1, 3, padding=1),
+            )
 
         self.autoregressive_mode = config.autoregressive_mode
 
@@ -318,7 +336,7 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for block, dwres in zip(self.encoder1, self.dwres_e1):
                 x = checkpoint(block, x, use_reentrant=False)
-                x = checkpoint(dwres, x, use_reentrant=False)
+                x = dwres(x)
         else:
             for block, dwres in zip(self.encoder1, self.dwres_e1):
                 x = block(x)
@@ -335,7 +353,7 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for block, dwres in zip(self.encoder2, self.dwres_e2):
                 x = checkpoint(block, x, use_reentrant=False)
-                x = checkpoint(dwres, x, use_reentrant=False)
+                x = dwres(x)
         else:
             for block, dwres in zip(self.encoder2, self.dwres_e2):
                 x = block(x)
@@ -412,7 +430,7 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for block, dwres in zip(self.decoder1, self.dwres_d1):
                 x = checkpoint(block, x, encoded_flat, use_reentrant=False)
-                x = checkpoint(dwres, x, use_reentrant=False)
+                x = dwres(x)
         else:
             for block, dwres in zip(self.decoder1, self.dwres_d1):
                 x = block(x, encoded_flat)
@@ -443,11 +461,13 @@ class cc2CRPS(nn.Module):
         skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
 
         if self.use_gradient_checkpointing:
-            for block in self.decoder2:
+            for block, dwres in zip(self.decoder2, self.dwres_d2):
                 x2 = checkpoint(block, x2, skip_proj, use_reentrant=False)
+                x2 = dwres(x2)
         else:
-            for i, block in enumerate(self.decoder2):
+            for block, dwres in zip(self.decoder2, self.dwres_d2):
                 x2 = block(x2, skip_proj)
+                x2 = dwres(x2)
 
         delta_pred2 = x2.reshape(B, 1, P_new, D_new)
 
