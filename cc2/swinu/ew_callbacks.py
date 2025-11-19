@@ -475,8 +475,9 @@ class EarlyWarningMetricsCallback(L.Callback):
 
         if (
             self.log_train
-            and hasattr(pl_module, "latest_train_predictions")
-            and hasattr(pl_module, "latest_train_data")
+            and pl_module.latest_train_predictions is not None
+            and pl_module.latest_train_data is not None
+            and pl_modulelatest_train_data
         ):
             with torch.no_grad():
                 y_pred = pl_module.latest_train_predictions
@@ -495,8 +496,8 @@ class EarlyWarningMetricsCallback(L.Callback):
 
         if (
             self.log_val
-            and hasattr(pl_module, "latest_val_predictions")
-            and hasattr(pl_module, "latest_val_data")
+            and pl_module.latest_val_predictions is not None
+            and pl_module.latest_val_data is not None
         ):
             with torch.no_grad():
                 y_pred = pl_module.latest_val_predictions
