@@ -370,7 +370,7 @@ class cc2CRPSModel(L.LightningModule):
             use_ste=self.hparams.use_ste,
         )
 
-        self.log("val_loss", loss["loss"], sync_dist=True)
+        self.log("val_loss", loss["loss"], sync_dist=False)
 
         for k, v in loss.items():
             self.log(
