@@ -67,7 +67,7 @@ class cc2CRPSModel(L.LightningModule):
         use_lossless_patch_embed: bool = False,
         use_dw_conv_residual: bool = False,
         loss_fn: Callable | nn.Module | None = None,
-        use_deep_refinemenent_head: bool = False,
+        use_deep_refinement_head: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()

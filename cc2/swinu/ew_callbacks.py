@@ -477,7 +477,7 @@ class EarlyWarningMetricsCallback(L.Callback):
             self.log_train
             and pl_module.latest_train_predictions is not None
             and pl_module.latest_train_data is not None
-            and pl_modulelatest_train_data
+            and pl_module.latest_train_data
         ):
             with torch.no_grad():
                 y_pred = pl_module.latest_train_predictions
