@@ -329,20 +329,11 @@ class CleanupFailedRunCallback(L.Callback):
             run_dir = os.environ.get("CC2_RUN_DIR")
 
             if run_dir and os.path.isdir(run_dir):
-                # Check if the directory is empty or contains only minimal files
-                # Adjust this condition based on what you consider "empty"
-                # e.g., allow hparams.yaml, empty logs/ dir?
-                # A simple check is just len(os.listdir()) == 0 or 1 (maybe hparams.yaml)
+                # Check that run_dir contains more than just config.yaml -- figures or checkpoints
                 try:
-                    files_in_dir = os.listdir(f"{run_dir}/figures")
-                    # Define what constitutes an "empty" directory that should be removed
-                    # Example: empty or only contains hparams file
-                    if len(files_in_dir) == 0:
+                    file_count = sum(len(files) for _, _, files in os.walk(run_dir))
+                    if file_count <= 1:
                         shutil.rmtree(run_dir)
                         print(f"Removed empty run directory: {run_dir}")
                 except OSError as e:
-                    print(f"\nError during cleanup check/removal of {log_dir}: {e}")
-            else:
-                print(
-                    f"\nDetected exception: {type(exception).__name__}. Could not determine log directory for cleanup."
-                )
+                    print(f"Error during cleanup check/removal of {log_dir}: {e}")
