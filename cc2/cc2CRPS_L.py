@@ -68,6 +68,7 @@ class cc2CRPSModel(L.LightningModule):
         use_dw_conv_residual: bool = False,
         loss_fn: Callable | nn.Module | None = None,
         use_deep_refinement_head: bool = False,
+        use_hard_skip: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -107,6 +108,7 @@ class cc2CRPSModel(L.LightningModule):
                 "use_lossless_patch_embed",
                 "use_dw_conv_residual",
                 "use_deep_refinement_head",
+                "use_hard_skip",
             ]
         }
 
@@ -526,8 +528,8 @@ class cc2CRPSModel(L.LightningModule):
         dm = self.trainer.datamodule
         if dm and dm._full_dataset and hasattr(dm._full_dataset, "data"):
             checkpoint["data_statistics"] = dm._full_dataset.data.statistics
-            checkpoint["data_statististics_name_to_index"] = (
-                dm._full_dataset.data.name_to_index
-            )
+            checkpoint[
+                "data_statististics_name_to_index"
+            ] = dm._full_dataset.data.name_to_index
         else:
             rank_zero_warn("Statistics not saved to checkpoint")
