@@ -65,6 +65,11 @@ class cc2CRPS(nn.Module):
         if not isinstance(config.drop_path_rate, list):
             config.drop_path_rate = [config.drop_path_rate] * 4
 
+        def _get_dilation(block, num):
+            if block in ("enc2", "dec1") and config.use_soft_coarse_dwconv:
+                return 1
+            return 1 if num % 2 == 0 else 2
+
         # Transformer encoder blocks
         self.encoder1 = nn.ModuleList(
             [
@@ -94,7 +99,7 @@ class cc2CRPS(nn.Module):
                     self.embed_dim,
                     (h0, w0),
                     time_dim=config.history_length,
-                    dilation=(1 if i % 2 == 0 else 2),
+                    dilation=_get_dilation("enc1", i),
                 )
                 for i in range(config.encoder1_depth)
             ]
@@ -132,13 +137,18 @@ class cc2CRPS(nn.Module):
 
         h1, w1 = h0 // 2, w0 // 2
 
+        ls_init = 1e-3 if config.use_soft_coarse_dwconv else 1e-2
+        expand = 1 if config.use_soft_coarse_dwconv else 2
+
         self.dwres_e2 = nn.ModuleList(
             [
                 DWConvResidual3D(
                     self.embed_dim * 2,
                     (h1, w1),
                     time_dim=config.history_length,
-                    dilation=(1 if i % 2 == 0 else 2),
+                    expand=expand,
+                    dilation=_get_dilation("enc2", i),
+                    ls_init=ls_init,
                 )
                 for i in range(config.encoder2_depth)
             ]
@@ -172,7 +182,9 @@ class cc2CRPS(nn.Module):
                     self.embed_dim * 2,
                     (h1, w1),
                     time_dim=config.history_length,
-                    dilation=(1 if i % 2 == 0 else 2),
+                    expand=expand,
+                    dilation=_get_dilation("dec1", i),
+                    ls_init=ls_init,
                 )
                 for i in range(config.decoder1_depth)
             ]
@@ -217,7 +229,7 @@ class cc2CRPS(nn.Module):
                     self.embed_dim * 2,
                     (h0, w0),
                     time_dim=1,
-                    dilation=(1 if i % 2 == 0 else 2),
+                    dilation=_get_dilation("dec2", i),
                     expand=expand,
                     ls_init=ls_init,
                 )
