@@ -70,6 +70,7 @@ class cc2CRPSModel(L.LightningModule):
         use_deep_refinement_head: bool = False,
         use_hard_skip: bool = False,
         use_soft_coarse_dwconv: bool = False,
+        test_output_directory: str | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -132,6 +133,7 @@ class cc2CRPSModel(L.LightningModule):
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
         self.autoregressive_mode = autoregressive_mode
+        self.test_output_directory = test_output_directory
 
         self._loss_fn = loss_fn
 
@@ -444,21 +446,25 @@ class cc2CRPSModel(L.LightningModule):
 
     def on_test_end(self):
         # Get the run directory from the checkpoint path
-        output_dir = f"{self.run_dir}/test-output/"
-        os.makedirs(output_dir, exist_ok=True)
+        if self.test_output_directory is None:
+            self.test_output_directory = f"{self.run_dir}/test-output/"
+
+        os.makedirs(self.test_output_directory, exist_ok=True)
 
         predictions = torch.concatenate(self.test_predictions)
         truth = torch.concatenate(self.test_truth)
         dates = torch.concatenate(self.test_dates)
 
-        torch.save(predictions, f"{output_dir}/predictions.pt")
-        torch.save(truth, f"{output_dir}/truth.pt")
-        torch.save(dates, f"{output_dir}/dates.pt")
+        torch.save(predictions, f"{self.test_output_directory}/predictions.pt")
+        torch.save(truth, f"{self.test_output_directory}/truth.pt")
+        torch.save(dates, f"{self.test_output_directory}/dates.pt")
 
         print(f"Predictions shape: {predictions.shape}")
         print(f"Truth shape: {truth.shape}")
         print(f"Dates shape: {dates.shape}")
-        print(f"Wrote files predictions.pt, truth.pt and dates.pt to {output_dir}")
+        print(
+            f"Wrote files predictions.pt, truth.pt and dates.pt to {self.test_output_directory}"
+        )
 
     def configure_optimizers(self):
         decay, no_decay = [], []
