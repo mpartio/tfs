@@ -29,10 +29,12 @@ from verif.composite_score import (
 )
 from verif.ssim import ssim, plot_ssim
 
+
 def get_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--run_name", type=str, required=True, nargs="+")
+    parser.add_argument("--run_name", type=str, required=False, nargs="+", default=[])
+    parser.add_argument("--path_name", type=str, required=False, nargs="+", default=[])
     parser.add_argument(
         "--score",
         type=str,
@@ -76,19 +78,19 @@ def get_args():
     if "stamps" in args.score and args.plot_only:
         raise ValueError("Cannot plot stamps without running verification.")
 
+    assert args.run_name or args.path_name
+
     return args
 
 
-def read_data(run_name, ensemble_only):
-    if "/" in run_name:
-        run_dir = f"runs/{run_name}"
-    else:
-        run_dir = get_latest_run_dir(f"runs/{run_name}")
+def get_labels(args):
+    labels = args.run_name.copy()
+    for path_name in args.path_name:
+        labels.append(os.path.basename(os.path.realpath(path_name)))
+    return labels
 
-    assert run_dir, f"Run {run_name} not found in runs/"
 
-    file_path = f"{run_dir}/test-output"
-
+def read_data_from_dir(file_path):
     predictions = torch.load(
         f"{file_path}/predictions.pt",
         map_location=torch.device("cpu"),
@@ -101,14 +103,29 @@ def read_data(run_name, ensemble_only):
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
 
+    if truth.ndim == 6:
+        # squeeze "member" dim from truth
+        truth = truth[:, 0, :, :, :]
+
+    return truth, predictions, dates
+
+
+def read_data(run_name, ensemble_only):
+    if "/" in run_name:
+        run_dir = f"runs/{run_name}"
+    else:
+        run_dir = get_latest_run_dir(f"runs/{run_name}")
+
+    assert run_dir, f"Run {run_name} not found in runs/"
+
+    file_path = f"{run_dir}/test-output"
+
+    predictions, truth, dates = read_data_from_dir(file_path)
+
     if not ensemble_only and predictions.ndim == 6:
         # predictions are from pgu_ens, pick first member
         print("Using member 0/{}".format(predictions.shape[1]))
         predictions = predictions[:, 0, :, :, :]
-
-    if truth.ndim == 6:
-        # squeeze "member" dim from truth
-        truth = truth[:, 0, :, :, :]
 
     assert (
         ensemble_only or predictions.ndim == 5
@@ -163,16 +180,16 @@ def union(all_truth, all_predictions, all_dates):
     return new_truth, new_predictions, new_dates
 
 
-def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
+def equalize_datasets(labels, all_truth, all_predictions, all_dates):
     need_union = False
 
     for i in tqdm(range(1, len(all_dates)), desc="Equalizing"):
         if all_dates[i - 1].shape != all_dates[i].shape:
             print(
                 "Different shape of dates for {} ({}) and {} ({})".format(
-                    args.run_name[i - 1],
+                    labels[i - 1],
                     all_dates[i - 1].shape,
-                    args.run_name[i],
+                    labels[i],
                     all_dates[i].shape,
                 )
             )
@@ -189,13 +206,13 @@ def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
             # Print rows
 
             if len(A_not_in_B):
-                print("Rows in {} but not in {}:".format(run_name[i - 1], run_name[i]))
+                print("Rows in {} but not in {}:".format(labels[i - 1], labels[i]))
                 for row in A_not_in_B:
                     d_s = [np.datetime64(int(x), "s") for x in row]
                     print(d_s)
 
             if len(B_not_in_A):
-                print("Rows in {} but not in {}:".format(run_name[i], run_name[i - 1]))
+                print("Rows in {} but not in {}:".format(labels[i], labels[i - 1]))
                 for row in B_not_in_A:
                     d_s = [np.datetime64(int(x), "s") for x in row]
                     print(d_s)
@@ -214,22 +231,31 @@ def equalize_datasets(run_name, all_truth, all_predictions, all_dates):
 def prepare_data(args, ensemble_only: bool = False):
     all_truth, all_predictions, all_dates = [], [], []
 
-    for run_name in tqdm(args.run_name, desc="Reading data"):
+    if args.run_name:
+        for run_name in tqdm(args.run_name, desc="Reading data"):
 
-        truth, predictions, dates = read_data(run_name, ensemble_only)
+            truth, predictions, dates = read_data(run_name, ensemble_only)
 
-        if ensemble_only and predictions.ndim == 5:
-            print(f"Skipping run {run_name}, not an ensemble")
-            continue
+            if ensemble_only and predictions.ndim == 5:
+                print(f"Skipping run {run_name}, not an ensemble")
+                continue
 
-        all_truth.append(truth)
-        all_predictions.append(predictions)
-        all_dates.append(dates)
+            all_truth.append(truth)
+            all_predictions.append(predictions)
+            all_dates.append(dates)
+    if args.path_name:
+        for path_name in tqdm(args.path_name, desc="Reading data"):
+
+            truth, predictions, dates = read_data_from_dir(path_name)
+
+            all_truth.append(truth)
+            all_predictions.append(predictions)
+            all_dates.append(dates)
 
     if len(all_dates) == 1:
         return all_truth, all_predictions, all_dates
 
-    return equalize_datasets(args.run_name, all_truth, all_predictions, all_dates)
+    return equalize_datasets(get_labels(args), all_truth, all_predictions, all_dates)
 
 
 def plot_stamps(
@@ -265,6 +291,8 @@ def plot_stamps(
     fig.suptitle(f"Ground Truth vs. Model Predictions", fontsize=24)
     cmap = "Blues"
 
+    labels = get_labels(args)
+
     for r in range(nrows):
         if r == 0:
             img_data = truth
@@ -283,7 +311,7 @@ def plot_stamps(
                     ax.set_ylabel("Ground Truth", fontsize=12, rotation=90, labelpad=10)
                 else:
                     ax.set_ylabel(
-                        f"{args.run_name[r-1]}", fontsize=12, rotation=90, labelpad=10
+                        f"{labels[r-1]}", fontsize=12, rotation=90, labelpad=10
                     )
 
             im = ax.imshow(img_data[c, 0], cmap=cmap, vmin=0, vmax=1)
@@ -314,13 +342,16 @@ if __name__ == "__main__":
         all_truth, all_predictions, all_dates = prepare_data(args)
 
     all_results = []
+
+    labels = get_labels(args)
+
     for score in args.score:
         print(f"Score: {score}")
         if score == "mae":
             if args.plot_only:
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
-                results = mae(args.run_name, all_truth, all_predictions, args.save_path)
+                results = mae(labels, all_truth, all_predictions, args.save_path)
             plot_mae_timeseries(results, args.save_path)
             print(results)
 
@@ -331,7 +362,7 @@ if __name__ == "__main__":
                 )
             else:
                 results = mae2d(all_truth, all_predictions, args.save_path)
-            plot_mae2d(args.run_name, results, args.save_path)
+            plot_mae2d(labels, results, args.save_path)
 
         elif score == "psd":
             if args.plot_only:
@@ -348,9 +379,8 @@ if __name__ == "__main__":
                 obs_psd, pred_psd, pred_psd_r1 = psd(
                     all_truth, all_predictions, args.save_path
                 )
-            plot_psd(args.run_name, obs_psd, pred_psd, pred_psd_r1, args.save_path)
+            plot_psd(labels, obs_psd, pred_psd, pred_psd_r1, args.save_path)
             results = (obs_psd, pred_psd, pred_psd_r1)
-
 
         elif score == "fss":
             if args.plot_only:
@@ -360,17 +390,14 @@ if __name__ == "__main__":
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results_t, results = fss(
-                    args.run_name, all_truth, all_predictions, args.save_path
+                    labels, all_truth, all_predictions, args.save_path
                 )
 
-            plot_fss(args.run_name, results_t, args.save_path)
+            plot_fss(labels, results_t, args.save_path)
 
         elif score == "error-spread":
             _all_truth, _all_predictions, _ = prepare_data(args, True)
-            print(_all_truth[0].shape, _all_predictions[0].shape)
-            results = error_spread(
-                args.run_name, _all_truth, _all_predictions, args.save_path
-            )
+            results = error_spread(labels, _all_truth, _all_predictions, args.save_path)
             print(results)
             plot_error_spread(results)
 
@@ -379,7 +406,7 @@ if __name__ == "__main__":
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results = variance_ratio(
-                    args.run_name, all_truth, all_predictions, args.save_path
+                    labels, all_truth, all_predictions, args.save_path
                 )
 
             print(results)
@@ -390,7 +417,7 @@ if __name__ == "__main__":
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results = highk_power_ratio(
-                    args.run_name, all_truth, all_predictions, args.save_path
+                    labels, all_truth, all_predictions, args.save_path
                 )
 
             print(results)
@@ -401,7 +428,7 @@ if __name__ == "__main__":
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results = spectral_coherence_bands(
-                    args.run_name, all_truth, all_predictions, args.save_path
+                    labels, all_truth, all_predictions, args.save_path
                 )
 
             print(results)
@@ -412,7 +439,7 @@ if __name__ == "__main__":
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
                 results = change_metrics(
-                    args.run_name, all_truth, all_predictions, args.save_path
+                    labels, all_truth, all_predictions, args.save_path
                 )
 
             print(results)
@@ -423,13 +450,11 @@ if __name__ == "__main__":
             if args.plot_only:
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
             else:
-                results = ssim(args.run_name, all_truth, all_predictions, args.save_path)
+                results = ssim(labels, all_truth, all_predictions, args.save_path)
             plot_ssim(results, args.save_path)
             print(results)
 
-
         all_results.append(results)
-
 
     composite_score_metrics = [
         "mae",
@@ -450,7 +475,7 @@ if __name__ == "__main__":
         composite_score_values[s] = all_results[i]
 
     if len(composite_score_values.keys()) == len(composite_score_metrics):
-        composite_result = composite_score(args.run_name, composite_score_values)
+        composite_result = composite_score(labels, composite_score_values)
         # plot_composite_bars(composite_result, save_path=args.save_path)
         plot_component_contributions(composite_result, save_path=args.save_path)
         print("Produced composite scores")
@@ -459,6 +484,4 @@ if __name__ == "__main__":
         print("Not producing composite score: some scores not calculated")
 
     if args.plot_only is False:
-        plot_stamps(
-            args.run_name, all_truth, all_predictions, all_dates, args.save_path
-        )
+        plot_stamps(labels, all_truth, all_predictions, all_dates, args.save_path)
