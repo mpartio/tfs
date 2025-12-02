@@ -71,6 +71,7 @@ class cc2CRPSModel(L.LightningModule):
         use_hard_skip: bool = False,
         use_soft_coarse_dwconv: bool = False,
         test_output_directory: str | None = None,
+        predict_tendencies: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -337,6 +338,7 @@ class cc2CRPSModel(L.LightningModule):
             ss_pred_max=self.ss_pred_max,
             pl_module=self,
             use_ste=self.hparams.use_ste,
+            predict_tendencies=self.hparams.predict_tendencies,
         )
 
         self.log("train_loss", loss["loss"], sync_dist=False)
@@ -376,6 +378,7 @@ class cc2CRPSModel(L.LightningModule):
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
             use_ste=self.hparams.use_ste,
+            predict_tendencies=self.hparams.predict_tendencies,
         )
 
         self.log("val_loss", loss["loss"], sync_dist=False)
@@ -412,6 +415,7 @@ class cc2CRPSModel(L.LightningModule):
             loss_fn=None,
             use_scheduled_sampling=False,
             use_ste=self.hparams.use_ste,
+            predict_tendencies=self.hparams.predict_tendencies,
         )
 
         # We want to include the analysis time also
