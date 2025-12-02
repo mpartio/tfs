@@ -356,8 +356,8 @@ class cc2CRPSModel(L.LightningModule):
         self.log("lr", lr, on_step=True, on_epoch=False, sync_dist=False)
 
         if batch_idx == 0:
-            self.latest_train_tendencies = tendencies
-            self.latest_train_predictions = predictions
+            self.latest_train_tendencies = tendencies.float()
+            self.latest_train_predictions = predictions.float()
             self.latest_train_data = data
 
         return {
@@ -393,8 +393,8 @@ class cc2CRPSModel(L.LightningModule):
             )
 
         if batch_idx == 0:
-            self.latest_val_tendencies = tendencies
-            self.latest_val_predictions = predictions
+            self.latest_val_tendencies = tendencies.float()
+            self.latest_val_predictions = predictions.float()
             self.latest_val_data = data
 
         return {
