@@ -171,16 +171,11 @@ class cc2CRPS(nn.Module):
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
         self.use_scheduled_sampling = config.use_scheduled_sampling
 
-        self.add_refinement_head = config.add_refinement_head
-
-        if self.add_refinement_head:
-            self.refinement_head = nn.Sequential(
-                nn.Conv2d(1, 32, 3, padding=1),
-                nn.GELU(),
-                nn.Conv2d(32, 1, 3, padding=1),
-            )
-        else:
-            self.refinement_head = nn.Identity()
+        self.refinement_head = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(32, 1, 3, padding=1),
+        )
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -389,9 +384,8 @@ class cc2CRPS(nn.Module):
 
         output = self.project_to_image(decoded, noise_embed)
 
-        if self.add_refinement_head:
-            output_ref = self.refinement_head(output.squeeze(2))
-            output = output + output_ref.unsqueeze(2)
+        output_ref = self.refinement_head(output.squeeze(2))
+        output = output + output_ref.unsqueeze(2)
 
         output = depad_tensor(output, padding_info)  # B * M, T, C, H, W
 
