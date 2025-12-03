@@ -127,7 +127,6 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
-    use_ste: bool = True,
     predict_tendencies: bool = True,
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])

@@ -60,7 +60,6 @@ class cc2CRPSModel(L.LightningModule):
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
         loss_function: str | None = None,
-        use_ste: bool = False,
         autoregressive_mode: bool = True,
         use_future_forcings: bool = False,
         freeze_layers: list[str] = [],
@@ -105,7 +104,6 @@ class cc2CRPSModel(L.LightningModule):
                 "num_members",
                 "ss_pred_min",
                 "ss_pred_max",
-                "use_ste",
                 "autoregressive_mode",
                 "use_future_forcings",
                 "use_lossless_patch_embed",
@@ -337,7 +335,6 @@ class cc2CRPSModel(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             pl_module=self,
-            use_ste=self.hparams.use_ste,
             predict_tendencies=self.hparams.predict_tendencies,
         )
 
@@ -377,7 +374,6 @@ class cc2CRPSModel(L.LightningModule):
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
-            use_ste=self.hparams.use_ste,
             predict_tendencies=self.hparams.predict_tendencies,
         )
 
@@ -414,7 +410,6 @@ class cc2CRPSModel(L.LightningModule):
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
             use_scheduled_sampling=False,
-            use_ste=self.hparams.use_ste,
             predict_tendencies=self.hparams.predict_tendencies,
         )
 

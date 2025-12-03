@@ -94,7 +94,6 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
-    use_ste: bool = False,
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
@@ -179,7 +178,7 @@ def roll_forecast(
                     p_pred * torch.ones_like(current_state[:, :1, :, :, :])
                 )
 
-                pred_clamped = ste_clamp(next_pred, use_ste)
+                pred_clamped = ste_clamp(next_pred, True)
 
                 next_gt = y[:, t : t + 1, ...]
                 next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
@@ -187,7 +186,7 @@ def roll_forecast(
                 pl_module.log("ss_mask_next", mask_next.float().mean(), on_step=True)
             else:
                 # Training without SS
-                next_state = ste_clamp(next_pred, use_ste)
+                next_state = ste_clamp(next_pred, True)
 
         else:
             # eval/inference always use clamped prediction
@@ -244,7 +243,6 @@ def roll_forecast_direct(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
-    use_ste: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Non-autoregressive rollout: predict n_step horizons from the same two GT inputs.
