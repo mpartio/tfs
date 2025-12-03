@@ -16,12 +16,14 @@ class DSELoss(nn.Module):
         lambda_dse: float = 1.0,  # Weight for the DSE component
         n_bins: int | None = None,
         beta: float = 1.0,  # Control wavenumber weighting
+        kmax_frac: float = 0.707,  # remove all bins below nyquist (assuming 5km spacing)
     ):
         super().__init__()
         self.n_bins = n_bins
         self.lambda_dse = lambda_dse
         self.beta = beta
         self.k = None
+        self.kmax_frac = kmax_frac
 
     def _diag(self, PSDx, PSDy, device):
 
@@ -66,6 +68,8 @@ class DSELoss(nn.Module):
         bin_index, mask, counts, n_bins = radial_bins_rfft(Hf, Wf, device, self.n_bins)
         self.n_bins = n_bins
         self.k = torch.linspace(0, 1, self.n_bins, device=device)
+        valid = self.k <= self.kmax_frac
+        self.k = self.k[valid]
 
         PX = X.real**2 + X.imag**2
         PY = Y.real**2 + Y.imag**2
@@ -80,6 +84,9 @@ class DSELoss(nn.Module):
 
         PSDx = reduce_bt(PX).clamp_min(eps)
         PSDy = reduce_bt(PY).clamp_min(eps)
+
+        PSDx = PSDx[:, valid]
+        PSDy = PSDy[:, valid]
 
         # DSE Calculation
         sqrtx = PSDx.sqrt()

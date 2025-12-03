@@ -23,13 +23,15 @@ class BSPLoss(nn.Module):
         lambda_bsp: float = 1.0,  # weight for BSP component
         n_bins: int | None = None,
         eps: float = 1e-8,  # epsilon in energy ratio
-        gamma: float = 0.0,  # exponent for bin weights λ_k ∝ k^gamma
+        gamma: float = 0.0,  # exponent for bin weights
+        kmax_frac: float = 0.707,  # remove all bins below nyquist (assuming 5km spacing)
     ):
         super().__init__()
         self.lambda_bsp = lambda_bsp
         self.n_bins = n_bins
         self.eps = eps
         self.gamma = gamma
+        self.kmax_frac = kmax_frac
 
         self.k = None  # will be filled once we know n_bins
 
@@ -88,6 +90,9 @@ class BSPLoss(nn.Module):
         self.n_bins = n_bins
         edges = torch.linspace(1e-8, 1.0000001, n_bins + 1, device=device)
         self.k = 0.5 * (edges[:-1] + edges[1:])
+        valid = self.k <= self.kmax_frac
+
+        self.k = self.k[valid]
 
         # power spectra
         PX = X.real**2 + X.imag**2  # [B,T,C,Hf,Wf]
@@ -111,6 +116,9 @@ class BSPLoss(nn.Module):
 
         E_pred = reduce_btc(PX).clamp_min(eps)  # [BTC, n_bins]
         E_true = reduce_btc(PY).clamp_min(eps)
+
+        E_pred = E_pred[:, valid]
+        E_true = E_true[:, valid]
 
         # BSP kernel: (1 - E_pred/E_true)^2
         ratio = (E_pred + eps) / (E_true + eps)
