@@ -92,20 +92,17 @@ class cc2CRPS(nn.Module):
 
         h0, w0 = self.h_patches, self.w_patches
 
-        self.use_dw_conv_residual = config.use_dw_conv_residual
-
-        if self.use_dw_conv_residual:
-            self.dwres_e1 = nn.ModuleList(
-                [
-                    DWConvResidual3D(
-                        self.embed_dim,
-                        (h0, w0),
-                        time_dim=config.history_length,
-                        dilation=(1 if i % 2 == 0 else 2),
-                    )
-                    for i in range(config.encoder1_depth)
-                ]
-            )
+        self.dwres_e1 = nn.ModuleList(
+            [
+                DWConvResidual3D(
+                    self.embed_dim,
+                    (h0, w0),
+                    time_dim=config.history_length,
+                    dilation=(1 if i % 2 == 0 else 2),
+                )
+                for i in range(config.encoder1_depth)
+            ]
+        )
 
         self.input_resolution_halved = (
             input_resolution[0] // self.patch_size,
@@ -131,18 +128,17 @@ class cc2CRPS(nn.Module):
         )
         h1, w1 = h0 // 2, w0 // 2
 
-        if self.use_dw_conv_residual:
-            self.dwres_e2 = nn.ModuleList(
-                [
-                    DWConvResidual3D(
-                        self.embed_dim * 2,
-                        (h1, w1),
-                        time_dim=config.history_length,
-                        dilation=(1 if i % 2 == 0 else 2),
-                    )
-                    for i in range(config.encoder2_depth)
-                ]
-            )
+        self.dwres_e2 = nn.ModuleList(
+            [
+                DWConvResidual3D(
+                    self.embed_dim * 2,
+                    (h1, w1),
+                    time_dim=config.history_length,
+                    dilation=(1 if i % 2 == 0 else 2),
+                )
+                for i in range(config.encoder2_depth)
+            ]
+        )
 
         self.decoder1 = nn.ModuleList(
             [
@@ -159,18 +155,17 @@ class cc2CRPS(nn.Module):
             ]
         )
 
-        if self.use_dw_conv_residual:
-            self.dwres_d1 = nn.ModuleList(
-                [
-                    DWConvResidual3D(
-                        self.embed_dim * 2,
-                        (h1, w1),
-                        time_dim=config.history_length,
-                        dilation=(1 if i % 2 == 0 else 2),
-                    )
-                    for i in range(config.decoder1_depth)
-                ]
-            )
+        self.dwres_d1 = nn.ModuleList(
+            [
+                DWConvResidual3D(
+                    self.embed_dim * 2,
+                    (h1, w1),
+                    time_dim=config.history_length,
+                    dilation=(1 if i % 2 == 0 else 2),
+                )
+                for i in range(config.decoder1_depth)
+            ]
+        )
 
         self.upsample = PatchExpand(
             self.embed_dim * 2, self.embed_dim * 2, scale_factor=2
@@ -302,13 +297,11 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for i, block in enumerate(self.encoder1):
                 x = checkpoint(block, x, use_reentrant=False)
-                if self.use_dw_conv_residual:
-                    x = checkpoint(self.dwres_e1[i], x, use_reentrant=False)
+                x = checkpoint(self.dwres_e1[i], x, use_reentrant=False)
         else:
             for i, block in enumerate(self.encoder1):
                 x = block(x)
-                if self.use_dw_conv_residual:
-                    x = self.dwres_e1[i](x)
+                x = self.dwres_e1[i](x)
 
         skip = x.clone()  # skip connection, B, T*P, D
         skip = skip.reshape(B, T, -1, D)
@@ -320,14 +313,12 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for i, block in enumerate(self.encoder2):
                 x = checkpoint(block, x, use_reentrant=False)
-                if self.use_dw_conv_residual:
-                    x = checkpoint(self.dwres_e2[i], x, use_reentrant=False)
+                x = checkpoint(self.dwres_e2[i], x, use_reentrant=False)
 
         else:
             for i, block in enumerate(self.encoder2):
                 x = block(x)
-                if self.use_dw_conv_residual:
-                    x = self.dwres_e2[i](x)
+                x = self.dwres_e2[i](x)
 
         # Reshape back to separate time and space dimensions
         x = x.reshape(B, T, -1, D * 2)
@@ -399,13 +390,11 @@ class cc2CRPS(nn.Module):
         if self.use_gradient_checkpointing:
             for block in self.decoder1:
                 x = checkpoint(block, x, encoded_flat, use_reentrant=False)
-                if self.use_dw_conv_residual:
-                    x = checkpoint(self.dwres_d1[i], x, use_reentrant=False)
+                x = checkpoint(self.dwres_d1[i], x, use_reentrant=False)
         else:
             for i, block in enumerate(self.decoder1):
                 x = block(x, encoded_flat)
-                if self.use_dw_conv_residual:
-                    x = self.dwres_d1[i](x)
+                x = self.dwres_d1[i](x)
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
