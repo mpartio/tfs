@@ -6,7 +6,7 @@ from typing import Dict
 from torch.fft import rfftfreq, fftfreq
 
 
-def apply_hann_window(self, field: torch.Tensor, H: int, W: int):
+def apply_hann_window(field: torch.Tensor, H: int, W: int):
     """
     Apply 2D Hann window normalised to unit RMS.
     Works for field shape [B, T, C, H, W].
