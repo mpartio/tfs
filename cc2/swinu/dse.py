@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.fft import rfft2
-from swinu.util import radial_bins_rfft
+from swinu.util import radial_bins_rfft, apply_hann_window
 
 
 class DSELoss(nn.Module):
@@ -47,21 +47,14 @@ class DSELoss(nn.Module):
 
         return metrics
 
-    def _apply_window(self, field: torch.tensor, H: int, W: int):
-        wh = torch.hann_window(H, device=field.device).unsqueeze(1)  # (H, 1)
-        ww = torch.hann_window(W, device=field.device).unsqueeze(0)  # (1, W)
-        win = (wh @ ww).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        win_rms = (win**2).mean().sqrt()
-        return field * win / win_rms
-
     def _dse2d_per_time(self, y_pred: torch.tensor, y_true: torch.tensor):
         eps = 1e-8
         B, T, C, H, W = y_pred.shape
         assert C == 1, f"Support only one output channel (tcc), got: {C}"
         device = y_pred.device
 
-        yp = self._apply_window(y_pred, H, W)
-        yt = self._apply_window(y_true, H, W)
+        yp = apply_hann_window(y_pred, H, W)
+        yt = apply_hann_window(y_true, H, W)
 
         yp = yp.to(torch.float32)
         yt = yt.to(torch.float32)

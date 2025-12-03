@@ -6,6 +6,19 @@ from typing import Dict
 from torch.fft import rfftfreq, fftfreq
 
 
+def apply_hann_window(self, field: torch.Tensor, H: int, W: int):
+    """
+    Apply 2D Hann window normalised to unit RMS.
+    Works for field shape [B, T, C, H, W].
+    """
+    device = field.device
+    wh = torch.hann_window(H, device=device).unsqueeze(1)  # (H, 1)
+    ww = torch.hann_window(W, device=device).unsqueeze(0)  # (1, W)
+    win = (wh @ ww).unsqueeze(0).unsqueeze(0).unsqueeze(0)  # [1,1,1,H,W]
+    win_rms = (win**2).mean().sqrt()
+    return field * win / win_rms
+
+
 def radial_bins_rfft(Hf: int, Wf: int, device: str, n_bins: int | None):
     # This function is used to create the radial bins for DSE calculation
     fy = fftfreq(Hf, d=1.0, device=device)
