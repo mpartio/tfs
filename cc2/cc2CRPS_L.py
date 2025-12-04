@@ -58,7 +58,6 @@ class cc2CRPSModel(L.LightningModule):
         ss_pred_max: float = 1.0,
         noise_dim: Optional[int] = None,
         num_members: Optional[int] = None,
-        loss_function: str | None = None,
         autoregressive_mode: bool = True,
         use_future_forcings: bool = False,
         freeze_layers: list[str] = [],
@@ -132,13 +131,8 @@ class cc2CRPSModel(L.LightningModule):
 
         self._loss_fn = loss_fn
 
-        if loss_fn is not None and loss_function is not None:
-            rank_zero_warn(
-                "Both loss_fn and loss_function specified, first will override the latter"
-            )
+        assert self._loss_fn is not None
 
-        elif loss_function is not None:
-            rank_zero_warn("loss_function specified, switch to loss_fn")
 
     def configure_model(self) -> None:
         if self.model_configured:
@@ -178,33 +172,21 @@ class cc2CRPSModel(L.LightningModule):
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
             from pgu.cc2 import cc2CRPS
-            from pgu.loss import LOSS_FUNCTIONS
 
             if self.hparams.autoregressive_mode:
                 from pgu.util import roll_forecast
             else:
                 from pgu.util import roll_forecast_direct as roll_forecast
 
-            if self._loss_fn is None:
-                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
-
         elif self.hparams.model_family == "pgu_ens":
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
-            from pgu_ens.loss import loss_fn
 
-            if self._loss_fn is None:
-                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
 
         elif self.hparams.model_family == "swinu":
             from swinu.cc2 import cc2CRPS
-            from swinu.loss import LOSS_FUNCTIONS
             from swinu.util import roll_forecast
 
-            if self._loss_fn is None:
-                self._loss_fn = LOSS_FUNCTIONS[self.hparams.loss_function]
-
-        assert self._loss_fn is not None, "Loss function not specified"
 
         self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast

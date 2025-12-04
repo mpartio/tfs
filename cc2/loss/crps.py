@@ -2,10 +2,6 @@ import torch
 import torch.nn as nn
 
 
-def loss_fn(y_pred, y_true):
-    return AlmostFairCRPSLoss()(y_pred, y_true)
-
-
 class AlmostFairCRPSLoss(nn.Module):
     def __init__(self, alpha=0.95):
         super().__init__()

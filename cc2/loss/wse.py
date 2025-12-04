@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
-from pytorch_wavelets import DTCWTForward 
+from pytorch_wavelets import DTCWTForward
 
 
 class WaveletSpectralLoss(nn.Module):
@@ -21,8 +21,12 @@ class WaveletSpectralLoss(nn.Module):
         self,
         lambda_wav: float = 0.01,
         J: int = 6,  # number of wavelet levels
-        bands: dict = { "small": [1,2], "medium": [3], "large":[4,5,6]}, # < 30km, ~30-60km, >60-100km
-        band_weights: dict = {"small": 0.5, "medium": 2, "large":1},
+        bands: dict = {
+            "small": [1, 2],
+            "medium": [3],
+            "large": [4, 5, 6],
+        },  # < 30km, ~30-60km, >60-100km
+        band_weights: dict = {"small": 0.5, "medium": 2, "large": 1},
     ):
         super().__init__()
         self.lambda_wav = lambda_wav
