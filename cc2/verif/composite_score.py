@@ -17,11 +17,11 @@ COMP_LABELS = {
 }
 
 WEIGHTS = {
-    "mae": 0.25,
-    "ssim": 0.15,
-    "fss": 0.15,
-    "coh": 0.1,
-    "hk": 0.05,
+    "mae": 0.15,
+    "ssim": 0.10,
+    "fss": 0.20,
+    "coh": 0.15,
+    "hk": 0.10,
     "var": 0.15,
     "change": 0.15,
 }
