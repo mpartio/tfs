@@ -103,7 +103,7 @@ def gaussian_smooth(x, sigma=0.8, kernel_size=5):
 
     # Create 2D kernel by outer product
     kernel = gauss[:, None] @ gauss[None, :]
-    kernel = kernel / kernel.sum()
+    kernel = kernel.to(device=x.device, dtype=x.dtype)
 
     # Reshape kernel for PyTorch conv2d
     kernel = kernel[None, None, :, :]
@@ -460,9 +460,9 @@ class SplitWrapper:
         data_y = data[self.n_x :]
 
         if self.apply_smoothing:
-            data_x = gaussian_smooth(data_x)
-            data_y = gaussian_smooth(data_y)
-            forcing = gaussian_smooth(forcing)
+            with torch.no_grad():
+                data_x = gaussian_smooth(data_x)
+                data_y = gaussian_smooth(data_y)
 
         assert data_x.ndim == 4, "Invalid data_x shape: {}".format(data_x.shape)
         assert data_y.ndim == 4, "Invalid data_y shape: {}".format(data_y.shape)
@@ -540,7 +540,9 @@ class cc2DataModule(L.LightningDataModule):
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
                 static_forcing_params=self.hparams.static_forcing_params,
-                normalization_methods=get_default_normalization_methods(self.hparams.normalization),
+                normalization_methods=get_default_normalization_methods(
+                    self.hparams.normalization
+                ),
                 data_options=self.hparams.data_options,
                 statistics=self._forced_statistics,
             )
