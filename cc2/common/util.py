@@ -133,7 +133,7 @@ def adapt_checkpoint_to_model(ckpt_state_dict, model_state_dict, old_size, new_s
 def find_latest_checkpoint_path(checkpoint_directory):
     assert checkpoint_directory is not None, "checkpoint_directory is 'None'"
     try:
-        best = "{checkpoint_directory}/checkpoints/best.ckpt"
+        best = f"{checkpoint_directory}/checkpoints/best.ckpt"
         if os.path.exists(best):
             return best
         # Find latest checkpoint
