@@ -206,21 +206,21 @@ class cc2CRPSModel(L.LightningModule):
 
             if self.hparams.branch_from_run:
                 if "/" in self.hparams.branch_from_run:
-                    ckpt_dir = "runs/{}".format(self.hparams.branch_from_run)
+                    branch_run_dir = "runs/{}".format(self.hparams.branch_from_run)
                 else:
-                    ckpt_dir = get_latest_run_dir(
+                    branch_run_dir = get_latest_run_dir(
                         "runs/" + self.hparams.branch_from_run
                     )
 
-                rank_zero_info(f"Branching from {ckpt_dir}")
+                rank_zero_info(f"Branching from {branch_run_dir}")
 
             else:
-                ckpt_dir = (
+                branch_run_dir = (
                     "/".join(self.run_dir.split("/")[:-1])
                     + "/"
                     + str(self.run_number - 1)
                 )
-            ckpt_path = find_latest_checkpoint_path(ckpt_dir)
+            ckpt_path = find_latest_checkpoint_path(branch_run_dir)
 
             rank_zero_info(f"Initializing weights from: {ckpt_path}")
 
