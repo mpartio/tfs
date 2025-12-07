@@ -5,7 +5,6 @@ import numpy as np
 import os
 import sys
 import lightning as L
-import numpy as np
 from anemoi.datasets import open_dataset
 from torch.utils.data import DataLoader, TensorDataset, Subset, Dataset
 from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_warn
@@ -64,32 +63,53 @@ def get_default_normalization_methods(custom_methods):
     return default_methods
 
 
-def augment_data(x, y):
-    xshape, yshape = x.shape, y.shape
-    if torch.rand(1).item() > 0.6:
-        return x, y
+def gaussian_noise(x, sigma=0.05):
+    """
+    Injects random noise to break pixel-perfect memorization.
+    sigma: Standard deviation of noise (relative to normalized data).
+    """
+    if sigma <= 0:
+        return x
+    noise = torch.randn_like(x) * sigma
+    return x + noise
 
-    # Random flip
-    if torch.rand(1).item() > 0.5:
-        x = torch.flip(x, [-2])  # Horizontal flip
-        y = torch.flip(y, [-2])
-    if torch.rand(1).item() > 0.5:
-        x = torch.flip(x, [-1])  # Vertical flip
-        y = torch.flip(y, [-1])
 
-    # Random 90-degree rotations
-    k = torch.randint(0, 4, (1,)).item()
-    x = torch.rot90(x, k, [-2, -1])
-    y = torch.rot90(y, k, [-2, -1])
+def random_block_mask(tensors, mask_ratio=0.15, patch_size=4):
+    """
+    'Cutout': Zeros out a random rectangular block across a list of tensors.
+    Applies the SAME mask location to all tensors to maintain spatial consistency.
+    """
+    if mask_ratio <= 0:
+        return tensors
 
-    assert x.shape == xshape, "Invalid y shape after augmentation: {} vs {}".format(
-        x.shape, xshape
-    )
-    assert y.shape == yshape, "Invalid x shape after augmentation: {} vs {}".format(
-        y.shape, yshape
-    )
+    # We assume shape [..., H, W]
+    h, w = tensors[0].shape[-2:]
 
-    return x, y
+    h_cut = max(1, int(h * np.sqrt(mask_ratio)))
+    w_cut = max(1, int(w * np.sqrt(mask_ratio)))
+
+    # If patch_size, snap to multiples
+    if patch_size is not None:
+        h_cut = max(patch_size, (h_cut // patch_size) * patch_size)
+        w_cut = max(patch_size, (w_cut // patch_size) * patch_size)
+
+    # Random top-left corner
+    y_off = int(torch.rand(1) * (h - h_cut + 1))
+    x_off = int(torch.rand(1) * (w - w_cut + 1))
+
+    # If patch_size, align offsets
+    if patch_size is not None:
+        y_off = (y_off // patch_size) * patch_size
+        x_off = (x_off // patch_size) * patch_size
+
+    processed_tensors = []
+    for t in tensors:
+        t_masked = t.clone()
+        # Zero out the block
+        t_masked[..., y_off : y_off + h_cut, x_off : x_off + w_cut] = 0.0
+        processed_tensors.append(t_masked)
+
+    return processed_tensors
 
 
 def gaussian_smooth(x, sigma=0.8, kernel_size=5):
@@ -441,12 +461,26 @@ class AnemoiDataset(Dataset):
 
 
 class SplitWrapper:
-    def __init__(self, dataset, n_x, apply_smoothing=False):
+    def __init__(
+        self,
+        dataset,
+        n_x,
+        apply_smoothing: bool = False,
+        apply_noise: bool = False,
+        apply_masking: bool = False,
+    ):
         self.dataset = dataset
         self.n_x = n_x
         self.apply_smoothing = apply_smoothing
+        self.apply_noise = apply_noise
+        self.apply_masking = apply_masking
+
         self.return_metadata = getattr(dataset, "return_metadata", False) or getattr(
             getattr(dataset, "dataset", None), "return_metadata", False
+        )
+
+        rank_zero_info(
+            f"SplitWrapper: blur enabled: {self.apply_smoothing} noise enabled: {self.apply_noise} masking enabled: {self.apply_masking}"
         )
 
     def __getitem__(self, idx):
@@ -458,6 +492,17 @@ class SplitWrapper:
         # Split into x and y
         data_x = data[: self.n_x]
         data_y = data[self.n_x :]
+
+        if self.apply_noise:
+            with torch.no_grad():
+                data_x = gaussian_noise(data_x, sigma=0.05)
+                forcing = gaussian_noise(forcing, sigma=0.05)
+
+        if self.apply_masking:
+            with torch.no_grad():
+                # We mask both x and forcing at the same location so the model
+                # has a consistent "blind spot" it must interpolate.
+                data_x, forcing = random_block_mask([data_x, forcing], mask_ratio=0.20)
 
         if self.apply_smoothing:
             with torch.no_grad():
@@ -502,6 +547,8 @@ class cc2DataModule(L.LightningDataModule):
         pin_memory: bool = True,
         normalization: dict[str, str] | None = None,
         apply_smoothing: bool = False,
+        apply_noise: bool = False,
+        apply_masking: bool = False,
         data_options: dict[str, str | int | list] = {},
     ):
         super().__init__()
@@ -651,10 +698,14 @@ class cc2DataModule(L.LightningDataModule):
             is_test_or_predict = stage == "test" or stage == "predict"
             dataset.dataset.return_metadata = is_test_or_predict
 
+        # Enable augmentation only if we are fitting (training) and shuffling
+        should_augment = stage == "fit" and shuffle is True
         wrapped_dataset = SplitWrapper(
             dataset=dataset,
             n_x=self.history_length,
             apply_smoothing=self.hparams.apply_smoothing,
+            apply_noise=(should_augment and self.hparams.apply_noise),
+            apply_masking=(should_augment and self.hparams.apply_masking),
         )
 
         return DataLoader(
@@ -686,5 +737,5 @@ class cc2DataModule(L.LightningDataModule):
         if hasattr(self, "ds_predict"):
             return self._get_dataloader(self.ds_predict, shuffle=False)
         else:  # Fallback if predict stage wasn't explicitly setup
-            print("Predict dataset not explicitly set up, using test dataset.")
+            rank_zero_info("Predict dataset not explicitly set up, using test dataset")
             return self._get_dataloader(self.ds_test, shuffle=False, stage="predict")
