@@ -7,6 +7,7 @@ import sys
 import platform
 import math
 
+
 def print_env():
     print(f"Python version: {sys.version}")
     print(f"Torch version: {t.__version__}")
@@ -127,22 +128,22 @@ for i, batch in enumerate(df):
     rows = int(math.ceil(n / cols))
 
     labels = forcings + ["tcc-1", "tcc", "tcc+1"]
-    fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 4*rows), squeeze=False)
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows), squeeze=False)
     for i in range(n):
         v = var[i]
         r, c = divmod(i, cols)
         ax = axes[r][c]
 
         im = ax.imshow(v)
-        fig.colorbar(im, ax=ax) #, label=str(var))
+        fig.colorbar(im, ax=ax)  # , label=str(var))
         ax.set_title(labels[i])
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
 
     # turn off any empty subplots
-    for j in range(n, rows*cols):
+    for j in range(n, rows * cols):
         r, c = divmod(j, cols)
-        axes[r][c].axis('off')
+        axes[r][c].axis("off")
 
     plt.tight_layout()
     plt.savefig("figures/test-dataloader-variables.png")
