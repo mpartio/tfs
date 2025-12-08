@@ -472,8 +472,8 @@ class SplitWrapper:
         self.dataset = dataset
         self.n_x = n_x
         self.apply_smoothing = apply_smoothing
-        self.apply_noise = apply_noise
-        self.apply_masking = apply_masking
+        self.apply_noise = apply_noise and (torch.rand(1).item() < 0.5)
+        self.apply_masking = apply_masking and (torch.rand(1).item() < 0.5)
 
         self.return_metadata = getattr(dataset, "return_metadata", False) or getattr(
             getattr(dataset, "dataset", None), "return_metadata", False
