@@ -15,8 +15,6 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger
 from common.sc_callback import CustomSaveConfigCallback
 
-coord_file = "ddp_coordination_info.json"
-
 
 def write_coordination_info(
     coord_file: str, run_name: str, run_number: int, run_dir: str
@@ -65,6 +63,8 @@ def setup_run_dir(coord_file: str, ckpt_path: str | None):
 def initialize_environment(ckpt_path: str | None):
     rank = get_rank()
 
+    coord_file = f"ddp_coordination_info-{random.randint(0,1000):04d}.json"
+
     if rank == 0:
         setup_run_dir(coord_file, ckpt_path)
     else:
@@ -86,6 +86,8 @@ def initialize_environment(ckpt_path: str | None):
         os.environ["CC2_RUN_NAME"] = coord_info["run_name"]
         os.environ["CC2_RUN_NUMBER"] = str(coord_info["run_number"])
         os.environ["CC2_RUN_DIR"] = coord_info["run_dir"]
+
+    return coord_file
 
 
 def setup_mlflow_logger(trainer):
@@ -126,7 +128,7 @@ class cc2trainer(LightningCLI):
         super().before_instantiate_classes()
 
         if self.subcommand == "fit":
-            initialize_environment(self.config.fit.get("ckpt_path"))
+            self.coord_file = initialize_environment(self.config.fit.get("ckpt_path"))
 
         if self.subcommand == "test":
             ckpt_path = self.config.test.get("ckpt_path")
@@ -183,6 +185,12 @@ class cc2trainer(LightningCLI):
 
     def before_predict(self):
         self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("predict")))
+
+    def on_train_end(self):
+        try:
+            os.remove(self.coord_file)
+        except FileNotFoundError as e:
+            pass
 
 
 torch.set_float32_matmul_precision("high")
