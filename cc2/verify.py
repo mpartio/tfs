@@ -120,7 +120,7 @@ def read_data(run_name, ensemble_only):
 
     file_path = f"{run_dir}/test-output"
 
-    predictions, truth, dates = read_data_from_dir(file_path)
+    truth, predictions, dates = read_data_from_dir(file_path)
 
     if not ensemble_only and predictions.ndim == 6:
         # predictions are from pgu_ens, pick first member
