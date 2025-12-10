@@ -26,10 +26,10 @@ class AMSELoss(nn.Module):
         def band_mean(x, m):
             return x[:, m].mean().detach()
 
-        max_r = torch.tensor(10)
+        max_r = torch.tensor(10).to(device)
         metrics = {
             "r_low": torch.clamp_max(max_r, band_mean(r, low)),
-            "r_mid": torch.clam_max(max_r, band_mean(r, mid)),
+            "r_mid": torch.clamp_max(max_r, band_mean(r, mid)),
             "r_high": torch.clamp_max(max_r, band_mean(r, high)),
             "coh_low": band_mean(coh, low),
             "coh_mid": band_mean(coh, mid),
