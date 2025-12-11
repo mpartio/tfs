@@ -7,6 +7,7 @@ import lightning.pytorch as pl
 import lightning as L
 import json
 import time
+import random
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.loggers import MLFlowLogger
 from dataloader.cc2CRPS_data import cc2DataModule
@@ -63,6 +64,7 @@ def setup_run_dir(coord_file: str, ckpt_path: str | None):
 def initialize_environment(ckpt_path: str | None):
     rank = get_rank()
 
+    random.seed(os.getpid())
     coord_file = f"ddp_coordination_info-{random.randint(0,1000):04d}.json"
 
     if rank == 0:
