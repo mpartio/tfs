@@ -237,27 +237,22 @@ class cc2CRPS(nn.Module):
                 self.max_step + 1, self.embed_dim * 2
             )
 
-        self.use_future_forcings = config.use_future_forcings
+        # Layers to process future forcings
+        # project a [B, P, D] future-forcing token into the decoder space
+        self.future_force_proj = nn.Sequential(
+            nn.LayerNorm(self.embed_dim * 2),
+            nn.Linear(self.embed_dim * 2, self.embed_dim * 2),  # lift to decoder dim
+            nn.GELU(),
+            nn.Linear(self.embed_dim * 2, self.embed_dim * 2),  # refine
+        )
 
-        if self.use_future_forcings:
-            # Layers to process future forcings
-            # project a [B, P, D] future-forcing token into the decoder space
-            self.future_force_proj = nn.Sequential(
-                nn.LayerNorm(self.embed_dim * 2),
-                nn.Linear(
-                    self.embed_dim * 2, self.embed_dim * 2
-                ),  # lift to decoder dim
-                nn.GELU(),
-                nn.Linear(self.embed_dim * 2, self.embed_dim * 2),  # refine
-            )
-
-            # Simple downsampler to match spatial dimesions
-            self.future_force_down = nn.Conv2d(
-                in_channels=self.embed_dim,
-                out_channels=self.embed_dim * 2,
-                kernel_size=2,
-                stride=2,
-            )
+        # Simple downsampler to match spatial dimesions
+        self.future_force_down = nn.Conv2d(
+            in_channels=self.embed_dim,
+            out_channels=self.embed_dim * 2,
+            kernel_size=2,
+            stride=2,
+        )
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -355,7 +350,7 @@ class cc2CRPS(nn.Module):
             0
         ).unsqueeze(1)
 
-        if self.use_future_forcings and f_future is not None:
+        if f_future is not None:
             # f_future: [B, 1, P, D_enc]  (from patch embed)
             # Map it to decoder dim and add to the last P tokens.
             f_add = f_future.squeeze(1)  # [B, P, D_enc]
