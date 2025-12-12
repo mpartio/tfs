@@ -372,15 +372,12 @@ if __name__ == "__main__":
                 pred_psd = torch.load(
                     f"{args.save_path}/results/predicted_psd.pt", weights_only=False
                 )
-                pred_psd_r1 = torch.load(
-                    f"{args.save_path}/results/predicted_psd_r1.pt", weights_only=False
-                )
             else:
-                obs_psd, pred_psd, pred_psd_r1 = psd(
+                obs_psd, pred_psd = psd(
                     all_truth, all_predictions, args.save_path
                 )
-            plot_psd(labels, obs_psd, pred_psd, pred_psd_r1, args.save_path)
-            results = (obs_psd, pred_psd, pred_psd_r1)
+            plot_psd(labels, obs_psd, pred_psd, args.save_path)
+            results = (obs_psd, pred_psd)
 
         elif score == "fss":
             if args.plot_only:

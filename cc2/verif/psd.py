@@ -88,23 +88,37 @@ def interp1d_torch(x, xp, fp):
     fp : values at xp
     """
     # ensure 1D
-    x, xp, fp = x.flatten(), xp.flatten(), fp.flatten()
+    original_shape = fp.shape[:-1]
+
+    # Flatten fp to (batch, m) where batch = product of all dims except last
+    fp_2d = fp.reshape(-1, fp.shape[-1])  # (batch, m)
+
+    # Find indices for interpolation
     inds = torch.searchsorted(xp, x)
     inds = torch.clamp(inds, 1, len(xp) - 1)
+
+    # Get neighboring points
     x0, x1 = xp[inds - 1], xp[inds]
-    f0, f1 = fp[inds - 1], fp[inds]
+    f0 = fp_2d[:, inds - 1]  # (batch, n)
+    f1 = fp_2d[:, inds]  # (batch, n)
+
+    # Interpolate
     slope = (f1 - f0) / (x1 - x0)
-    return f0 + slope * (x - x0)
+    result = f0 + slope * (x - x0)
+
+    # Reshape back to original shape with new last dim
+    return result.reshape(*original_shape, len(x))
 
 
 def calculate_psd(data: torch.Tensor):
-    *lead, nx, ny = data.shape
+    data = data.squeeze()
+    B, T, nx, ny = data.shape
     device, dtype = data.device, data.dtype
-
     window = _hann2d(nx, ny, device, dtype, periodic=True)
     win_power = (window**2).sum()
 
-    d = data.reshape(-1, nx, ny) * window
+    # d = data.reshape(-1, nx, ny) * window
+    d = data * window
 
     dx, dy = infer_spacing_from_original(
         nx_down=nx,
@@ -131,7 +145,7 @@ def calculate_psd(data: torch.Tensor):
 
     nz = (k > 0) & (k <= k_max_axis)  # enforce scale >= 2*min(dx,dy)
     k = k[nz]
-    Pk = Pk[:, nz]
+    Pk = Pk[:, :, nz]
 
     wavelength = 1.0 / k
     Pk = Pk / (win_power / (nx * ny))
@@ -144,49 +158,34 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
     _ensure_dir(os.path.join(save_path, "results"))
 
     truth = all_truth[0]
-    if truth.ndim > 3:
-        truth = truth.reshape(-1, truth.shape[-2], truth.shape[-1])
-
     truth = truth.to(device)
+    # Remove initialization time as it skewes the results
+    truth = truth[:, 1:, ...]
 
     sx, sy, psd_q = calculate_psd(truth)
     observed_psd = {"sx": sx, "sy": sy, "psd": psd_q}
 
     predicted_psds = []
     for i in range(len(all_predictions)):
-        prediction = all_predictions[i]
-        if prediction.ndim > 3:
-            prediction = prediction.reshape(
-                -1, prediction.shape[-2], prediction.shape[-1]
-            )
+        prediction = all_predictions[i]  # F, T, C, H, W
+
+        # Remove initialization time as it skewes the results
+        prediction = prediction[:, 1:, ...]
+
         sx_p, sy_p, psd_p = calculate_psd(prediction.to(device))
         predicted_psds.append({"sx": sx_p, "sy": sy_p, "psd": psd_p})
 
     torch.save(observed_psd, f"{save_path}/results/observed_psd.pt")
     torch.save(predicted_psds, f"{save_path}/results/predicted_psd.pt")
 
-    predicted_psds_r1 = []
-    for i in range(len(all_predictions)):
-        prediction = all_predictions[i][:, 1:2, ...]
-        if prediction.ndim > 3:
-            prediction = prediction.reshape(
-                -1, prediction.shape[-2], prediction.shape[-1]
-            )
-
-        prediction = prediction.to(device)
-        sx_p1, sy_p1, psd_p1 = calculate_psd(prediction)
-        predicted_psds_r1.append({"sx": sx_p1, "sy": sy_p1, "psd": psd_p1})
-
-    torch.save(predicted_psds_r1, f"{save_path}/results/predicted_psd_r1.pt")
-
-    return observed_psd, predicted_psds, predicted_psds_r1
+    return observed_psd, predicted_psds
 
 
 def plot_psd(
     run_name: list[str],
     obs_psd: dict,
     pred_psds: list[dict],
-    pred_psds_r1: list[dict],
+    #    pred_psds_r1: list[dict],
     save_path: str,
 ):
     _ensure_dir(os.path.join(save_path, "figures"))
@@ -225,41 +224,42 @@ def plot_psd(
     def _to_np(t):
         return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
 
-    def init_plot():
+    def init_plot(opsd):
         plt.figure(figsize=(8, 5))
         plt.xlabel("Horizontal Scale (km)", fontsize=12)
         plt.ylabel("PSD", fontsize=12)
         sx = obs_psd["sx"]
-        psd = obs_psd["psd"]
+        # psd = obs_psd["psd"]
         plt.loglog(
-            _to_np(sx), _to_np(psd), label="Observed", linewidth=2, color="black"
+            _to_np(sx), _to_np(opsd), label="Observed", linewidth=2, color="black"
         )
+
+    # Copy to cpu
 
     sx_o = obs_psd["sx"].to("cpu")
     psd_o = obs_psd["psd"].to("cpu")
 
+    for i in range(len(run_name)):
+        pred_psds[i]["sx"] = pred_psds[i]["sx"].cpu()
+        pred_psds[i]["psd"] = pred_psds[i]["psd"].cpu()
+
     def absolute_psd():
 
         # ---------------- Absolute PSD ----------------
-        init_plot()
+        init_plot(psd_o.mean(dim=0))
         plt.title("Power Spectral Density", fontsize=14)
         plt.grid(True, alpha=0.7)
 
-        # Copy to cpu
-        for i in range(len(run_name)):
-            pred_psds[i]["sx"] = pred_psds[i]["sx"].cpu()
-            pred_psds[i]["psd"] = pred_psds[i]["psd"].cpu()
-            pred_psds_r1[i]["sx"] = pred_psds_r1[i]["sx"].cpu()
-            pred_psds_r1[i]["psd"] = pred_psds_r1[i]["psd"].cpu()
-
         for i in range(len(run_name)):
             sx = pred_psds[i]["sx"]
-            psd = pred_psds[i]["psd"]
+            psd = pred_psds[i]["psd"].mean(dim=0)
             if sx[0] > sx[-1]:
                 sx = torch.flip(sx, dims=[0])
                 psd = torch.flip(psd, dims=[0])
             psd_interp = interp1d_torch(sx_o, sx, psd)
-            plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
+            plt.loglog(
+                _to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8
+            )
 
         ax = plt.gca()
         ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
@@ -276,18 +276,20 @@ def plot_psd(
 
     def absolute_1h_psd():
         # ---------------- Rollout-1 Absolute ----------------
-        init_plot()
+        init_plot(psd_o[0])
         plt.title("Power Spectral Density Rollout 1", fontsize=14)
         plt.grid(True, alpha=0.7)
 
         for i in range(len(run_name)):
-            sx = pred_psds_r1[i]["sx"].cpu()
-            psd = pred_psds_r1[i]["psd"].cpu()
+            sx = pred_psds[i]["sx"].cpu()
+            psd = pred_psds[i]["psd"].cpu()[0]
             if sx[0] > sx[-1]:
                 sx = torch.flip(sx, dims=[0])
                 psd = torch.flip(psd, dims=[0])
             psd_interp = interp1d_torch(sx_o, sx, psd)
-            plt.loglog(_to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8)
+            plt.loglog(
+                _to_np(sx_o), _to_np(psd_interp), label=run_name[i], linewidth=1.8
+            )
 
         ax = plt.gca()
         ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=10))
@@ -304,11 +306,10 @@ def plot_psd(
         plt.close()
         plt.clf()
 
-
     def anomaly_psd():
         # ---------------- Anomaly vs Observed ----------------
         plt.figure(figsize=(8, 5))
-        plt.title("PSD Anomaly vs Observed", fontsize=14)
+        plt.title("PSD Anomaly", fontsize=14)
         plt.xlabel("Horizontal Scale (km)", fontsize=12)
         plt.ylabel("log10(pred/obs)", fontsize=12)
         plt.grid(True, alpha=0.7)
@@ -316,13 +317,15 @@ def plot_psd(
 
         for i in range(len(run_name)):
             sx = pred_psds[i]["sx"].cpu()
-            psd = pred_psds[i]["psd"].cpu()
+            psd = pred_psds[i]["psd"].cpu().mean(dim=0)
             if sx[0] > sx[-1]:
                 sx = torch.flip(sx, dims=[0])
                 psd = torch.flip(psd, dims=[0])
             psd_interp = interp1d_torch(sx_o, sx, psd)
-            anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
-            plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+            anomaly = torch.log10(psd_interp) - torch.log10(psd_o.mean(dim=0))
+            plt.semilogx(
+                _to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8
+            )
 
         ax = plt.gca()
         ax.invert_xaxis()
@@ -337,10 +340,52 @@ def plot_psd(
         plt.close()
         plt.clf()
 
+    def anomaly_psd_leadtime():
+        plt.figure(figsize=(8, 5))
+        plt.title("PSD Anomaly scales <100km", fontsize=14)
+        plt.xlabel("Leadtime (h)", fontsize=12)
+        plt.ylabel("log10(pred/obs)", fontsize=12)
+        plt.grid(True, alpha=0.7)
+        plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
+
+        for i in range(len(run_name)):
+            sx = pred_psds[i]["sx"]
+            psd = pred_psds[i]["psd"]
+
+            mask = sx < 100
+            psd_o_masked = psd_o[:, mask]
+
+            # todo: interpolation is not working in this use case
+            if False and torch.allclose(sx, sx_o, rtol=1e-5, atol=1e-5):
+                psd_interp = interp1d_torch(sx_o, sx, psd)
+            else:
+                psd_interp = psd
+
+            psd_masked = psd_interp[:, mask]
+
+            assert psd_o_masked.shape == psd_masked.shape
+
+            anomaly = (torch.log10(psd_masked) - torch.log10(psd_o_masked)).mean(dim=1)
+
+            plt.plot(
+                np.arange(1, psd_masked.shape[0] + 1),
+                _to_np(anomaly),
+                label=run_name[i],
+                linewidth=1.8,
+            )
+
+        plt.legend(fontsize=10, ncol=2)
+
+        filename = f"{save_path}/figures/psd_anomaly_100km.png"
+        plt.savefig(filename, dpi=200)
+        print(f"Plot saved to {filename}")
+        plt.close()
+        plt.clf()
+
     def anomaly_1h_psd():
         # ---------------- Rollout-1 Anomaly ----------------
         plt.figure(figsize=(8, 5))
-        plt.title("PSD Anomaly vs Observed Rollout 1", fontsize=14)
+        plt.title("PSD Anomaly Rollout 1", fontsize=14)
         plt.xlabel("Horizontal Scale (km)", fontsize=12)
         plt.ylabel("log10(pred/obs)", fontsize=12)
         plt.grid(True, alpha=0.7)
@@ -348,14 +393,16 @@ def plot_psd(
         plt.axhline(0.0, color="k", linestyle="-", linewidth=1, label="Observed")
 
         for i in range(len(run_name)):
-            sx = pred_psds_r1[i]["sx"].cpu()
-            psd = pred_psds_r1[i]["psd"].cpu()
+            sx = pred_psds[i]["sx"].cpu()
+            psd = pred_psds[i]["psd"].cpu()[0]
             if sx[0] > sx[-1]:
                 sx = torch.flip(sx, dims=[0]).cpu()
                 psd = torch.flip(psd, dims=[0]).cpu()
             psd_interp = interp1d_torch(sx_o, sx, psd)
-            anomaly = torch.log10(psd_interp) - torch.log10(psd_o)
-            plt.semilogx(_to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8)
+            anomaly = torch.log10(psd_interp) - torch.log10(psd_o[0])
+            plt.semilogx(
+                _to_np(sx_o), _to_np(anomaly), label=run_name[i], linewidth=1.8
+            )
 
         ax = plt.gca()
         ax.invert_xaxis()
@@ -370,6 +417,8 @@ def plot_psd(
         plt.close()
         plt.clf()
 
-
+    # absolute_psd()
+    # absolute_1h_psd()
     anomaly_psd()
     anomaly_1h_psd()
+    anomaly_psd_leadtime()
