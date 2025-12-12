@@ -68,6 +68,7 @@ class cc2CRPSModel(L.LightningModule):
         use_soft_coarse_dwconv: bool = False,
         test_output_directory: str | None = None,
         predict_tendencies: bool = True,
+        use_rollout_weighting: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -133,7 +134,6 @@ class cc2CRPSModel(L.LightningModule):
 
         assert self._loss_fn is not None
 
-
     def configure_model(self) -> None:
         if self.model_configured:
             return
@@ -182,11 +182,9 @@ class cc2CRPSModel(L.LightningModule):
             from pgu_ens.cc2 import cc2CRPS
             from pgu_ens.util import roll_forecast
 
-
         elif self.hparams.model_family == "swinu":
             from swinu.cc2 import cc2CRPS
             from swinu.util import roll_forecast
-
 
         self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast
@@ -314,6 +312,8 @@ class cc2CRPSModel(L.LightningModule):
             ss_pred_max=self.ss_pred_max,
             pl_module=self,
             predict_tendencies=self.hparams.predict_tendencies,
+            use_rollout_weighting=self.hparams.use_rollout_weighting,
+            stage="train",
         )
 
         self.log("train_loss", loss["loss"], sync_dist=False)
@@ -353,6 +353,8 @@ class cc2CRPSModel(L.LightningModule):
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
             predict_tendencies=self.hparams.predict_tendencies,
+            use_rollout_weighting=self.hparams.use_rollout_weighting,
+            stage="val",
         )
 
         self.log("val_loss", loss["loss"], sync_dist=False)
@@ -389,6 +391,8 @@ class cc2CRPSModel(L.LightningModule):
             loss_fn=None,
             use_scheduled_sampling=False,
             predict_tendencies=self.hparams.predict_tendencies,
+            use_rollout_weighting=self.hparams.use_rollout_weighting,
+            stage="test",
         )
 
         # We want to include the analysis time also

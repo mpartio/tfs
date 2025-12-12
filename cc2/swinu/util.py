@@ -107,6 +107,19 @@ def scheduled_sampling_inputs(
     )
 
 
+def rollout_weights(step: int, max_step: int, R: int, device: str, q: float = 0.3):
+    s = min(1.0, step / max_step)
+
+    a = torch.zeros(R)
+    a[0] = 1.0 - q
+    a[1] = q
+    b = [1.0 / R] * R
+
+    w = [(1.0 - s) * a_t + s * b_t for a_t, b_t in zip(a, b)]
+
+    return torch.tensor(w).to(device)
+
+
 def ste_clamp(x, use_ste=False):
     if use_ste:
         x_clamped = x.clamp(0.0, 1.0)
@@ -128,6 +141,8 @@ def roll_forecast(
     ss_pred_max: float = 1.0,
     pl_module: pl.LightningModule | None = None,
     predict_tendencies: bool = True,
+    use_rollout_weighting: bool = False,
+    stage: str = "train",
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
@@ -144,6 +159,8 @@ def roll_forecast(
     all_losses = []
     all_predictions = []
     all_tendencies = []
+
+    metrics = {}
 
     # Loop through each rollout step
     for t in range(n_step):
@@ -163,27 +180,9 @@ def roll_forecast(
                 ss_pred_max=ss_pred_max,
             )
 
-            pl_module.log(
-                "ss_p_pred",
-                p_pred,
-                on_step=True,
-                on_epoch=False,
-                sync_dist=False,
-            )
-            pl_module.log(
-                "ss_mask_prev",
-                mask_prev,
-                on_step=True,
-                on_epoch=False,
-                sync_dist=False,
-            )
-            pl_module.log(
-                "ss_mask_curr",
-                mask_curr,
-                on_step=True,
-                on_epoch=False,
-                sync_dist=False,
-            )
+            metrics[f"loss/{stage}/ss_p_pred"] = p_pred
+            metrics[f"loss/{stage}/ss_mask_prev"] = mask_prev
+            metrics[f"loss/{stage}/ss_mask_curr"] = mask_curr
 
         else:
             input_state = torch.cat([previous_state, current_state], dim=1)
@@ -226,7 +225,7 @@ def roll_forecast(
                 next_gt = y[:, t : t + 1, ...]
                 next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
 
-                pl_module.log("ss_mask_next", mask_next.float().mean(), on_step=True)
+                metrics[f"loss/{stage}/ss_mask_next"] = mask_next.float().mean()
             else:
                 # Training without SS
                 next_state = ste_clamp(next_pred, True)
@@ -262,7 +261,15 @@ def roll_forecast(
                     except KeyError:
                         loss[k] = [v]
 
-        loss["loss"] = torch.mean(torch.stack(loss["loss"]))
+        if use_rollout_weighting and n_step > 1 and step is not None:
+            w = rollout_weights(step, max_step, n_step, loss["loss"][0].device)
+
+            loss["loss"] = torch.mean(w * torch.stack(loss["loss"]))
+            for i, _w in enumerate(w):
+                metrics[f"loss/{stage}/rollout_weight_{i+1}"] = _w.item()
+
+        else:
+            loss["loss"] = torch.mean(torch.stack(loss["loss"]))
 
         for k, v in loss.items():
             if k == "loss":
