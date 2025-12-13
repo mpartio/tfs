@@ -46,7 +46,7 @@ class cc2CRPSModel(L.LightningModule):
         warmup_iterations: int = 1000,
         weight_decay: float = 1e-3,
         rollout_length: int = 1,
-        init_weights_from_ckpt: bool = False,
+        init_weights_from_ckpt: bool | None = None,
         branch_from_run: str = None,
         use_gradient_checkpointing: bool = False,
         model_family: str = "pgu",
@@ -192,32 +192,31 @@ class cc2CRPSModel(L.LightningModule):
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
         self.run_dir = os.environ["CC2_RUN_DIR"]
 
-        if not self.hparams.init_weights_from_ckpt:
-            rank_zero_info(
-                "Run dir set but weights are not loaded (init_weights_from_ckpt: false)"
-            )
-
-        else:
-
-            if self.hparams.branch_from_run:
-                if "/" in self.hparams.branch_from_run:
-                    branch_run_dir = "runs/{}".format(self.hparams.branch_from_run)
-                else:
-                    branch_run_dir = get_latest_run_dir(
-                        "runs/" + self.hparams.branch_from_run
-                    )
-
-                rank_zero_info(f"Branching from {branch_run_dir}")
-
-            else:
-                branch_run_dir = (
-                    "/".join(self.run_dir.split("/")[:-1])
-                    + "/"
-                    + str(self.run_number - 1)
+        if self.hparams.init_weights_from_ckpt is not None:
+            if self.hparams.init_weights_from_ckpt:
+                warn_msg = (
+                    "init_weights_from_ckpt is deprecated\n"
+                    "1. To start a fresh run, set ckpt_path=null and model.branch_from_run=null\n"
+                    "2. To continue with same optimizer state, set ckpt_path=/path/tp/ckpt.ckpt and model.branch_from_run=null\n"
+                    "3. To branch a new run from an existing run with new optimizer state, set ckpt_path=null and model.branch_from_run=run-name/1"
                 )
+                raise ValueError(warn_msg)
+            else:
+                rank_zero_warn("init_weights_from_ckpt is deprecated")
+
+        if self.hparams.branch_from_run:
+            if "/" in self.hparams.branch_from_run:
+                branch_run_dir = "runs/{}".format(self.hparams.branch_from_run)
+            else:
+                branch_run_dir = get_latest_run_dir(
+                    "runs/" + self.hparams.branch_from_run
+                )
+
             ckpt_path = find_latest_checkpoint_path(branch_run_dir)
 
-            rank_zero_info(f"Initializing weights from: {ckpt_path}")
+            rank_zero_info(
+                f"Branching from {branch_run_dir} using weights from: {ckpt_path}"
+            )
 
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
@@ -233,12 +232,11 @@ class cc2CRPSModel(L.LightningModule):
 
         rank = get_rank()
 
-        if self.run_name is not None:
-            print(
-                "Rank {} starting at {} using run directory {}".format(
-                    rank, datetime.now(), self.run_dir
-                )
+        print(
+            "Rank {} starting at {} using run directory {}".format(
+                rank, datetime.now(), self.run_dir
             )
+        )
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
