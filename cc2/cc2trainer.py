@@ -126,6 +126,10 @@ def _load_stats(ckpt_path):
 
 
 class cc2trainer(LightningCLI):
+    def _inject_statistics(self, stage: str):
+        if self.model.use_statistics_from_checkpoint:
+            self.datamodule.inject_statistics(_load_stats(self._stage_ckpt(stage)))
+
     def before_instantiate_classes(self):
         super().before_instantiate_classes()
 
@@ -151,7 +155,7 @@ class cc2trainer(LightningCLI):
             os.environ["CC2_RUN_DIR"] = run_dir
 
     def before_fit(self):
-        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("fit")))
+        self._inject_statistics("fit")
 
         if self.trainer.global_rank == 0:
             setup_mlflow_logger(self.trainer)
@@ -180,13 +184,13 @@ class cc2trainer(LightningCLI):
         return getattr(cfg, "ckpt_path", None) if cfg else None
 
     def before_validate(self):
-        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("validate")))
+        self._inject_statistics("validate")
 
     def before_test(self):
-        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("test")))
+        self._inject_statistics("test")
 
     def before_predict(self):
-        self.datamodule.inject_statistics(_load_stats(self._stage_ckpt("predict")))
+        self._inject_statistics("predict")
 
     def on_train_end(self):
         try:

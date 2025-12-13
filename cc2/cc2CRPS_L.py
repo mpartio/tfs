@@ -68,6 +68,7 @@ class cc2CRPSModel(L.LightningModule):
         test_output_directory: str | None = None,
         predict_tendencies: bool = True,
         use_rollout_weighting: bool = False,
+        use_statistics_from_checkpoint: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -123,6 +124,7 @@ class cc2CRPSModel(L.LightningModule):
         self.latest_train_data = None
 
         self.use_scheduled_sampling = use_scheduled_sampling
+        self.use_statistics_from_checkpoint = use_statistics_from_checkpoint
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
         self.autoregressive_mode = autoregressive_mode
