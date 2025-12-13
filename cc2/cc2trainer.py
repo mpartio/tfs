@@ -17,6 +17,16 @@ from lightning.pytorch.loggers import MLFlowLogger
 from common.sc_callback import CustomSaveConfigCallback
 
 
+def get_coordination_info_identifier() -> str:
+    job = os.environ.get("SLURM_JOB_ID")
+    if not job:
+        print("SLURM_JOB_ID not set")
+        return f"{random.randint(1, 1000):04d}"
+
+    step = os.environ.get("SLURM_STEP_ID")  # may be unset
+    return f"{job}" if not step else f"{job}_{step}"
+
+
 def write_coordination_info(
     coord_file: str, run_name: str, run_number: int, run_dir: str
 ):
@@ -28,6 +38,8 @@ def write_coordination_info(
     }
     with open(coord_file, "w") as f:
         json.dump(coord_info, f)
+
+    print(f"Wrote coordination file {coord_file}")
 
 
 def setup_run_dir(coord_file: str, ckpt_path: str | None):
@@ -64,8 +76,7 @@ def setup_run_dir(coord_file: str, ckpt_path: str | None):
 def initialize_environment(ckpt_path: str | None):
     rank = get_rank()
 
-    random.seed(os.getpid())
-    coord_file = f"ddp_coordination_info-{random.randint(0,1000):04d}.json"
+    coord_file = f"ddp_coordination_info-{get_coordination_info_identifier()}.json"
 
     if rank == 0:
         setup_run_dir(coord_file, ckpt_path)
@@ -78,7 +89,7 @@ def initialize_environment(ckpt_path: str | None):
             time.sleep(0.2)
             if time.time() - start_time > max_wait:
                 raise TimeoutError(
-                    f"Coordination file not created after {max_wait} seconds"
+                    f"Coordination file {coord_file} not created after {max_wait} seconds"
                 )
 
         # Read coordination info
