@@ -21,9 +21,7 @@ from common.util import (
     get_latest_run_dir,
     find_latest_checkpoint_path,
     strip_prefix,
-    adapt_checkpoint_to_model,
 )
-from pgu.layers import get_padded_size
 from typing import Optional, Callable
 
 
@@ -49,7 +47,6 @@ class cc2CRPSModel(L.LightningModule):
         weight_decay: float = 1e-3,
         rollout_length: int = 1,
         init_weights_from_ckpt: bool = False,
-        adapt_ckpt_resolution: bool = False,
         branch_from_run: str = None,
         use_gradient_checkpointing: bool = False,
         model_family: str = "pgu",
@@ -195,12 +192,12 @@ class cc2CRPSModel(L.LightningModule):
         self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
         self.run_dir = os.environ["CC2_RUN_DIR"]
 
-        if self.run_dir and not self.hparams.init_weights_from_ckpt:
+        if not self.hparams.init_weights_from_ckpt:
             rank_zero_info(
                 "Run dir set but weights are not loaded (init_weights_from_ckpt: false)"
             )
 
-        elif self.run_dir and self.hparams.init_weights_from_ckpt:
+        else:
 
             if self.hparams.branch_from_run:
                 if "/" in self.hparams.branch_from_run:
@@ -227,46 +224,7 @@ class cc2CRPSModel(L.LightningModule):
             state_dict = ckpt["state_dict"]
             state_dict = strip_prefix(state_dict)
 
-            if self.hparams.adapt_ckpt_resolution:
-                rank_zero_info("Adapting checkpoint resolution")
-
-                assert (
-                    "hyper_parameters" in ckpt.keys()
-                ), "checkpoint does not have key 'hyper_parameters'"
-
-                # We need the old/new size info here.
-                # It might come from hparams, or you might need to load
-                # the old config associated with the checkpoint.
-                # This part requires careful handling of parameters.
-                # Let's assume old/new size can be calculated or passed via hparams.
-
-                old_input_resolution = ckpt["hyper_parameters"]["input_resolution"]
-                new_input_resolution = self.input_resolution
-
-                old_patch_size = ckpt["hyper_parameters"]["patch_size"]
-                new_patch_size = self.hparams.patch_size
-
-                old_resolution = get_padded_size(
-                    *old_input_resolution,
-                    old_patch_size,
-                )
-                old_resolution = (
-                    old_resolution[0] // old_patch_size,
-                    old_resolution[1] // old_patch_size,
-                )
-
-                new_resolution = get_padded_size(*new_input_resolution, new_patch_size)
-                new_resolution = (
-                    new_resolution[0] // new_patch_size,
-                    new_resolution[1] // new_patch_size,
-                )
-
-                # Use your existing adaptation function
-                state_dict = adapt_checkpoint_to_model(
-                    state_dict, self.model.state_dict(), old_resolution, new_resolution
-                )
-
-            # Load the (potentially adapted) state dict
+            # Load the state dict
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
             rank_zero_info(f"Weight loading results: {load_result}")
