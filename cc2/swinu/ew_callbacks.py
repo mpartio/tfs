@@ -68,6 +68,11 @@ def _radial_bins(Hf, Wf, device, n_bins=None):
 def _compute_conditional_bias(
     initial_cc: torch.Tensor, y_pred: torch.Tensor, y_true: torch.Tensor
 ):
+    """
+    Computes conditional bias per rollout step, binned by initial_cc.
+    Returns keys like:
+      conditional_bias_clear_r0, conditional_bias_clear_r1, ...
+    """
     bins = [
         ("clear", 0.0, 0.125),
         ("scattered", 0.125, 0.5),
@@ -75,40 +80,40 @@ def _compute_conditional_bias(
         ("overcast", 0.875, 1.0),
     ]
 
-    initial_cc = _ensure_btchw(initial_cc)
-    y_pred = _ensure_btchw(y_pred)
-    y_true = _ensure_btchw(y_true)
+    initial_cc = _ensure_bchw(initial_cc)  # [B,C,H,W]
+    y_pred = _ensure_btchw(y_pred)  # [B,T,C,H,W]
+    y_true = _ensure_btchw(y_true)  # [B,T,C,H,W]
+    B, T, C, H, W = y_pred.shape
 
     results = {}
+    for t in range(T):
+        yp = y_pred[:, t]  # [B,C,H,W]
+        yt = y_true[:, t]
 
-    for name, low, high in bins:
-        # Create mask for this category
-        if name == "overcast":
-            # Include upper bound for overcast
-            mask = (initial_cc >= low) & (initial_cc <= high)
-        else:
-            mask = (initial_cc >= low) & (initial_cc < high)
+        for name, low, high in bins:
+            if name == "overcast":
+                mask = (initial_cc >= low) & (initial_cc <= high)
+            else:
+                mask = (initial_cc >= low) & (initial_cc < high)
 
-        n_pixels = mask.sum()
-
-        if n_pixels > 0:
-            # Compute bias for pixels in this category
-            error = y_pred[mask] - y_true[mask]
-            bias = error.mean()
-            results[f"conditional_bias_{name}"] = bias.item()
-            # results[f"conditional_bias_frac_{name}"] = n_pixels.item() / mask.numel()  # sample size frac
-        else:
-            results[f"conditional_bias_{name}"] = None
-            # results[f"conditional_bias_frac_{name}"] = 0
+            n_pixels = mask.sum()
+            if n_pixels > 0:
+                bias = (yp[mask] - yt[mask]).mean()
+                results[f"conditional_bias_{name}_r{t}"] = float(bias.item())
+            else:
+                # Avoid None -> float(None) crash in your logger
+                results[f"conditional_bias_{name}_r{t}"] = float("nan")
 
     return results
 
 
 @torch.no_grad()
 def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
-    return structural_similarity_index_measure(
+    ssim_0 = structural_similarity_index_measure(
         _ensure_bchw(y_pred), _ensure_bchw(y_true)
     ).item()
+
+    return 1 - ssim_0
 
 
 @torch.no_grad()
@@ -195,6 +200,7 @@ def _compute_change_metrics_per_step(
     return tend_corr, stat_ratio
 
 
+@torch.no_grad()
 def _psd_coherence_once(
     y_pred, y_true, top_frac=0.20, k_mid=0.30, k_high=0.60, eps=1e-8
 ):
@@ -255,6 +261,7 @@ def _psd_coherence_once(
     }
 
 
+@torch.no_grad()
 def _fss_once(y_pred, y_true, category, radius, eps=1e-8, less_than=False):
     """
     Fraction Skill Score at one threshold & radius on a single frame.
@@ -293,6 +300,7 @@ def _fss_once(y_pred, y_true, category, radius, eps=1e-8, less_than=False):
     return fss.item()
 
 
+@torch.no_grad()
 def _psd_anomaly_once(y_pred, y_true, lo_px=12.0, hi_px=6.0, eps=1e-8):
     """
     Mean PSD anomaly (log10(pred/obs)) in an annulus defined by pixel wavelengths
@@ -335,106 +343,128 @@ def _psd_anomaly_once(y_pred, y_true, lo_px=12.0, hi_px=6.0, eps=1e-8):
     return float(anom.mean().item())
 
 
-def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw):
+@torch.no_grad()
+def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=8.0):
     """
-    y_*: [B,T,C,H,W] (or [B,C,H,W]) tensors, same shapes
-    Uses only the first frame T=0 for speed/consistency (your stored sample is single-step).
-    Aggregates metrics across batch (mean of frame-wise metrics).
+    Rollout-aware metrics pack.
+
+    Inputs:
+      x_hist: [B,Th,C,H,W] or [B,C,H,W]
+      y_pred: [B,T,C,H,W] or [B,C,H,W]
+      y_true: [B,T,C,H,W] or [B,C,H,W]
+
+    Outputs:
+      - Per-step metrics keyed as "<metric>_r{t}" for t=0..T-1
+      - Overall (time-mean) metrics keyed as "<metric>" (mean over t)
+      - Change metrics already include per-step keys from _compute_change_metrics_per_step
+      - Conditional bias per-step keys from _compute_conditional_bias
     """
     x_hist = _ensure_btchw(x_hist_btchw)
     y_pred = _ensure_btchw(y_pred_btchw)
     y_true = _ensure_btchw(y_true_btchw)
+
     B, T, C, H, W = y_pred.shape
-    # Use first step (single-step training), average over batch
-    step = 0
-    yp = y_pred[:, step]  # [B,C,H,W]
-    yt = y_true[:, step]
 
-    (
-        bias_list,
-        mae_list,
-        fss_ovc_list_30,
-        fss_bkn_list_30,
-        fss_sct_list_30,
-        fss_cavok_list_30,
-        vk_list,
-        coh_mid_list,
-        coh_hi_list,
-        psd_anom_list_60_100,
-        psd_anom_list_30_60,
-        psd_anom_list_10_30,
-        ssim_list,
-        psnr_list,
-        energy_list,
-    ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
-    for b in range(yp.shape[0]):
-        yp_b = yp[b]
-        yt_b = yt[b]
+    per_step = {t: {} for t in range(T)}
 
-        bias_list.append(_bias(yp_b, yt_b))
-        mae_list.append(_mae(yp_b, yt_b))
-        vk_list.append(_var_ratio(yp_b, yt_b))
+    for t in range(T):
+        yp = y_pred[:, t]  # [B,C,H,W]
+        yt = y_true[:, t]
 
-        coh = _psd_coherence_once(yp_b, yt_b)
-        coh_mid_list.append(coh["coherence_mid"])
-        coh_hi_list.append(coh["coherence_high"])
-        fss_ovc_list_30.append(_fss_once(yp_b, yt_b, "overcast", radius=6))
-        fss_bkn_list_30.append(_fss_once(yp_b, yt_b, "broken", radius=6))
-        fss_sct_list_30.append(_fss_once(yp_b, yt_b, "scattered", radius=6))
-        fss_cavok_list_30.append(_fss_once(yp_b, yt_b, "clear", radius=6))
+        (
+            bias_list,
+            mae_list,
+            vk_list,
+            hk_list,
+            coh_mid_list,
+            coh_hi_list,
+            fss_ovc_list_30,
+            fss_bkn_list_30,
+            fss_sct_list_30,
+            fss_cavok_list_30,
+            psd_anom_list_60_100,
+            psd_anom_list_30_60,
+            psd_anom_list_10_30,
+            ssim_list,
+            psnr_list,
+            energy_list,
+        ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
 
-        psd_anom_list_60_100.append(
-            _psd_anomaly_once(yp_b, yt_b, lo_px=20.0, hi_px=12.0)
-        )
-        psd_anom_list_30_60.append(_psd_anomaly_once(yp_b, yt_b, lo_px=12.0, hi_px=6.0))
-        psd_anom_list_10_30.append(_psd_anomaly_once(yp_b, yt_b, lo_px=6.0, hi_px=2.0))
+        for b in range(B):
+            yp_b = yp[b]
+            yt_b = yt[b]
 
-        ssim_list.append(_ssim(yp_b, yt_b))
-        psnr_list.append(_psnr(yp_b, yt_b))
-        energy_list.append(_energy_distance(yp_b, yt_b))
+            bias_list.append(_bias(yp_b, yt_b))
+            mae_list.append(_mae(yp_b, yt_b))
+            vk_list.append(_var_ratio(yp_b, yt_b))
 
-    hk_list = []
-    for b in range(yp.shape[0]):
-        hk = _psd_coherence_once(yp[b], yt[b])["high_k_power_ratio"]
-        hk_list.append(hk)
+            coh = _psd_coherence_once(yp_b, yt_b)
+            coh_mid_list.append(coh["coherence_mid"])
+            coh_hi_list.append(coh["coherence_high"])
+            hk_list.append(coh["high_k_power_ratio"])
 
-    base = {
-        "mae": float(sum(mae_list) / len(mae_list)),
-        "bias": float(sum(bias_list) / len(bias_list)),
-        "variance_ratio": float(sum(vk_list) / len(vk_list)),
-        "high_k_power_ratio": min(float(sum(hk_list) / len(hk_list)), 8),
-        "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
-        "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
-        "fss_overcast_30km": float(sum(fss_ovc_list_30) / len(fss_ovc_list_30)),
-        "fss_broken_30km": float(sum(fss_bkn_list_30) / len(fss_bkn_list_30)),
-        "fss_scattered_30km": float(sum(fss_sct_list_30) / len(fss_sct_list_30)),
-        "fss_clear_30km": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
-        "psd_anom_60_100km": float(
-            sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
-        ),
-        "psd_anom_30_60km": float(sum(psd_anom_list_30_60) / len(psd_anom_list_30_60)),
-        "psd_anom_10_30km": float(sum(psd_anom_list_10_30) / len(psd_anom_list_10_30)),
-        "ssim": float(sum(ssim_list) / len(ssim_list)),
-        "psnr": float(sum(psnr_list) / len(psnr_list)),
-        "energy_distance": float(sum(energy_list) / len(energy_list)),
-    }
+            fss_ovc_list_30.append(_fss_once(yp_b, yt_b, "overcast", radius=6))
+            fss_bkn_list_30.append(_fss_once(yp_b, yt_b, "broken", radius=6))
+            fss_sct_list_30.append(_fss_once(yp_b, yt_b, "scattered", radius=6))
+            fss_cavok_list_30.append(_fss_once(yp_b, yt_b, "clear", radius=6))
+
+            psd_anom_list_60_100.append(
+                _psd_anomaly_once(yp_b, yt_b, lo_px=20.0, hi_px=12.0)
+            )
+            psd_anom_list_30_60.append(
+                _psd_anomaly_once(yp_b, yt_b, lo_px=12.0, hi_px=6.0)
+            )
+            psd_anom_list_10_30.append(
+                _psd_anomaly_once(yp_b, yt_b, lo_px=6.0, hi_px=2.0)
+            )
+
+            ssim_list.append(_ssim(yp_b, yt_b))
+            psnr_list.append(_psnr(yp_b, yt_b))
+            energy_list.append(_energy_distance(yp_b, yt_b))
+
+        per_step[t] = {
+            "mae": float(sum(mae_list) / len(mae_list)),
+            "bias": float(sum(bias_list) / len(bias_list)),
+            "variance_ratio": float(sum(vk_list) / len(vk_list)),
+            "high_k_power_ratio": float(min(sum(hk_list) / len(hk_list), clip_high_k)),
+            "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
+            "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
+            "fss_overcast_30km": float(sum(fss_ovc_list_30) / len(fss_ovc_list_30)),
+            "fss_broken_30km": float(sum(fss_bkn_list_30) / len(fss_bkn_list_30)),
+            "fss_scattered_30km": float(sum(fss_sct_list_30) / len(fss_sct_list_30)),
+            "fss_clear_30km": float(sum(fss_cavok_list_30) / len(fss_cavok_list_30)),
+            "psd_anom_60_100km": float(
+                sum(psd_anom_list_60_100) / len(psd_anom_list_60_100)
+            ),
+            "psd_anom_30_60km": float(
+                sum(psd_anom_list_30_60) / len(psd_anom_list_30_60)
+            ),
+            "psd_anom_10_30km": float(
+                sum(psd_anom_list_10_30) / len(psd_anom_list_10_30)
+            ),
+            "ssim": float(sum(ssim_list) / len(ssim_list)),
+            "psnr": float(sum(psnr_list) / len(psnr_list)),
+            "energy_distance": float(sum(energy_list) / len(energy_list)),
+        }
+
+    out = {}
+    for t in range(T):
+        for k, v in per_step[t].items():
+            out[f"{k}_r{t}"] = v
+
+    for k in per_step[0].keys():
+        out[k] = float(sum(per_step[t][k] for t in range(T)) / T)
 
     prev_true = x_hist[:, -1]  # [B,C,H,W]
     tend_corr, stat_ratio = _compute_change_metrics_per_step(
         y_pred, y_true, prev_true_bchw=prev_true, eps_change=1e-3
     )
+    out.update(tend_corr)
+    out.update(stat_ratio)
 
-    for key, val in tend_corr.items():
-        base[key] = val
-    for key, val in stat_ratio.items():
-        base[key] = val
+    out.update(_compute_conditional_bias(prev_true, y_pred, y_true))
 
-    cbias = _compute_conditional_bias(prev_true, y_pred, y_true)
-
-    for key, val in cbias.items():
-        base[key] = val
-
-    return base
+    return out
 
 
 class EarlyWarningMetricsCallback(L.Callback):
