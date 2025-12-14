@@ -109,11 +109,9 @@ def _compute_conditional_bias(
 
 @torch.no_grad()
 def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
-    ssim_0 = structural_similarity_index_measure(
+    return structural_similarity_index_measure(
         _ensure_bchw(y_pred), _ensure_bchw(y_true)
     ).item()
-
-    return 1 - ssim_0
 
 
 @torch.no_grad()
