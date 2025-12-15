@@ -1,5 +1,6 @@
 import math
 import torch
+import re
 import torch.nn.functional as F
 from torch import nn
 from torch.fft import rfft2, rfftfreq, fftfreq
@@ -9,7 +10,6 @@ from torchmetrics.functional.image import (
     structural_similarity_index_measure,
     peak_signal_noise_ratio,
 )
-from scipy.stats import energy_distance
 
 
 def _ensure_bchw(y):
@@ -118,17 +118,6 @@ def _ssim(y_pred: torch.Tensor, y_true: torch.Tensor):
 def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
     psnr = peak_signal_noise_ratio(y_pred, y_true, data_range=2.0)
     return (1 - torch.exp(-psnr / 20)).item()
-
-
-@torch.no_grad
-def _energy_distance(y_pred: torch.Tensor, y_true: torch.Tensor):
-    assert y_true.shape == y_pred.shape
-
-    y_true_flat = y_true.cpu().flatten().numpy()
-    y_pred_flat = y_pred.cpu().flatten().numpy()
-    ed = energy_distance(y_true_flat, y_pred_flat)
-
-    return ed
 
 
 @torch.no_grad()
@@ -418,7 +407,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
 
             ssim_list.append(_ssim(yp_b, yt_b))
             psnr_list.append(_psnr(yp_b, yt_b))
-            energy_list.append(_energy_distance(yp_b, yt_b))
 
         per_step[t] = {
             "mae": float(sum(mae_list) / len(mae_list)),
@@ -442,7 +430,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
             ),
             "ssim": float(sum(ssim_list) / len(ssim_list)),
             "psnr": float(sum(psnr_list) / len(psnr_list)),
-            "energy_distance": float(sum(energy_list) / len(energy_list)),
         }
 
     out = {}
@@ -486,10 +473,22 @@ class EarlyWarningMetricsCallback(L.Callback):
         self.log_train = log_train
         self.log_val = log_val
 
-    def _mlflow_log_metrics(self, pl_module, metrics: dict, prefix: str):
+        self._rollout_key = re.compile(r"_r\d+$")
+
+    def _split_mean_vs_rollout(self, metrics: dict) -> tuple[dict, dict]:
+        mean_metrics = {}
+        rollout_metrics = {}
+        for k, v in metrics.items():
+            if self._rollout_key.search(k):
+                rollout_metrics[k] = v
+            else:
+                mean_metrics[k] = v
+        return mean_metrics, rollout_metrics
+
+    def _mlflow_log_metrics(self, pl_module, metrics: dict, stage: str, root: str):
         for k, v in metrics.items():
             pl_module.log(
-                f"metrics/{prefix}/{k}",
+                f"{root}/{stage}/{k}",
                 float(v),
                 on_step=False,
                 on_epoch=True,
@@ -516,7 +515,14 @@ class EarlyWarningMetricsCallback(L.Callback):
                     y_pred,
                     y_true,
                 )
-            self._mlflow_log_metrics(pl_module, metrics, prefix="train")
+
+            mean_metrics, rollout_metrics = self._split_mean_vs_rollout(metrics)
+            self._mlflow_log_metrics(
+                pl_module, mean_metrics, stage="train", root="metrics"
+            )
+            self._mlflow_log_metrics(
+                pl_module, rollout_metrics, stage="train", root="metrics_rollout"
+            )
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -535,4 +541,11 @@ class EarlyWarningMetricsCallback(L.Callback):
                     y_pred,
                     y_true,
                 )
-            self._mlflow_log_metrics(pl_module, metrics, prefix="val")
+
+            mean_metrics, rollout_metrics = self._split_mean_vs_rollout(metrics)
+            self._mlflow_log_metrics(
+                pl_module, mean_metrics, stage="val", root="metrics"
+            )
+            self._mlflow_log_metrics(
+                pl_module, rollout_metrics, stage="val", root="metrics_rollout"
+            )
