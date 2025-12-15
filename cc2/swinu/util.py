@@ -278,6 +278,7 @@ def roll_forecast(
 
     assert tendencies.ndim == 5
 
-    loss.update(metrics)
+    if loss is not None:
+        loss.update(metrics)
 
     return loss, tendencies, predictions
