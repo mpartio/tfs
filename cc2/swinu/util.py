@@ -279,4 +279,6 @@ def roll_forecast(
 
     assert tendencies.ndim == 5
 
+    loss.update(metrics)
+
     return loss, tendencies, predictions
