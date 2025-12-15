@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 from torchmetrics.functional.image import (
     structural_similarity_index_measure,
 )
+from tqdm import tqdm
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def ssim(
@@ -19,11 +22,15 @@ def ssim(
     for i in range(len(all_predictions)):
         predictions = all_predictions[i]
         truth = all_truth[i]
+        B, T, C, H, W = predictions.shape
 
-        abs_diff = torch.abs(predictions - truth)
-        dims_to_average = [i for i in range(predictions.ndim) if i != 1]
-        ssim_per_step = torch.mean(abs_diff, dim=dims_to_average)
-        ssim_per_step = ssim_per_step.tolist()
+        # Compute SSIM for each timestep
+        ssim_per_step = []
+        for t in tqdm(range(T), desc="Calculating SSIM"):
+            ssim_t = structural_similarity_index_measure(
+                predictions[:, t].to(device), truth[:, t].to(device), data_range=1.0
+            ).item()
+            ssim_per_step.append(ssim_t)
 
         # Append results in long format
         for timestep_index, ssim_score in enumerate(ssim_per_step):
@@ -42,9 +49,12 @@ def ssim(
     pers = base_truth[:, 0:1]  # shape (1, C, H, W)
     pers = pers.expand_as(base_truth)  # shape (num_steps, C, H, W)
 
-    abs_diff = torch.abs(pers - base_truth)
-
-    ssim_per_step = torch.mean(abs_diff, dim=(0, 2, 3, 4)).tolist()
+    ssim_per_step = []
+    for t in range(T):
+        ssim_t = structural_similarity_index_measure(
+            pers[:, t].to(device), truth[:, t].to(device), data_range=1.0
+        ).item()
+        ssim_per_step.append(ssim_t)
 
     for t, score in enumerate(ssim_per_step):
         results.append(
@@ -57,16 +67,14 @@ def ssim(
 
     results_df = pd.DataFrame(results)
     if not results_df.empty:
-        results_df = results_df.sort_values(by="ssim", ascending=True)
+        results_df = results_df.sort_values(by="ssim", ascending=False)
 
     results_df.to_csv(f"{save_path}/results/ssim.csv")
 
     return results_df
 
 
-def plot_ssim(
-    df: pd.DataFrame, save_path="runs/verification"
-):
+def plot_ssim(df: pd.DataFrame, save_path="runs/verification"):
     if df.empty:
         print("No results to plot.")
         return
