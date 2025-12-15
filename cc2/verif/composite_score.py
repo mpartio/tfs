@@ -155,10 +155,11 @@ def composite_score(
             if not df_ssim.empty
             else np.nan
         )
-        ssim_max = 0.1  # Focus on 0-0.1 range
-        S_ssim = (
-            max(0.0, 1.0 - ssim_val / ssim_max) if not np.isnan(ssim_val) else np.nan
-        )
+        #ssim_max = 0.1  # Focus on 0-0.1 range
+        #S_ssim = (
+        #    max(0.0, 1.0 - ssim_val / ssim_max) if not np.isnan(ssim_val) else np.nan
+        #)
+        S_ssim = ssim_val
 
         # Compute weighted score (ignoring NaNs)
         components = {

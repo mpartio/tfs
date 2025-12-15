@@ -351,16 +351,10 @@ def plot_psd(
         for i in range(len(run_name)):
             sx = pred_psds[i]["sx"]
             psd = pred_psds[i]["psd"]
+            psd_interp = interp1d_torch(sx_o, sx, psd)
 
-            mask = sx < 100
+            mask = sx_o < 100
             psd_o_masked = psd_o[:, mask]
-
-            # todo: interpolation is not working in this use case
-            if False and torch.allclose(sx, sx_o, rtol=1e-5, atol=1e-5):
-                psd_interp = interp1d_torch(sx_o, sx, psd)
-            else:
-                psd_interp = psd
-
             psd_masked = psd_interp[:, mask]
 
             assert psd_o_masked.shape == psd_masked.shape
