@@ -66,7 +66,7 @@ class cc2CRPS(nn.Module):
             config.drop_path_rate = [config.drop_path_rate] * 4
 
         def _get_dilation(block, num):
-            if block in ("enc2", "dec1") and config.use_soft_coarse_dwconv:
+            if block in ("enc2", "dec1"):
                 return 1
             return 1 if num % 2 == 0 else 2
 
@@ -137,8 +137,8 @@ class cc2CRPS(nn.Module):
 
         h1, w1 = h0 // 2, w0 // 2
 
-        ls_init = 1e-3 if config.use_soft_coarse_dwconv else 1e-2
-        expand = 1 if config.use_soft_coarse_dwconv else 2
+        ls_init = 1e-3
+        expand = 1
 
         self.dwres_e2 = nn.ModuleList(
             [

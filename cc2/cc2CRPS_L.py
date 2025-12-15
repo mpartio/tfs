@@ -60,7 +60,6 @@ class cc2CRPSModel(L.LightningModule):
         loss_fn: Callable | nn.Module | None = None,
         use_deep_refinement_head: bool = False,
         use_hard_skip: bool = False,
-        use_soft_coarse_dwconv: bool = False,
         test_output_directory: str | None = None,
         predict_tendencies: bool = True,
         use_rollout_weighting: bool = False,
@@ -100,7 +99,6 @@ class cc2CRPSModel(L.LightningModule):
                 "autoregressive_mode",
                 "use_deep_refinement_head",
                 "use_hard_skip",
-                "use_soft_coarse_dwconv",
             ]
         }
 
