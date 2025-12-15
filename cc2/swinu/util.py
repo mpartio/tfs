@@ -139,7 +139,6 @@ def roll_forecast(
     max_step: int | None = None,
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
-    pl_module: pl.LightningModule | None = None,
     predict_tendencies: bool = True,
     use_rollout_weighting: bool = False,
     stage: str = "train",

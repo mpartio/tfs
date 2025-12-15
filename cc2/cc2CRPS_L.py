@@ -266,7 +266,6 @@ class cc2CRPSModel(L.LightningModule):
             max_step=self.max_steps,
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
-            pl_module=self,
             predict_tendencies=self.hparams.predict_tendencies,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
             stage="train",
