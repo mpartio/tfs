@@ -180,8 +180,7 @@ class BPSPLoss(nn.Module):
         PSDy = reduce_bt(PY).clamp_min(self.eps)[:, valid_bins]
 
         # --- BSP-style ratio penalty on binned power ---
-        ratio = (PSDx + self.eps) / (PSDy + self.eps)
-        bpsp_bin = (1.0 - ratio) ** 2
+        bpsp_bin = (torch.log1p(PSDx / self.eps) - torch.log1p(PSDy / self.eps)) ** 2
 
         k = self.k.to(device=bpsp_bin.device, dtype=bpsp_bin.dtype)  # [n_bins_valid]
         if self.beta != 0.0:
