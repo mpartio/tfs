@@ -272,9 +272,12 @@ class cc2CRPSModel(L.LightningModule):
         self.log("train_loss", loss["loss"], sync_dist=False)
 
         for k, v in loss.items():
+            if isinstance(v, torch.Tensor):
+                v = torch.sum(v).item()
+
             self.log(
                 f"loss/train/{k}",
-                torch.sum(v).item(),
+                v,
                 on_step=True,
                 on_epoch=True,
                 sync_dist=False,
@@ -313,9 +316,12 @@ class cc2CRPSModel(L.LightningModule):
         self.log("val_loss", loss["loss"], sync_dist=False)
 
         for k, v in loss.items():
+            if isinstance(v, torch.Tensor):
+                v = torch.sum(v).item()
+
             self.log(
                 f"loss/val/{k}",
-                torch.sum(v).item(),
+                v,
                 on_step=False,
                 on_epoch=True,
                 sync_dist=False,
@@ -470,8 +476,8 @@ class cc2CRPSModel(L.LightningModule):
         dm = self.trainer.datamodule
         if dm and dm._full_dataset and hasattr(dm._full_dataset, "data"):
             checkpoint["data_statistics"] = dm._full_dataset.data.statistics
-            checkpoint["data_statististics_name_to_index"] = (
-                dm._full_dataset.data.name_to_index
-            )
+            checkpoint[
+                "data_statististics_name_to_index"
+            ] = dm._full_dataset.data.name_to_index
         else:
             rank_zero_warn("Statistics not saved to checkpoint")
