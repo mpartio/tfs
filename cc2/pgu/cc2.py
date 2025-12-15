@@ -42,26 +42,14 @@ class cc2CRPS(nn.Module):
             config.static_forcing_params
         )
 
-        self.use_lossless_patch_embed = config.use_lossless_patch_embed
-
-        if config.use_lossless_patch_embed:
-            self.patch_embed = PatchEmbedLossless(
-                input_resolution=self.real_input_resolution,  # or whatever you pass now
-                patch_size=self.patch_size,
-                data_channels=self.num_prognostic,  # 1 for tcc
-                forcing_channels=self.num_forcings,  # 32 in your config
-                embed_dim=self.embed_dim,  # 128 in your tiny cfg
-                data_dim_override=None,  # keep None: d_data = C*ps*ps
-            )
-
-        else:
-            self.patch_embed = PatchEmbed(
-                input_resolution=input_resolution,
-                patch_size=self.patch_size,
-                data_channels=self.num_prognostic,
-                forcing_channels=self.num_forcings,
-                embed_dim=self.embed_dim,
-            )
+        self.patch_embed = PatchEmbedLossless(
+            input_resolution=self.real_input_resolution,  # or whatever you pass now
+            patch_size=self.patch_size,
+            data_channels=self.num_prognostic,  # 1 for tcc
+            forcing_channels=self.num_forcings,  # 32 in your config
+            embed_dim=self.embed_dim,  # 128 in your tiny cfg
+            data_dim_override=None,  # keep None: d_data = C*ps*ps
+        )
 
         self.h_patches = self.patch_embed.h_patches
         self.w_patches = self.patch_embed.w_patches
@@ -189,15 +177,14 @@ class cc2CRPS(nn.Module):
         # Final norm and output projection
         self.norm_final = nn.LayerNorm(self.embed_dim * 2)
 
-        if config.use_lossless_patch_embed:
-            self.project_to_image_fold = ProjectToImageFold(
-                input_resolution=self.real_input_resolution,
-                patch_size=self.patch_size,
-                out_channels=self.num_prognostic,  # 1
-                d_data=self.patch_embed.d_data,
-                embed_dim=self.embed_dim * 2,
-                undo_scale=False,
-            )
+        self.project_to_image_fold = ProjectToImageFold(
+            input_resolution=self.real_input_resolution,
+            patch_size=self.patch_size,
+            out_channels=self.num_prognostic,  # 1
+            d_data=self.patch_embed.d_data,
+            embed_dim=self.embed_dim * 2,
+            undo_scale=False,
+        )
         # Patch expansion for upsampling to original resolution
 
         self.patch_expand = PatchExpand(
@@ -424,41 +411,7 @@ class cc2CRPS(nn.Module):
 
     def project_to_image(self, x):
         """Project latent representation back to image space"""
-
-        if self.use_lossless_patch_embed:
-            return self.project_to_image_fold(x)
-
-        B, T, P, D = x.shape
-        assert T == 1
-        # Apply final norm
-        x = self.norm_final(x)
-
-        # Process each time step
-        outputs = []
-        for t in range(T):
-            # Expand patches back to image resolution
-            h_patches, w_patches = self.input_resolution_halved
-            expanded, h_new, w_new = self.patch_expand(x[:, t], h_patches, w_patches)
-
-            # Project to output channels and reshape to image format
-            output = self.final_expand(
-                expanded
-            )  # [B, h_new*w_new, patch_size*patch_size*output_channels]
-
-            output = output.reshape(
-                B, h_new, w_new, self.patch_size, self.patch_size, 1
-            )
-
-            output = output.permute(0, 5, 1, 3, 2, 4).reshape(
-                B, -1, h_new * self.patch_size, w_new * self.patch_size
-            )
-
-            outputs.append(output)
-
-        # Stack time steps
-        outputs = torch.stack(outputs, dim=1)  # [B, T, C, H, W]
-
-        return outputs
+        return self.project_to_image_fold(x)
 
     def forward(self, data, forcing, step):
         assert (
