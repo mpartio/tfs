@@ -10,7 +10,7 @@ import time
 import random
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.loggers import MLFlowLogger
-from dataloader.cc2CRPS_data import cc2DataModule
+from dataloader.cc2data import cc2DataModule
 from common.util import get_next_run_number, get_rank
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger

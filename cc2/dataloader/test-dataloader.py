@@ -1,4 +1,4 @@
-from cc2CRPS_data import cc2DataModule
+from cc2data import cc2DataModule
 import matplotlib.pyplot as plt
 import torch as t
 import zarr

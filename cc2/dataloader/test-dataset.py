@@ -1,4 +1,4 @@
-from cc2CRPS_data import AnemoiDataset
+from cc2data import AnemoiDataset
 import matplotlib.pyplot as plt
 import torch as t
 import zarr
