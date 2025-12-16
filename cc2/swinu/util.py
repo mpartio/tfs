@@ -141,7 +141,6 @@ def roll_forecast(
     ss_pred_max: float = 1.0,
     predict_tendencies: bool = True,
     use_rollout_weighting: bool = False,
-    stage: str = "train",
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
@@ -179,9 +178,9 @@ def roll_forecast(
                 ss_pred_max=ss_pred_max,
             )
 
-            metrics[f"loss/{stage}/ss_p_pred"] = p_pred
-            metrics[f"loss/{stage}/ss_mask_prev"] = mask_prev
-            metrics[f"loss/{stage}/ss_mask_curr"] = mask_curr
+            metrics["ss_p_pred"] = p_pred
+            metrics["ss_mask_prev"] = mask_prev
+            metrics["ss_mask_curr"] = mask_curr
 
         else:
             input_state = torch.cat([previous_state, current_state], dim=1)
@@ -224,7 +223,7 @@ def roll_forecast(
                 next_gt = y[:, t : t + 1, ...]
                 next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
 
-                metrics[f"loss/{stage}/ss_mask_next"] = mask_next.float().mean()
+                metrics["ss_mask_next"] = mask_next.float().mean()
             else:
                 # Training without SS
                 next_state = ste_clamp(next_pred, True)
@@ -265,7 +264,7 @@ def roll_forecast(
 
             loss["loss"] = torch.mean(w * torch.stack(loss["loss"]))
             for i, _w in enumerate(w):
-                metrics[f"loss/{stage}/rollout_weight_{i+1}"] = _w.item()
+                metrics[f"rollout_weight_{i+1}"] = _w.item()
 
         else:
             loss["loss"] = torch.mean(torch.stack(loss["loss"]))
