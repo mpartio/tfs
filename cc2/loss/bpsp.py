@@ -47,6 +47,9 @@ class BPSPLoss(nn.Module):
         self.k = None  # [n_bins_valid] float, normalized radial k repeated across theta
 
     def _build_polar_bins(self, Hf: int, Wf: int, device: torch.device):
+        Hf = H
+        Wf = W // 2 + 1
+
         # 1) radial bins from existing helper (works on rfft grid)
         bin_index_r, mask, counts_r, n_rbins = radial_bins_rfft(
             Hf, Wf, device, self.n_bins
@@ -57,13 +60,13 @@ class BPSPLoss(nn.Module):
         # Reconstruct the full spatial width from Wf = W//2 + 1:
         W_full = (Wf - 1) * 2
 
-        ky = torch.fft.fftfreq(Hf, d=1.0, device=device) * Hf  # shape [Hf]
-        kx = torch.fft.rfftfreq(W_full, d=1.0, device=device) * W_full  # shape [Wf]
+        ky = torch.fft.fftfreq(Hf, d=1.0, device=device) * Hf
+        kx = torch.fft.rfftfreq(W, d=1.0, device=device) * W
 
         KY, KX = torch.meshgrid(ky, kx, indexing="ij")  # [Hf,Wf]
-        theta = torch.atan2(KY, KX)  # [-pi, pi]
 
-        theta01 = (theta + math.pi) / (2.0 * math.pi)  # [0,1)
+        theta = torch.atan2(KY, KX)  # ~[-pi/2, pi/2] on rFFT half-plane
+        theta01 = (theta + math.pi / 2) / math.pi  # map to [0,1]
         theta_bin = torch.clamp(
             (theta01 * self.n_theta).floor().long(), 0, self.n_theta - 1
         )
@@ -102,14 +105,16 @@ class BPSPLoss(nn.Module):
         key = (
             Hf,
             Wf,
+            W,
             device.type,
             device.index,
             self.n_bins,
             self.n_theta,
             self.kmax_frac,
         )
+
         if self._cache_key != key:
-            self._build_polar_bins(Hf, Wf, device)
+            self._build_polar_bins(H, W, device)
             self._cache_key = key
 
     def _diag(
@@ -160,6 +165,14 @@ class BPSPLoss(nn.Module):
 
         PX = X.real**2 + X.imag**2  # power
         PY = Y.real**2 + Y.imag**2
+
+        # One-sided PSD correction for rfft2 along x
+        if W % 2 == 0:
+            PX[..., 1:-1] *= 2.0
+            PY[..., 1:-1] *= 2.0
+        else:
+            PX[..., 1:] *= 2.0
+            PY[..., 1:] *= 2.0
 
         Hf, Wf = PX.shape[-2], PX.shape[-1]
         mask = self._mask
