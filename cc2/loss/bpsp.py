@@ -46,7 +46,7 @@ class BPSPLoss(nn.Module):
         self._flat_idx = None  # [N_masked] long, flattened bin ids under mask
         self.k = None  # [n_bins_valid] float, normalized radial k repeated across theta
 
-    def _build_polar_bins(self, Hf: int, Wf: int, device: torch.device):
+    def _build_polar_bins(self, H: int, W: int, device: torch.device):
         Hf = H
         Wf = W // 2 + 1
 
