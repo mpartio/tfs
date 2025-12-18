@@ -205,7 +205,11 @@ class AnemoiDataset(Dataset):
             ]
             del temp_static_data
 
-        assert self.time_steps >= group_size
+        assert (
+            self.time_steps >= group_size
+        ), "Not enough time steps in data for the specified group size: {} >= {}".format(
+            self.time_steps, group_size
+        )
 
         self.missing_indices = set(self.data.missing)
         self.valid_indices = [
