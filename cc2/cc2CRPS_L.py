@@ -184,9 +184,11 @@ class cc2CRPSModel(L.LightningModule):
 
         self.model = cc2CRPS(config=self.model_kwargs)
 
-        self.run_name = os.environ["CC2_RUN_NAME"]
-        self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
-        self.run_dir = os.environ["CC2_RUN_DIR"]
+        self.run_dir = None
+        if self.trainer.state.stage == "train":
+            self.run_name = os.environ["CC2_RUN_NAME"]
+            self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
+            self.run_dir = os.environ["CC2_RUN_DIR"]
 
         if self.hparams.init_weights_from_ckpt is not None:
             if self.hparams.init_weights_from_ckpt:
@@ -379,10 +381,42 @@ class cc2CRPSModel(L.LightningModule):
             "truth": data[1],
         }
 
-    def on_test_end(self):
+    def predict_step(self, batch, batch_idx):
+        data, forcing, dates = batch
+
+        _, tendencies, predictions = self._roll_forecast(
+            self,
+            data,
+            forcing,
+            self.hparams.rollout_length,  # Access from hparams
+            loss_fn=None,
+            use_scheduled_sampling=False,
+            predict_tendencies=self.hparams.predict_tendencies,
+            use_rollout_weighting=False,
+        )
+
+        # We want to include the analysis time also
+        analysis_time = data[0][:, -1, ...].unsqueeze(1)
+
+        predictions = torch.concatenate((analysis_time, predictions), dim=1)
+        truth = torch.concatenate((analysis_time, data[1]), dim=1)
+
+        self.test_predictions.append(predictions)
+        self.test_truth.append(truth)
+        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
+
+        return {
+            "tendencies": tendencies,
+            "predictions": predictions,
+            "source": data[0],
+            "truth": data[1],
+        }
+
+    def _write_results_on_test_predict_end(self):
         # Get the run directory from the checkpoint path
         if self.test_output_directory is None:
-            self.test_output_directory = f"{self.run_dir}/test-output/"
+            run_dir = self.run_dir if self.run_dir is not None else "."
+            self.test_output_directory = f"{run_dir}/test-output/"
 
         os.makedirs(self.test_output_directory, exist_ok=True)
 
@@ -393,13 +427,19 @@ class cc2CRPSModel(L.LightningModule):
         torch.save(predictions, f"{self.test_output_directory}/predictions.pt")
         torch.save(truth, f"{self.test_output_directory}/truth.pt")
         torch.save(dates, f"{self.test_output_directory}/dates.pt")
+        print(
+            f"Wrote files predictions.pt, truth.pt and dates.pt to {self.test_output_directory}"
+        )
 
         print(f"Predictions shape: {predictions.shape}")
         print(f"Truth shape: {truth.shape}")
         print(f"Dates shape: {dates.shape}")
-        print(
-            f"Wrote files predictions.pt, truth.pt and dates.pt to {self.test_output_directory}"
-        )
+
+    def on_test_end(self):
+        self._write_results_on_test_predict_end()
+
+    def on_predict_end(self):
+        self._write_results_on_test_predict_end()
 
     def configure_optimizers(self):
         decay, no_decay = [], []
