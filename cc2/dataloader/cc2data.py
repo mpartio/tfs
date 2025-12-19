@@ -480,7 +480,11 @@ class SplitWrapper:
         )
 
         rank_zero_info(
-            f"SplitWrapper: blur enabled: {self.apply_smoothing} noise enabled: {self.apply_noise} masking enabled: {self.apply_masking}"
+            "SplitWrapper: blur {}, noise {}, masking {}".format(
+                "enabled" if self.apply_smoothing else "disabled",
+                "enabled" if self.apply_noise else "disabled",
+                "enabled" if self.apply_masking else "disabled",
+            )
         )
 
     def __getitem__(self, idx):
