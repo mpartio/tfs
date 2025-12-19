@@ -140,17 +140,19 @@ def read_data(run_name, ensemble_only):
     return truth, predictions, dates
 
 
-def union(all_truth, all_predictions, all_dates):
-    # 1. Build union of all forecast sequences
+def intersection(all_truth, all_predictions, all_dates):
+    # 1. Build intersection of all forecast sequences
     all_sets = [set(map(tuple, d.numpy())) for d in all_dates]
-    union_keys = set().union(*all_sets)
+    intersection_keys = set.intersection(*all_sets)
 
-    print(f"Total unique forecast sequences before union: {len(union_keys)}")
+    print(
+        f"Total unique forecast sequences before intersection: {len(intersection_keys)}"
+    )
 
-    # 2. Sort the union chronologically (by first lead time)
-    sorted_union = sorted(union_keys, key=lambda row: row[0])
+    # 2. Sort the intersection chronologically (by first lead time)
+    sorted_common_keys = sorted(intersection_keys, key=lambda row: row[0])
 
-    # 3. For each run, filter and reorder according to sorted_union
+    # 3. For each run, filter and reorder according to sorted_common_keys
     new_truth, new_predictions, new_dates = [], [], []
 
     for i, (truth, pred, dates) in enumerate(
@@ -162,7 +164,7 @@ def union(all_truth, all_predictions, all_dates):
         filtered_pred = []
         filtered_dates = []
 
-        for key in sorted_union:
+        for key in sorted_common_keys:
             if key in date_dict:
                 idx = date_dict[key]
                 filtered_truth.append(truth[idx])
@@ -176,12 +178,20 @@ def union(all_truth, all_predictions, all_dates):
         else:
             print(f"{run_name[i]}: No overlapping forecasts found!")
 
-    print(f"Total forecast sequences after union: {new_predictions[0].shape[0]}")
+    print(f"Total forecast sequences after intersection: {new_predictions[0].shape[0]}")
+
+    for i in range(1, len(new_predictions)):
+        n_0 = new_predictions[i - 1].shape[0]
+        n_1 = new_predictions[i].shape[0]
+        assert (
+            n_0 == n_1
+        ), "number of forecasts do not match after intersect: {} vs {}".format(n_0, n_1)
+
     return new_truth, new_predictions, new_dates
 
 
 def equalize_datasets(labels, all_truth, all_predictions, all_dates):
-    need_union = False
+    need_intersection = False
 
     for i in tqdm(range(1, len(all_dates)), desc="Equalizing"):
         if all_dates[i - 1].shape != all_dates[i].shape:
@@ -217,13 +227,13 @@ def equalize_datasets(labels, all_truth, all_predictions, all_dates):
                     d_s = [np.datetime64(int(x), "s") for x in row]
                     print(d_s)
 
-            need_union = True
+            need_intersection = True
 
-    if need_union:
-        # Filter predictions, truth and dates so that a union of both datasets
+    if need_intersection:
+        # Filter predictions, truth and dates so that an intersection of both datasets
         # is picked
 
-        return union(all_truth, all_predictions, all_dates)
+        return intersection(all_truth, all_predictions, all_dates)
 
     return all_truth, all_predictions, all_dates
 
@@ -373,9 +383,7 @@ if __name__ == "__main__":
                     f"{args.save_path}/results/predicted_psd.pt", weights_only=False
                 )
             else:
-                obs_psd, pred_psd = psd(
-                    all_truth, all_predictions, args.save_path
-                )
+                obs_psd, pred_psd = psd(all_truth, all_predictions, args.save_path)
             plot_psd(labels, obs_psd, pred_psd, args.save_path)
             results = (obs_psd, pred_psd)
 
