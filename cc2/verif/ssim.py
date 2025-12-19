@@ -52,7 +52,7 @@ def ssim(
     ssim_per_step = []
     for t in range(T):
         ssim_t = structural_similarity_index_measure(
-            pers[:, t].to(device), truth[:, t].to(device), data_range=1.0
+            pers[:, t].to(device), all_truth[0][:, t].to(device), data_range=1.0
         ).item()
         ssim_per_step.append(ssim_t)
 
