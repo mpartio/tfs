@@ -230,11 +230,12 @@ class cc2CRPSModel(L.LightningModule):
 
         rank = get_rank()
 
-        print(
-            "Rank {} starting at {} using run directory {}".format(
-                rank, datetime.now(), self.run_dir
-            )
-        )
+        msg = "Rank {} starting at {}".format(get_rank(), datetime.now())
+
+        if self.run_dir is not None:
+            msg += f" using run directory {self.run_dir}"
+
+        print(msg)
 
     def on_train_start(self) -> None:
         self.max_epochs = self.trainer.max_epochs
@@ -511,8 +512,8 @@ class cc2CRPSModel(L.LightningModule):
         dm = self.trainer.datamodule
         if dm and dm._full_dataset and hasattr(dm._full_dataset, "data"):
             checkpoint["data_statistics"] = dm._full_dataset.data.statistics
-            checkpoint[
-                "data_statististics_name_to_index"
-            ] = dm._full_dataset.data.name_to_index
+            checkpoint["data_statististics_name_to_index"] = (
+                dm._full_dataset.data.name_to_index
+            )
         else:
             rank_zero_warn("Statistics not saved to checkpoint")
