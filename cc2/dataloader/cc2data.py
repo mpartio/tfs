@@ -205,12 +205,16 @@ class AnemoiDataset(Dataset):
             ]
             del temp_static_data
 
-        assert self.time_steps >= group_size
+        assert (
+            self.time_steps >= group_size
+        ), "Not enough time steps in data for the specified group size: {} >= {}".format(
+            self.time_steps, group_size
+        )
 
         self.missing_indices = set(self.data.missing)
         self.valid_indices = [
             i
-            for i in range(self.time_steps - self.group_size - 1)
+            for i in range(self.time_steps - self.group_size + 1)
             if not self._sequence_has_missing_data(i)
         ]
 
@@ -543,6 +547,8 @@ class cc2DataModule(L.LightningDataModule):
         val_end: str | None = None,
         test_start: str | None = None,
         test_end: str | None = None,
+        predict_start: str | None = None,
+        predict_end: str | None = None,
         seed: int = 0,
         batch_size: int = 32,
         num_workers: int = 6,
@@ -584,9 +590,11 @@ class cc2DataModule(L.LightningDataModule):
             self.history_length = model.hparams.history_length
             self.rollout_length = model.hparams.rollout_length
 
+            group_size = self.history_length + self.rollout_length
+
             self._full_dataset = AnemoiDataset(
                 zarr_path=self.hparams.data_path,
-                group_size=self.history_length + self.rollout_length,
+                group_size=group_size,
                 prognostic_params=self.hparams.prognostic_params,
                 forcing_params=self.hparams.forcing_params,
                 static_forcing_path=self.hparams.static_forcing_path,
@@ -617,6 +625,8 @@ class cc2DataModule(L.LightningDataModule):
         all_dates = np.array(ds_full.dates, dtype="datetime64[ns]")
         actual_pos = np.array(ds_full.valid_indices, dtype=int)
         date_starts = all_dates[actual_pos]
+
+        assert len(date_starts), "No valid dates found from dataset!"
 
         if (
             self.hparams.train_start
@@ -668,26 +678,40 @@ class cc2DataModule(L.LightningDataModule):
                 "Test dataset contains {} samples".format(test_indices.shape[0])
             )
 
+        elif self.hparams.predict_start and self.hparams.predict_end:
+            t0 = np.datetime64(self.hparams.predict_start)
+            t1 = np.datetime64(self.hparams.predict_end)
+
+            predict_mask = (date_starts >= t0) & (date_starts <= t1)
+            predict_indices = valid_pos[predict_mask]
+
+            rank_zero_info(
+                "Predict dataset contains {} samples".format(predict_indices.shape[0])
+            )
+
+            assert (
+                predict_indices.shape[0] > 0
+            ), f"No samples found for prediction range {t0} to {t1}"
+
         # Create Subset datasets based on the stage
         # stage='fit' or stage=None will setup train and val
-        if stage == "fit" or stage is None:
+        if stage == "fit":
             self.ds_train = Subset(ds_full, train_indices)
             self.ds_val = Subset(ds_full, val_indices)
 
-        if stage == "validate":
+        elif stage == "validate":
             self.ds_val = Subset(ds_full, val_indices)
 
         # stage='test' or stage=None will setup test
-        if stage == "test" or stage is None:
+        elif stage == "test" or stage is None:
             self.ds_test = Subset(ds_full, test_indices)
 
         # stage='predict' or stage=None will setup predict (using test set here)
-        if stage == "predict" or stage is None:
-            if (
-                self.ds_test is None
-            ):  # Ensure test set is created if only predict stage runs
-                self.ds_test = Subset(ds_full, test_indices)
-            self.ds_predict = self.ds_test  # Assign test dataset to predict dataset
+        elif stage == "predict":
+            self.ds_predict = Subset(ds_full, predict_indices)
+
+        else:
+            raise NotImplementedError(f"Unknown stage: {stage}")
 
     def _get_dataloader(
         self, dataset: Subset | None, shuffle: bool = False, stage: str | None = None
@@ -738,8 +762,4 @@ class cc2DataModule(L.LightningDataModule):
         return self._get_dataloader(self.ds_test, shuffle=False, stage="test")
 
     def predict_dataloader(self):
-        if hasattr(self, "ds_predict"):
-            return self._get_dataloader(self.ds_predict, shuffle=False)
-        else:  # Fallback if predict stage wasn't explicitly setup
-            rank_zero_info("Predict dataset not explicitly set up, using test dataset")
-            return self._get_dataloader(self.ds_test, shuffle=False, stage="predict")
+        return self._get_dataloader(self.ds_predict, shuffle=False, stage="predict")

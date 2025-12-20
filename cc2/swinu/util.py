@@ -130,10 +130,10 @@ def ste_clamp(x, use_ste=False):
 
 def roll_forecast(
     model: nn.Module,
-    data: torch.Tensor,
+    data: list[torch.Tensor],
     forcing: torch.Tensor,
     n_step: int,
-    loss_fn,
+    loss_fn: nn.Module | None,
     use_scheduled_sampling: bool,
     step: int | None = None,
     max_step: int | None = None,
@@ -145,9 +145,16 @@ def roll_forecast(
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
     B, T, C_data, H, W = x.shape
-    _, T_y, _, _, _ = y.shape
 
-    assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
+    if loss_fn is not None:
+        _, T_y, _, _, _ = y.shape
+        assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
+
+    assert (
+        forcing.shape[1] == n_step + T
+    ), "Forcing length {} insufficient for rollout R={}".format(
+        forcing.shape[1], n_step
+    )
 
     # Initial state is the last state from input sequence
     current_state = x[:, -1, ...].unsqueeze(1)  # Shape: [B, 1, C, H, W]
@@ -163,8 +170,7 @@ def roll_forecast(
     # Loop through each rollout step
     for t in range(n_step):
         # Model always sees forcings two history times and one prediction time
-        # TODO: remove the hardcoded assumption of two input times
-        step_forcing = forcing[:, t : t + 3, ...]
+        step_forcing = forcing[:, t : t + T + 1, ...]
         if use_scheduled_sampling:
             input_state, p_pred, mask_prev, mask_curr = scheduled_sampling_inputs(
                 previous_state,
