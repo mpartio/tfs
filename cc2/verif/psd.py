@@ -351,9 +351,17 @@ def plot_psd(
         for i in range(len(run_name)):
             sx = pred_psds[i]["sx"]
             psd = pred_psds[i]["psd"]
-            psd_interp = interp1d_torch(sx_o, sx, psd)
+            psd_interp = []
+            if sx[0] > sx[-1]:
+                sx = torch.flip(sx, dims=[0]).cpu()
+                psd = torch.flip(psd, dims=[1]).cpu()
 
+            for j in range(psd.shape[0]):
+                psd_interp.append(interp1d_torch(sx_o, sx, psd[j]))
+
+            psd_interp = torch.stack(psd_interp)
             mask = sx_o < 100
+
             psd_o_masked = psd_o[:, mask]
             psd_masked = psd_interp[:, mask]
 
