@@ -185,7 +185,7 @@ class cc2CRPSModel(L.LightningModule):
         self.model = cc2CRPS(config=self.model_kwargs)
 
         self.run_dir = None
-        if self.trainer.state.stage == "train":
+        if self.trainer.state.stage in ("train", "test"):
             self.run_name = os.environ["CC2_RUN_NAME"]
             self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
             self.run_dir = os.environ["CC2_RUN_DIR"]
