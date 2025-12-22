@@ -25,7 +25,7 @@ from common.util import (
 from typing import Optional, Callable
 
 
-class cc2CRPSModel(L.LightningModule):
+class cc2Model(L.LightningModule):
     def __init__(
         self,
         history_length: int = 2,
