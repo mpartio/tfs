@@ -9,7 +9,7 @@ class WeightedMSELoss(nn.Module):
         self.alpha = alpha
         self.w_max = w_max
 
-    def forward(self, y_pred_full: torch.Tensor, y_true_full: torch.Tensor, **kwargs):
+    def forward(self, y_pred_delta: torch.Tensor, y_true_delta: torch.Tensor, **kwargs):
         """
         Weighted MSE loss.
 
