@@ -46,7 +46,6 @@ class cc2module(L.LightningModule):
         warmup_iterations: int = 1000,
         weight_decay: float = 1e-3,
         rollout_length: int = 1,
-        init_weights_from_ckpt: bool | None = None,
         branch_from_run: str = None,
         use_gradient_checkpointing: bool = False,
         model_family: str = "pgu",
@@ -180,18 +179,6 @@ class cc2module(L.LightningModule):
             self.run_name = os.environ["CC2_RUN_NAME"]
             self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
             self.run_dir = os.environ["CC2_RUN_DIR"]
-
-        if self.hparams.init_weights_from_ckpt is not None:
-            if self.hparams.init_weights_from_ckpt:
-                warn_msg = (
-                    "init_weights_from_ckpt is deprecated\n"
-                    "1. To start a fresh run, set ckpt_path=null and model.branch_from_run=null\n"
-                    "2. To continue with same optimizer state, set ckpt_path=/path/tp/ckpt.ckpt and model.branch_from_run=null\n"
-                    "3. To branch a new run from an existing run with new optimizer state, set ckpt_path=null and model.branch_from_run=run-name/1"
-                )
-                raise ValueError(warn_msg)
-            else:
-                rank_zero_warn("init_weights_from_ckpt is deprecated")
 
         if self.hparams.branch_from_run:
             if "/" in self.hparams.branch_from_run:
