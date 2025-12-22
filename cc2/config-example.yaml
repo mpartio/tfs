@@ -11,16 +11,13 @@ model:
     decoder1_depth: 2
     decoder2_depth: 2
     learning_rate: 1e-3
-    patch_size: 2
+    patch_size: 4
     window_size: 8
-    add_skip_connection: true
-    use_scheduled_sampling: true
-    use_gradient_checkpointing: true
-    model_family: pgu
-    init_weights_from_ckpt: false
-    adapt_ckpt_resolution: false
+    use_scheduled_sampling: false
+    use_gradient_checkpointing: false
+    model_family: swinu
     loss_fn:
-      class_path: pgu.loss.MSELoss
+      class_path: loss.mse.MSELoss
       init_args: {}
 data:
   data_path: ../data/era5-86x97.zarr
@@ -74,13 +71,9 @@ trainer:
       monitor: "val_loss"
       mode: "min"
       save_last: true
-  - class_path: pgu.callbacks.PredictionPlotterCallback
-  - class_path: pgu.callbacks.DiagnosticCallback 
-    init_args:
-      check_frequency: 50
   - class_path: lightning.pytorch.callbacks.ModelSummary
     init_args:
       max_depth: 2
-  - class_path: pgu.callbacks.CleanupFailedRunCallback
-  - class_path: pgu.ew_callbacks.EarlyWarningCallback
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callbacks.EarlyWarningCallback
 
