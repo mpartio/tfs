@@ -485,6 +485,21 @@ class EarlyWarningMetricsCallback(L.Callback):
                 mean_metrics[k] = v
         return mean_metrics, rollout_metrics
 
+    def _count_rollout_steps(self, rollout_metrics: dict) -> int:
+        """Count the number of unique rollout steps from metric keys."""
+        if not rollout_metrics:
+            return 0
+
+        rollout_indices = set()
+        for key in rollout_metrics.keys():
+            match = self._rollout_key.search(key)
+            if match:
+                # Extract the number from '_rN'
+                rollout_idx = int(match.group()[2:])  # Remove '_r' prefix
+                rollout_indices.add(rollout_idx)
+
+        return len(rollout_indices)
+
     def _mlflow_log_metrics(self, pl_module, metrics: dict, stage: str, root: str):
         for k, v in metrics.items():
             pl_module.log(
@@ -520,9 +535,10 @@ class EarlyWarningMetricsCallback(L.Callback):
             self._mlflow_log_metrics(
                 pl_module, mean_metrics, stage="train", root="metrics"
             )
-            self._mlflow_log_metrics(
-                pl_module, rollout_metrics, stage="train", root="metrics_rollout"
-            )
+            if self._count_rollout_steps(rollout_metrics) > 1:
+                self._mlflow_log_metrics(
+                    pl_module, rollout_metrics, stage="train", root="metrics_rollout"
+                )
 
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
@@ -546,6 +562,7 @@ class EarlyWarningMetricsCallback(L.Callback):
             self._mlflow_log_metrics(
                 pl_module, mean_metrics, stage="val", root="metrics"
             )
-            self._mlflow_log_metrics(
-                pl_module, rollout_metrics, stage="val", root="metrics_rollout"
-            )
+            if self._count_rollout_steps(rollout_metrics) > 1:
+                self._mlflow_log_metrics(
+                    pl_module, rollout_metrics, stage="val", root="metrics_rollout"
+                )
