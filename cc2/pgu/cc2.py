@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from torch.utils.checkpoint import checkpoint
 
 
-class cc2CRPS(nn.Module):
+class cc2model(nn.Module):
     def __init__(self, config):
         super().__init__()
         config = SimpleNamespace(**config)

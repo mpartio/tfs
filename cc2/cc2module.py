@@ -25,7 +25,7 @@ from common.util import (
 from typing import Optional, Callable
 
 
-class cc2Model(L.LightningModule):
+class cc2module(L.LightningModule):
     def __init__(
         self,
         history_length: int = 2,
@@ -53,8 +53,6 @@ class cc2Model(L.LightningModule):
         use_scheduled_sampling: bool = False,
         ss_pred_min: float = 0.0,
         ss_pred_max: float = 1.0,
-        noise_dim: Optional[int] = None,
-        num_members: Optional[int] = None,
         autoregressive_mode: bool = True,
         freeze_layers: list[str] = [],
         loss_fn: Callable | nn.Module | None = None,
@@ -92,8 +90,6 @@ class cc2Model(L.LightningModule):
                 "drop_path_rate",
                 "use_gradient_checkpointing",
                 "use_scheduled_sampling",
-                "noise_dim",
-                "num_members",
                 "ss_pred_min",
                 "ss_pred_max",
                 "autoregressive_mode",
@@ -164,25 +160,21 @@ class cc2Model(L.LightningModule):
 
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
-            from pgu.cc2 import cc2CRPS
+            from pgu.cc2 import cc2model
 
             if self.hparams.autoregressive_mode:
                 from pgu.util import roll_forecast
             else:
                 from pgu.util import roll_forecast_direct as roll_forecast
 
-        elif self.hparams.model_family == "pgu_ens":
-            from pgu_ens.cc2 import cc2CRPS
-            from pgu_ens.util import roll_forecast
-
         elif self.hparams.model_family == "swinu":
-            from swinu.cc2 import cc2CRPS
+            from swinu.cc2 import cc2model
             from swinu.util import roll_forecast
 
         self.model_class = self.hparams.model_family
         self._roll_forecast = roll_forecast
 
-        self.model = cc2CRPS(config=self.model_kwargs)
+        self.model = cc2model(config=self.model_kwargs)
 
         self.run_dir = None
         if self.trainer.state.stage in ("train", "test"):
@@ -355,21 +347,8 @@ class cc2Model(L.LightningModule):
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
 
-        if self.model_class == "pgu_ens":
-            B, T, C, H, W = analysis_time.shape
-            analysis_time = analysis_time.unsqueeze(1).expand(
-                -1, self.hparams.num_members, -1, -1, -1, -1
-            )
-            predictions = torch.concatenate((analysis_time, predictions), dim=2)
-            y = (
-                data[1]
-                .unsqueeze(1)
-                .expand(-1, self.hparams.num_members, -1, -1, -1, -1)
-            )
-            truth = torch.concatenate((analysis_time, y), dim=2)
-        else:
-            predictions = torch.concatenate((analysis_time, predictions), dim=1)
-            truth = torch.concatenate((analysis_time, data[1]), dim=1)
+        predictions = torch.concatenate((analysis_time, predictions), dim=1)
+        truth = torch.concatenate((analysis_time, data[1]), dim=1)
 
         self.test_predictions.append(predictions)
         self.test_truth.append(truth)
