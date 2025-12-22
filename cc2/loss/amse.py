@@ -146,7 +146,10 @@ class AMSELoss(nn.Module):
 
         return loss
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):
+    def forward(self, y_pred_full: torch.Tensor, y_true_full: torch.Tensor, **kwargs):
+        y_true = y_true_full
+        y_pred = y_pred_full
+
         if y_true.dim() == 4:  # [B,C,H,W] -> [B,1,C,H,W]
             y_true = y_true.unsqueeze(1)
             y_pred = y_pred.unsqueeze(1)

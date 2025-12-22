@@ -59,7 +59,6 @@ class cc2module(L.LightningModule):
         use_deep_refinement_head: bool = False,
         use_hard_skip: bool = False,
         test_output_directory: str | None = None,
-        predict_tendencies: bool = True,
         use_rollout_weighting: bool = False,
         use_statistics_from_checkpoint: bool = True,
     ):
@@ -257,7 +256,6 @@ class cc2module(L.LightningModule):
             max_step=self.max_steps,
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
-            predict_tendencies=self.hparams.predict_tendencies,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
         )
 
@@ -300,7 +298,6 @@ class cc2module(L.LightningModule):
             self.hparams.rollout_length,
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
-            predict_tendencies=self.hparams.predict_tendencies,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
         )
 
@@ -340,7 +337,6 @@ class cc2module(L.LightningModule):
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
             use_scheduled_sampling=False,
-            predict_tendencies=self.hparams.predict_tendencies,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
         )
 
@@ -371,7 +367,6 @@ class cc2module(L.LightningModule):
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
             use_scheduled_sampling=False,
-            predict_tendencies=self.hparams.predict_tendencies,
             use_rollout_weighting=False,
         )
 

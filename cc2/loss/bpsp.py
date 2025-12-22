@@ -11,7 +11,7 @@ from swinu.util import radial_bins_rfft, apply_hann_window
 
 class BPSPLoss(nn.Module):
     """
-    Binned Polar Spectral Power (BPSP) loss + pixel MSE
+    Binned Polar Spectral Power (BPSP) loss
     Adds *direction sectors* (theta bins) on top of radial bins
 
     Notes:
@@ -21,7 +21,6 @@ class BPSPLoss(nn.Module):
 
     def __init__(
         self,
-        lambda_bpsp: float = 1.0,
         n_bins: int | None = None,  # radial bins
         n_theta: int = 8,  # direction sectors; 1 => no directional split
         beta: float = 1.0,  # k^beta weighting
@@ -32,7 +31,6 @@ class BPSPLoss(nn.Module):
         assert 0.0 < kmax_frac <= 1.0
 
         self.eps = 1e-8
-        self.lambda_bpsp = float(lambda_bpsp)
         self.n_bins = n_bins
         self.n_theta = int(n_theta)
         self.beta = float(beta)
@@ -208,15 +206,16 @@ class BPSPLoss(nn.Module):
         metrics["bpsp"] = bpsp_t
         return metrics
 
-    def forward(
-        self, y_pred: torch.Tensor, y_true: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    def forward(self, y_pred_full: torch.Tensor, y_true_full: torch.Tensor, **kwargs):
         """
         Accepts:
           - [B,C,H,W]  (single step)  OR
           - [B,T,C,H,W]
         Returns dict with scalar losses + diagnostics.
         """
+        y_true = y_true_full
+        y_pred = y_pred_full
+
         # Normalize shapes to [B,T,C,H,W]
         if y_true.dim() == 4:
             y_true = y_true.unsqueeze(1)
@@ -226,29 +225,15 @@ class BPSPLoss(nn.Module):
         ), "Expected [B,T,C,H,W] or [B,C,H,W]"
         assert y_true.shape == y_pred.shape
 
-        # pixel MSE per time
-        # mse_t: [T]
-        mse_map = (y_pred - y_true) ** 2
-        mse_t = mse_map.mean(dim=(0, 2, 3, 4))
-
         # spectral metrics (includes bpsp_t: [T])
         spec_metrics = self._spec2d_per_time(y_pred, y_true)
         bpsp_t = spec_metrics["bpsp"]
 
-        # combine per time then average to scalar
-        total_t = mse_t + self.lambda_bpsp * bpsp_t
-        loss_total = total_t.mean()
-
         # scalar summaries
         loss = {
-            "loss": loss_total,
-            "mse": mse_t.mean(),
-            "bpsp": bpsp_t.mean(),
-            "mse_bpsp_ratio": mse_t.mean() / (bpsp_t.mean() + self.eps),
-            # "mse_t": mse_t.detach(),
-            # "bpsp_t": bpsp_t.detach(),
+            "loss": bpsp_t.mean(),
         }
         loss.update(spec_metrics)
 
-        assert torch.isfinite(loss_total), f"Non-finite loss: {loss_total}"
+        assert torch.isfinite(loss["loss"]), f"Non-finite loss: {loss['loss']}"
         return loss

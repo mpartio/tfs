@@ -139,7 +139,6 @@ def roll_forecast(
     max_step: int | None = None,
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
-    predict_tendencies: bool = True,
     use_rollout_weighting: bool = False,
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
@@ -191,31 +190,31 @@ def roll_forecast(
         else:
             input_state = torch.cat([previous_state, current_state], dim=1)
 
-        if predict_tendencies:
-            tendency = model(input_state, step_forcing, t)
+        tendency = model(input_state, step_forcing, t)
 
-            # Add the predicted tendency to get the next state
-            next_pred = current_state + tendency
-        else:
-            next_pred = model(input_state, step_forcing, t)
-            tendency = next_pred - current_state
+        # Add the predicted tendency to get the next state
+        next_pred = current_state + tendency
 
         # Compute loss for this step
         if loss_fn is not None:
-            if predict_tendencies:
-                # Calculate ground truth delta for this step
-                if t == 0:
-                    # First step: y - last_x
-                    y_true = y[:, t : t + 1, ...] - x[:, -1, ...].unsqueeze(1)
-                else:
-                    # Second, third, ... step: y - y_prev
-                    y_true = y[:, t : t + 1, ...] - y[:, t - 1 : t, ...]
+            y_true_full = y[:, t : t + 1, ...]
 
-                all_losses.append(loss_fn(y_true, tendency))
-
+            # Calculate ground truth delta for this step
+            if t == 0:
+                # First step: y - last_x
+                y_true_delta = y_true_full - x[:, -1, ...].unsqueeze(1)
             else:
-                y_true = y[:, t : t + 1, ...]
-                all_losses.append(loss_fn(y_true, next_pred))
+                # Second, third, ... step: y - y_prev
+                y_true_delta = y_true_full - y[:, t - 1 : t, ...]
+
+            all_losses.append(
+                loss_fn(
+                    y_true_full=y_true_full,
+                    y_pred_full=next_pred,
+                    y_true_delta=y_true_delta,
+                    y_pred_delta=tendency,
+                )
+            )
 
         if model.training:
             if use_scheduled_sampling:

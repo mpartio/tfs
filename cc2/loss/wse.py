@@ -7,7 +7,7 @@ from pytorch_wavelets import DTCWTForward
 
 class WaveletSpectralLoss(nn.Module):
     """
-    MSE + local, banded wavelet spectral loss.
+    Local, banded wavelet spectral loss.
 
     Concept:
       - compute wavelet detail coefficients at each level j
@@ -19,7 +19,6 @@ class WaveletSpectralLoss(nn.Module):
 
     def __init__(
         self,
-        lambda_wav: float = 0.01,
         J: int = 6,  # number of wavelet levels
         bands: dict = {
             "small": [1, 2],
@@ -29,7 +28,6 @@ class WaveletSpectralLoss(nn.Module):
         band_weights: dict = {"small": 0.5, "medium": 2, "large": 1},
     ):
         super().__init__()
-        self.lambda_wav = lambda_wav
         self.J = J
         self.dtcw = DTCWTForward(J=J)
         self.bands = bands
@@ -111,10 +109,10 @@ class WaveletSpectralLoss(nn.Module):
 
         return band_losses, level_losses
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor):
-        """
-        y_pred, y_true: [B, T, C, H, W] or [B, C, H, W] (then T=1)
-        """
+    def forward(self, y_pred_full: torch.Tensor, y_true_full: torch.Tensor, **kwargs):
+        y_true = y_true_full
+        y_pred = y_pred_full
+
         # Normalise to [B, T, C, H, W]
         if y_true.dim() == 4:
             y_true = y_true.unsqueeze(1)
@@ -123,13 +121,6 @@ class WaveletSpectralLoss(nn.Module):
         B, T, C, H, W = y_pred.shape
         assert C >= 1, f"Expected at least one channel, got C={C}"
 
-        # 1) pixel-wise MSE (base loss)
-        mse_loss_t = F.mse_loss(y_pred, y_true, reduction="none").mean(
-            dim=[0, 2, 3, 4]
-        )  # [T]
-        mse_loss = mse_loss_t.mean()
-
-        # 2) wavelet spectral term (local, banded)
         # merge B and T for transform: [BT, C, H, W]
         y_pred_bt = y_pred.reshape(B * T, C, H, W)
         y_true_bt = y_true.reshape(B * T, C, H, W)
@@ -156,17 +147,11 @@ class WaveletSpectralLoss(nn.Module):
                 w = self.band_weights.get(bname, 1.0)
                 wavelet_loss = wavelet_loss + w * Lb
 
-            wavelet_loss = self.lambda_wav * wavelet_loss
-
-        combined_loss = mse_loss + wavelet_loss
-        assert torch.isfinite(combined_loss), f"Non-finite loss: {combined_loss}"
+        assert torch.isfinite(wavelet_loss), f"Non-finite loss: {wavelet_loss}"
 
         # diagnostics
         metrics = {
-            "loss": combined_loss,
-            "mse": mse_loss,
-            "wavelet_loss": wavelet_loss,
-            "wavelet_mse_ratio": wavelet_loss / (mse_loss + 1e-12),
+            "loss": wavelet_loss,
         }
 
         # per-band diagnostics

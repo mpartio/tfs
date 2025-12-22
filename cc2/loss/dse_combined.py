@@ -6,17 +6,48 @@ from swinu.util import radial_bins_rfft, apply_hann_window
 
 
 class DSELoss(nn.Module):
+    """
+    Combines pixel-wise Mean Squared Error (MSE) with the Direct Spectral Error (DSE).
+    L_Total = L_MSE + lambda_dse * L_DSE
+    """
+
     def __init__(
         self,
+        lambda_dse: float = 1.0,  # Weight for the DSE component
         n_bins: int | None = None,
         beta: float = 1.0,  # Control wavenumber weighting
         kmax_frac: float = 0.707,  # remove all bins below nyquist (assuming 5km spacing)
     ):
         super().__init__()
         self.n_bins = n_bins
+        self.lambda_dse = lambda_dse
         self.beta = beta
         self.k = None
         self.kmax_frac = kmax_frac
+
+    def _diag(self, PSDx, PSDy, device):
+
+        low = self.k < 0.20
+        mid = (self.k >= 0.20) & (self.k < 0.45)
+        high = self.k >= 0.45
+
+        r = PSDx / (PSDy + 1e-12)
+        lpe = torch.log(PSDx) - torch.log(PSDy)
+
+        def band_mean(x, m):
+            return x[:, m].mean().detach()
+
+        max_r = torch.tensor(10).to(device)
+        metrics = {
+            "r_low": torch.clamp_max(max_r, band_mean(r, low)),
+            "r_mid": torch.clamp_max(max_r, band_mean(r, mid)),
+            "r_high": torch.clamp_max(max_r, band_mean(r, high)),
+            "lpe_low": band_mean(lpe.abs(), low),
+            "lpe_mid": band_mean(lpe.abs(), mid),
+            "lpe_high": band_mean(lpe.abs(), high),
+        }
+
+        return metrics
 
     def _dse2d_per_time(self, y_pred: torch.tensor, y_true: torch.tensor):
         eps = 1e-8
@@ -69,7 +100,11 @@ class DSELoss(nn.Module):
         dse_bt = dse_bin.mean(dim=1)
         dse_t = dse_bt.view(B, T).mean(dim=0)
 
-        return dse_t
+        train_metrics = self._diag(PSDx, PSDy, device)
+
+        train_metrics["dse"] = dse_t
+
+        return train_metrics
 
     def forward(self, y_pred_full: torch.Tensor, y_true_full: torch.Tensor, **kwargs):
         y_true = y_true_full
@@ -79,13 +114,30 @@ class DSELoss(nn.Module):
             y_true = y_true.unsqueeze(1)
             y_pred = y_pred.unsqueeze(1)
 
-        dse_t = self._dse2d_per_time(y_pred, y_true)  # [T]
-        dse_loss = dse_t.mean()
+        # 1. Calculate Pixel-wise MSE Loss
+        # We average over Batch, Channel, Height, and Width, leaving the Time dimension [T]
+        mse_loss_t = F.mse_loss(y_pred, y_true, reduction="none").mean(
+            dim=[0, 2, 3, 4]
+        )  # [T]
 
-        assert torch.isfinite(dse_loss), f"Non-finite loss: {dse_loss}"
+        # 2. Calculate Direct Spectral Error (DSE) Loss
+        dse_metrics = self._dse2d_per_time(y_pred, y_true)  # [T]
+        dse_loss = dse_metrics["dse"].mean()
+
+        # 3. Combine Losses
+        combined_loss = mse_loss_t.mean() + self.lambda_dse * dse_loss
+        # combined_loss = combined_loss_t.mean()  # Final scalar loss (mean over Time)
+
+        assert torch.isfinite(combined_loss), f"Non-finite loss: {combined_loss}"
+
+        mse_loss = mse_loss_t.mean()
 
         loss = {
-            "loss": dse_loss,
+            "loss": combined_loss,
+            "mse": mse_loss,
+            "dse_mse_ratio": dse_loss / (mse_loss + 1e-12),
         }
+
+        loss.update(dse_metrics)
 
         return loss
