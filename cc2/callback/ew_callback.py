@@ -42,12 +42,6 @@ def _bias(y, x):
     return (y - x).mean().item()
 
 
-def _var_ratio(y, x, eps=1e-8):
-    vy = y.var(unbiased=False)
-    vx = x.var(unbiased=False)
-    return (vy / (vx + eps)).item()
-
-
 def _radial_bins(Hf, Wf, device, n_bins=None):
     # For rfft grid: spatial size in FFT domain is [Hf, Wf], where Wf = W//2 + 1
     fy = fftfreq(Hf, d=1.0, device=device)  # [-0.5,0.5)
@@ -71,7 +65,7 @@ def _compute_conditional_bias(
     """
     Computes conditional bias per rollout step, binned by initial_cc.
     Returns keys like:
-      conditional_bias_clear_r0, conditional_bias_clear_r1, ...
+      conditional_bias_clear, conditional_bias_clear, ...
     """
     bins = [
         ("clear", 0.0, 0.125),
@@ -80,29 +74,25 @@ def _compute_conditional_bias(
         ("overcast", 0.875, 1.0),
     ]
 
-    initial_cc = _ensure_bchw(initial_cc)  # [B,C,H,W]
+    initial_cc = _ensure_btchw(initial_cc)  # [B,C,H,W]
     y_pred = _ensure_btchw(y_pred)  # [B,T,C,H,W]
     y_true = _ensure_btchw(y_true)  # [B,T,C,H,W]
     B, T, C, H, W = y_pred.shape
 
     results = {}
-    for t in range(T):
-        yp = y_pred[:, t]  # [B,C,H,W]
-        yt = y_true[:, t]
 
-        for name, low, high in bins:
-            if name == "overcast":
-                mask = (initial_cc >= low) & (initial_cc <= high)
-            else:
-                mask = (initial_cc >= low) & (initial_cc < high)
+    for name, low, high in bins:
+        if name == "overcast":
+            mask = (initial_cc >= low) & (initial_cc <= high)
+        else:
+            mask = (initial_cc >= low) & (initial_cc < high)
 
-            n_pixels = mask.sum()
-            if n_pixels > 0:
-                bias = (yp[mask] - yt[mask]).mean()
-                results[f"conditional_bias_{name}_r{t}"] = float(bias.item())
-            else:
-                # Avoid None -> float(None) crash in your logger
-                results[f"conditional_bias_{name}_r{t}"] = float("nan")
+        n_pixels = mask.sum()
+        if n_pixels > 0:
+            bias = (y_pred[mask] - y_true[mask]).mean()
+            results[f"conditional_bias_{name}"] = float(bias.item())
+        else:
+            results[f"conditional_bias_{name}"] = float("nan")
 
     return results
 
@@ -121,7 +111,7 @@ def _psnr(y_pred: torch.Tensor, y_true: torch.Tensor):
 
 
 @torch.no_grad()
-def _compute_change_metrics_per_step(
+def _compute_change_metrics(
     y_pred_btchw: torch.Tensor,
     y_true_btchw: torch.Tensor,
     prev_true_bchw: torch.Tensor | None = None,
@@ -129,7 +119,7 @@ def _compute_change_metrics_per_step(
     eps_div: float = 1e-8,
 ):
     """
-    Returns two dicts with per-step scalars:
+    Returns dict with averaged per-step scalars:
       - tendency_corr:  {f"t{t}": float}
       - stationarity_ratio: {f"t{t}": float}
 
@@ -146,8 +136,8 @@ def _compute_change_metrics_per_step(
     def _flat(t):  # [B,C,H,W] -> [B, N]
         return t.reshape(B, -1)
 
-    tend_corr = {}
-    stat_ratio = {}
+    tend_corr = []
+    stat_ratio = []
 
     for t in range(T):
         # Choose baseline
@@ -173,7 +163,7 @@ def _compute_change_metrics_per_step(
             * Yc.square().sum(dim=1).clamp_min(eps_div).sqrt()
         )
         corr_b = (num / den).clamp(-1.0, 1.0)  # [B]
-        tend_corr[f"tendency_correlation_r{t}"] = float(corr_b.mean().item())
+        tend_corr.append(float(corr_b.mean().item()))
 
         # --- Stationarity ratio (#changed_pred / #changed_true) ---
         # fraction of pixels with |Δ| > eps_change, per-sample then ratio
@@ -182,9 +172,12 @@ def _compute_change_metrics_per_step(
         frac_p = changed_p.mean(dim=(1, 2, 3))  # [B]
         frac_t = changed_t.mean(dim=(1, 2, 3)).clamp_min(eps_div)
         ratio_b = frac_p / frac_t  # [B]
-        stat_ratio[f"stationarity_ratio_r{t}"] = float(ratio_b.mean().item())
+        stat_ratio.append(float(ratio_b.mean().item()))
 
-    return tend_corr, stat_ratio
+    return {
+        "tendency_correlation": torch.tensor(tend_corr).mean(),
+        "stationarity_ratio": torch.tensor(stat_ratio).mean(),
+    }
 
 
 @torch.no_grad()
@@ -361,7 +354,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
         (
             bias_list,
             mae_list,
-            vk_list,
             hk_list,
             coh_mid_list,
             coh_hi_list,
@@ -374,8 +366,7 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
             psd_anom_list_10_30,
             ssim_list,
             psnr_list,
-            energy_list,
-        ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [])
+        ) = ([], [], [], [], [], [], [], [], [], [], [], [], [], [])
 
         for b in range(B):
             yp_b = yp[b]
@@ -383,7 +374,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
 
             bias_list.append(_bias(yp_b, yt_b))
             mae_list.append(_mae(yp_b, yt_b))
-            vk_list.append(_var_ratio(yp_b, yt_b))
 
             coh = _psd_coherence_once(yp_b, yt_b)
             coh_mid_list.append(coh["coherence_mid"])
@@ -411,7 +401,6 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
         per_step[t] = {
             "mae": float(sum(mae_list) / len(mae_list)),
             "bias": float(sum(bias_list) / len(bias_list)),
-            "variance_ratio": float(sum(vk_list) / len(vk_list)),
             "high_k_power_ratio": float(min(sum(hk_list) / len(hk_list), clip_high_k)),
             "coherence_mid": float(sum(coh_mid_list) / len(coh_mid_list)),
             "coherence_high": float(sum(coh_hi_list) / len(coh_hi_list)),
@@ -441,11 +430,10 @@ def _compute_metrics_pack(x_hist_btchw, y_pred_btchw, y_true_btchw, clip_high_k=
         out[k] = float(sum(per_step[t][k] for t in range(T)) / T)
 
     prev_true = x_hist[:, -1]  # [B,C,H,W]
-    tend_corr, stat_ratio = _compute_change_metrics_per_step(
+    cm = _compute_change_metrics(
         y_pred, y_true, prev_true_bchw=prev_true, eps_change=1e-3
     )
-    out.update(tend_corr)
-    out.update(stat_ratio)
+    out.update(cm)
 
     out.update(_compute_conditional_bias(prev_true, y_pred, y_true))
 
