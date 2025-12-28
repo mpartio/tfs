@@ -90,27 +90,36 @@ def get_labels(args):
     return labels
 
 
-def read_data_from_dir(file_path):
+def read_data_from_dir(file_path, truth_cache):
+    truth_file = f"{file_path}/truth.pt"
+
+    if truth_cache is not None:
+        truth_file_real = os.path.realpath(truth_file)
+        if truth_file_real in truth_cache:
+            truth = truth_cache[truth_file_real]
+        else:
+            truth = torch.load(
+                truth_file, map_location=torch.device("cpu"), weights_only=True
+            )
+            truth_cache[truth_file_real] = truth
+    else:
+        truth = torch.load(
+            truth_file, map_location=torch.device("cpu"), weights_only=True
+        )
+
     predictions = torch.load(
         f"{file_path}/predictions.pt",
         map_location=torch.device("cpu"),
         weights_only=True,
     )
-    truth = torch.load(
-        f"{file_path}/truth.pt", map_location=torch.device("cpu"), weights_only=True
-    )
     dates = torch.load(
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
 
-    if truth.ndim == 6:
-        # squeeze "member" dim from truth
-        truth = truth[:, 0, :, :, :]
-
     return truth, predictions, dates
 
 
-def read_data(run_name, ensemble_only):
+def read_data(run_name, truth_cache=None):
     if "/" in run_name:
         run_dir = f"runs/{run_name}"
     else:
@@ -120,15 +129,10 @@ def read_data(run_name, ensemble_only):
 
     file_path = f"{run_dir}/test-output"
 
-    truth, predictions, dates = read_data_from_dir(file_path)
-
-    if not ensemble_only and predictions.ndim == 6:
-        # predictions are from pgu_ens, pick first member
-        print("Using member 0/{}".format(predictions.shape[1]))
-        predictions = predictions[:, 0, :, :, :]
+    truth, predictions, dates = read_data_from_dir(file_path, truth_cache)
 
     assert (
-        ensemble_only or predictions.ndim == 5
+        predictions.ndim == 5
     ), "Predictions should be 5D tensor (batch, time, channel, height, width), got {}".format(
         predictions.shape
     )
@@ -138,6 +142,30 @@ def read_data(run_name, ensemble_only):
         truth.shape
     )
     return truth, predictions, dates
+
+
+def check_that_all_files_exist(runs, paths):
+    pbar = tqdm(total=3 * (len(runs) + len(paths)), desc="Checking files")
+
+    def _check_files(path):
+        for f in ("predictions.pt", "dates.pt", "truth.pt"):
+            f = f"{path}/{f}"
+            if not os.path.exists(f):
+                raise ValueError(f"File {f} does not exist")
+            pbar.update(1)
+
+    for run_name in runs:
+        if "/" in run_name:
+            run_dir = f"runs/{run_name}"
+        else:
+            run_dir = get_latest_run_dir(f"runs/{run_name}")
+
+        _check_files(f"{run_dir}/test-output")
+
+    for path in paths:
+        _check_files(path)
+
+    pbar.close()
 
 
 def intersection(all_truth, all_predictions, all_dates):
@@ -238,17 +266,16 @@ def equalize_datasets(labels, all_truth, all_predictions, all_dates):
     return all_truth, all_predictions, all_dates
 
 
-def prepare_data(args, ensemble_only: bool = False):
+def prepare_data(args):
     all_truth, all_predictions, all_dates = [], [], []
+    truth_cache = {}
+
+    check_that_all_files_exist(args.run_name, args.path_name)
 
     if args.run_name:
         for run_name in tqdm(args.run_name, desc="Reading data"):
 
-            truth, predictions, dates = read_data(run_name, ensemble_only)
-
-            if ensemble_only and predictions.ndim == 5:
-                print(f"Skipping run {run_name}, not an ensemble")
-                continue
+            truth, predictions, dates = read_data(run_name, truth_cache)
 
             all_truth.append(truth)
             all_predictions.append(predictions)
@@ -256,7 +283,7 @@ def prepare_data(args, ensemble_only: bool = False):
     if args.path_name:
         for path_name in tqdm(args.path_name, desc="Reading data"):
 
-            truth, predictions, dates = read_data_from_dir(path_name)
+            truth, predictions, dates = read_data_from_dir(path_name, truth_cache)
 
             all_truth.append(truth)
             all_predictions.append(predictions)
@@ -268,18 +295,9 @@ def prepare_data(args, ensemble_only: bool = False):
     return equalize_datasets(get_labels(args), all_truth, all_predictions, all_dates)
 
 
-def plot_stamps(
-    run_name: list[str],
-    all_truth: list[torch.Tensor],
-    all_predictions: list[torch.Tensor],
-    all_dates: list[torch.Tensor],
-    save_path: str,
-):
-
-    truth = all_truth[0][0]
-
+def plot_one_stamp(truth, predictions, dates, filename):
     num_timesteps = truth.shape[0]
-    num_models = len(all_predictions)
+    num_models = len(predictions)
     nrows = 1 + num_models  # 1 row for truth + N rows for models
     ncols = num_timesteps
 
@@ -298,7 +316,10 @@ def plot_stamps(
     elif ncols == 1:
         axes = np.array([[ax] for ax in axes])  # Make it 2D Nrows x 1 col
 
-    fig.suptitle(f"Ground Truth vs. Model Predictions", fontsize=24)
+    fig.suptitle(
+        f"Ground Truth vs. Model Predictions {np.datetime64(int(dates[0]), 's')}",
+        fontsize=24,
+    )
     cmap = "Blues"
 
     labels = get_labels(args)
@@ -307,9 +328,7 @@ def plot_stamps(
         if r == 0:
             img_data = truth
         else:
-            img_data = all_predictions[r - 1][
-                0
-            ]  # select first forecast from each model
+            img_data = predictions[r - 1]
 
         for c in range(ncols):
             ax = axes[r, c]
@@ -330,19 +349,37 @@ def plot_stamps(
                 ax.set_title(f"Leadtime {c}h", fontsize=16)
 
     # Adjust layout to prevent overlap
-    plt.tight_layout(
-        rect=[0, 0.03, 0.85, 0.95]
-    )  # Adjust rect to make space for suptitle
+    plt.tight_layout(rect=[0, 0.03, 0.85, 0.95])
 
     # Add colorbar
     cbar_ax = fig.add_axes([0.86, 0.039, 0.015, 0.85])  # [left, bottom, width, height]
     cbar = fig.colorbar(im, cax=cbar_ax)
     cbar.set_label("Cloud cover", rotation=90, labelpad=15, fontsize=16)
 
-    filename = f"{save_path}/figures/stamps.png"
     plt.savefig(filename)
-    print(f"Example timeseries plot saved to {filename}")
+    print(f"Timeseries plot saved to {filename}")
     plt.close(fig)
+
+
+def plot_stamps(
+    run_name: list[str],
+    all_truth: list[torch.Tensor],
+    all_predictions: list[torch.Tensor],
+    all_dates: list[torch.Tensor],
+    save_path: str,
+):
+    rands = torch.randint(low=1, high=all_truth[0].shape[0], size=(2,))
+    rands = [x.item() for x in rands]
+
+    forecasts_to_plot = [0] + rands
+
+    for i, f_idx in enumerate(forecasts_to_plot):
+        preds = []
+        for j in range(len(all_predictions)):
+            preds.append(all_predictions[j][f_idx])
+        filename = f"{save_path}/figures/stamps{i}.png"
+
+        plot_one_stamp(all_truth[0][f_idx], preds, all_dates[0][f_idx], filename)
 
 
 if __name__ == "__main__":
