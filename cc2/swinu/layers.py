@@ -6,7 +6,9 @@ from math import sqrt, ceil
 from timm.models.layers import DropPath
 
 
-def make_window_key_mask(H, W, Hpad, Wpad, ws, device, repeat_factor):
+def make_window_key_mask(
+    H: int, W: int, Hpad: int, Wpad: int, ws: int, device: str, repeat_factor: int
+) -> torch.Tensor:
     # 1 inside real image, 0 in padded area
     base = torch.zeros((Hpad, Wpad), dtype=torch.bool, device=device)
     base[:H, :W] = False  # valid -> False (not masked)
@@ -21,7 +23,7 @@ def make_window_key_mask(H, W, Hpad, Wpad, ws, device, repeat_factor):
     return mask
 
 
-def get_padded_size(H, W, patch_size, num_merges=1):
+def get_padded_size(H: int, W: int, patch_size: int, num_merges: int = 1) -> tuple:
     # Calculate required factor for divisibility
     required_factor = patch_size * (2**num_merges)
 
@@ -32,7 +34,7 @@ def get_padded_size(H, W, patch_size, num_merges=1):
     return target_h, target_w
 
 
-def pad_tensor(tensor, patch_size, num_merges=1):
+def pad_tensor(tensor: torch.Tensor, patch_size: int, num_merges: int = 1) -> dict:
     H, W = tensor.shape[-2:]
     target_h, target_w = get_padded_size(H, W, patch_size, num_merges)
 
@@ -65,7 +67,7 @@ def pad_tensor(tensor, patch_size, num_merges=1):
     return padded_tensor, padding_info
 
 
-def pad_tensors(tensors, patch_size, num_merges=1):
+def pad_tensors(tensors: list, patch_size: int, num_merges: int = 1):
     padded_list = []
     for t in tensors:
         padded, pad_info = pad_tensor(t, patch_size, num_merges)
@@ -74,7 +76,7 @@ def pad_tensors(tensors, patch_size, num_merges=1):
     return padded_list, pad_info
 
 
-def depad_tensor(tensor, padding_info):
+def depad_tensor(tensor: torch.Tensor, padding_info: dict) -> torch.Tensor:
     if padding_info["pad_h"] == 0 and padding_info["pad_w"] == 0:
         return tensor
 
@@ -926,35 +928,106 @@ class MultiScaleRefinementHead(nn.Module):
         y = self.conv_out(y)
         return self.global_gamma * y
 
-
-class ResidualAdapter(nn.Module):
-    """
-    Residual conv adapter operating in image space on prognostic inputs.
-    Expects x as [B, T, C, H, W] and returns same shape.
-    """
-
-    def __init__(self, embed_dim: int, alpha_init: float = 1e-2):
+class MonthlyAffineCalibrator(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.alpha = nn.Parameter(torch.tensor(alpha_init, dtype=torch.float32))
 
-        self.net = nn.Sequential(
-            nn.Conv2d(1, embed_dim, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dim, embed_dim, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1),
+        cerra_mean = torch.Tensor(
+            [
+                4.0308266,
+                3.8426743,
+                3.4727726,
+                2.3719695,
+                2.7872074,
+                2.3565924,
+                2.3044133,
+                3.020569,
+                3.30077,
+                3.6333272,
+                4.0533166,
+                4.0203485,
+            ]
+        )
+        cerra_std = torch.Tensor(
+            [
+                3.4404473,
+                3.6296287,
+                3.6457233,
+                3.877123,
+                3.6260326,
+                3.7902522,
+                3.8410814,
+                3.3782325,
+                3.3867023,
+                3.5912292,
+                3.3820632,
+                3.4818525,
+            ]
         )
 
-        # Identity init: start as no-op
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
+        nwcsaf_mean = torch.Tensor(
+            [
+                1.9185501,
+                1.4339546,
+                1.7112248,
+                1.1761752,
+                2.3768227,
+                1.355506,
+                1.4384009,
+                2.6109147,
+                2.7334523,
+                2.0004008,
+                2.3180366,
+                1.7129546,
+            ]
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, T, C, H, W]
-        if x.dim() != 5:
-            raise ValueError(f"Expected [B,T,C,H,W], got {tuple(x.shape)}")
+        nwcsaf_std = torch.Tensor(
+            [
+                4.7878933,
+                5.107594,
+                5.148558,
+                5.433019,
+                5.2445183,
+                5.653317,
+                5.6321826,
+                5.0201287,
+                4.928003,
+                4.7422376,
+                4.5995703,
+                4.8838243,
+            ]
+        )
 
-        B, T, C, H, W = x.shape
-        xt = x.reshape(B * T, C, H, W)
-        xt = xt + self.alpha * self.net(xt)
-        return xt.reshape(B, T, C, H, W)
+        self.eps = 1e-3
+        self.std_floor = 1e-3
+        self.gain_min = 0.5
+        self.gain_max = 2.0
+
+        self.register_buffer("nwcsaf_mean", nwcsaf_mean)
+        self.register_buffer("nwcsaf_std", nwcsaf_std)
+        self.register_buffer("cerra_mean", cerra_mean)
+        self.register_buffer("cerra_std", cerra_std)
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor, month_idx: torch.Tensor) -> torch.Tensor:
+        # x: [B,T,1,H,W]
+        x = x.clamp(self.eps, 1.0 - self.eps)
+        z = torch.log(x) - torch.log1p(-x)  # logit
+
+        m = (month_idx.long() - 1).clamp(0, 11)  # [B]
+        mu_nw = self.nwcsaf_mean[m].view(-1, 1, 1, 1, 1)
+        std_nw = self.nwcsaf_std[m].view(-1, 1, 1, 1, 1).clamp_min(self.std_floor)
+        mu_ce = self.cerra_mean[m].view(-1, 1, 1, 1, 1)
+        std_ce = self.cerra_std[m].view(-1, 1, 1, 1, 1).clamp_min(self.std_floor)
+
+        a = (std_ce / (std_nw + self.std_floor)).clamp(self.gain_min, self.gain_max)
+        b = mu_ce - a * mu_nw
+
+        z_cal = a * z + b
+        return torch.sigmoid(z_cal)
+
+class IdentityCalibrator(nn.Module):
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor, month_idx: torch.Tensor | None = None) -> torch.Tensor:
+        return x

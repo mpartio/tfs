@@ -11,12 +11,14 @@ from swinu.layers import (
     PatchEmbedLossless,
     DWConvResidual3D,
     MultiScaleRefinementHead,
-    ResidualAdapter,
+    MonthlyAffineCalibrator,
+    IdentityCalibrator,
     get_padded_size,
     pad_tensors,
     pad_tensor,
     depad_tensor,
 )
+from swinu.unet import ObsStateUNetResidual
 from types import SimpleNamespace
 from torch.utils.checkpoint import checkpoint
 
@@ -217,12 +219,8 @@ class cc2model(nn.Module):
             ]
         )
 
-        expand = 2.0
-        ls_init = 1e-2
-
-        if config.use_deep_refinement_head:
-            expand = 4.0
-            ls_init = 5e-2
+        expand = 4.0
+        ls_init = 5e-2
 
         self.dwres_d2 = nn.ModuleList(
             [
@@ -260,35 +258,15 @@ class cc2model(nn.Module):
 
         self.skip_proj = nn.Linear(self.embed_dim, self.embed_dim * 2)
 
-        self.use_hard_skip = config.use_hard_skip
-
-        if self.use_hard_skip:
-            self.skip_fuse = nn.Linear(self.embed_dim * 4, self.embed_dim * 2)
-
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
         self.use_scheduled_sampling = config.use_scheduled_sampling
 
-        if config.use_deep_refinement_head:
-            self.refinement_head = MultiScaleRefinementHead(
-                in_channels=1,
-                out_channels=1,
-                base_channels=64,
-                dilations=(1, 2, 3, 1, 4),
-            )
-        else:
-            self.refinement_head = nn.Sequential(
-                nn.Conv2d(1, 32, 3, padding=1),
-                nn.GELU(),
-                nn.Conv2d(32, 1, 3, padding=1),
-            )
-
-        self.autoregressive_mode = config.autoregressive_mode
-
-        if self.autoregressive_mode is False:
-            self.max_step = 12
-            self.step_embedding_direct = nn.Embedding(
-                self.max_step + 1, self.embed_dim * 2
-            )
+        self.refinement_head = MultiScaleRefinementHead(
+            in_channels=1,
+            out_channels=1,
+            base_channels=64,
+            dilations=(1, 2, 3, 1, 4),
+        )
 
         # Layers to process future forcings
         # project a [B, P, D] future-forcing token into the decoder space
@@ -307,30 +285,23 @@ class cc2model(nn.Module):
             stride=2,
         )
 
-        self.use_residual_adapter_head = config.use_residual_adapter_head
-        self.use_residual_io_adapter = config.use_residual_io_adapter
+        self.use_obs_head = config.use_obs_head
+        self.use_obs_head_skip = config.use_obs_head_skip
 
-        if config.use_residual_io_adapter:
-            self.residual_input_adapter = ResidualAdapter(
-                embed_dim=64,
-            )
-            self.residual_output_adapter = ResidualAdapter(
-                embed_dim=128,
-            )
-
-        elif self.use_residual_adapter_head:
-            self.residual_alpha = nn.Parameter(torch.tensor(1e-2))
-
-            self.residual_adapter_head = nn.Sequential(
-                nn.Conv2d(1, 128, kernel_size=3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(128, 128, kernel_size=3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(128, 1, kernel_size=3, padding=1),
+        if self.use_obs_head:
+            self.obs_head = ObsStateUNetResidual(
+                base_channels=config.obs_head_base_channels,
+                num_groups=8,
+                ctx_channels=32,
+                ctx_token_dim=self.embed_dim * 2,
+                use_obs_deep_net=config.use_obs_deep_net,
             )
 
-            nn.init.zeros_(self.residual_adapter_head[-1].weight)
-            nn.init.zeros_(self.residual_adapter_head[-1].bias)
+        self.use_logit_calibration = config.use_logit_calibration
+        if self.use_logit_calibration:
+            self.logit_calibrator = MonthlyAffineCalibrator()
+        else:
+            self.logit_calibrator = IdentityCalibrator()
 
     def patch_embedding(self, x, forcing):
         x_tokens, f_future = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
@@ -401,18 +372,11 @@ class cc2model(nn.Module):
         decoder_in = decoder_input.reshape(B, -1, D)
 
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-        if self.autoregressive_mode:
-            step_id = 0
-            if not self.use_scheduled_sampling and step > 0:
-                step_id = 1
-            # Get appropriate step embedding
-            step_embedding = self.step_id_embeddings[step_id]  # [D]
-        else:
-            step_id = step + 1
-            if step_id > self.max_step:
-                step_id = self.max_step
-            step_tensor = torch.tensor([step_id], device=encoded.device)
-            step_embedding = self.step_embedding_direct(step_tensor).squeeze(0)
+        step_id = 0
+        if not self.use_scheduled_sampling and step > 0:
+            step_id = 1
+        # Get appropriate step embedding
+        step_embedding = self.step_id_embeddings[step_id]  # [D]
 
         # Add step embedding to decoder input
         # For first token in each sequence (acts as a "step type" token)
@@ -483,18 +447,6 @@ class cc2model(nn.Module):
         assert skip_token.ndim == 3
         skip_proj = self.skip_proj(skip_token)  # [B, num_tokens, embed_dim*2]
 
-        if self.use_hard_skip:
-            # Hard skip fusion path
-            assert (
-                x2.shape[1] == skip_proj.shape[1]
-            ), f"Shape mismatch: x2 {x2.shape} vs skip_proj {skip_proj.shape}"
-
-            # Concatenate along channel dim: [B, P, 4D]
-            x2 = torch.cat([x2, skip_proj], dim=-1)
-
-            # Fuse back to decoder2 dim: [B, P, 2D]
-            x2 = self.skip_fuse(x2)
-
         if self.use_gradient_checkpointing:
             for block, dwres in zip(self.decoder2, self.dwres_d2):
                 x2 = checkpoint(block, x2, skip_proj, use_reentrant=False)
@@ -508,6 +460,77 @@ class cc2model(nn.Module):
 
         return delta_pred2
 
+    def _adapter_step_id(self, step: int) -> int:
+        """
+        0 = first rollout step (teacher-forced / clean history)
+        1 = subsequent rollout steps (model-conditioned), when not using scheduled sampling
+        """
+        if (not self.use_scheduled_sampling) and (step > 0):
+            return 1
+        return 0
+
+    def _tokens_to_output(
+        self,
+        x_tokens: torch.Tensor,
+        padding_info: dict,
+        step: int,
+        use_refine: bool = True,
+    ) -> torch.Tensor:
+        out = self.project_to_image(x_tokens)
+
+        if use_refine:
+            out_ref = self.refinement_head(out.squeeze(2))
+            out = out + out_ref.unsqueeze(2)
+
+        out = depad_tensor(out, padding_info)
+        return out
+
+    def forward_noo(
+        self,
+        data: torch.Tensor,
+        x_core: torch.Tensor,
+        skip: torch.Tensor,
+        padding_info: dict,
+        step: int,
+    ):
+        # Current input state (de-padded) is the last frame in the provided history
+        x_curr = depad_tensor(data[:, -1:, ...], padding_info)  # [B,1,C,H,W]
+
+        delta_core = self._tokens_to_output(x_core, padding_info, step)
+
+        # Core next state
+        x_core_next = x_curr + delta_core  # [B,1,C,H,W]
+
+        want_diag = not self.training
+        obs_diag = {}
+
+        # Optionally build context for obs head. For minimal change, pass None.
+        ctx = None
+
+        if self.use_obs_head_skip:
+            skip_token = skip[:, -1, :, :]  # [B, P, D]
+            ctx = self.skip_proj(skip_token)  # [B, P, D2]
+
+        if want_diag:
+            x_obs_next, obs_diag = self.obs_head(
+                x_core_next, ctx_tokens=ctx, return_diag=True
+            )
+        else:
+            x_obs_next = self.obs_head(x_core_next, ctx_tokens=ctx)
+
+        # Observation operator correction relative to the core-next state
+        corr_obs = x_obs_next - x_core_next  # [B,1,C,H,W]
+        if obs_diag:
+            obs_diag["abs_corr_obs"] = corr_obs.abs().mean()
+
+        # Convert to a tendency consistent with roll_forecast:
+        delta_obs = delta_core + corr_obs
+
+        assert list(delta_core.shape[-2:]) == list(self.real_input_resolution)
+        assert list(delta_obs.shape[-2:]) == list(self.real_input_resolution)
+
+        return {"core": delta_core, "obs": delta_obs, "diag": obs_diag}
+
     def forward(self, data, forcing, step):
         assert (
             data.ndim == 5
@@ -515,32 +538,20 @@ class cc2model(nn.Module):
             data.shape
         )
 
-        if self.use_residual_io_adapter:
-            data = self.residual_input_adapter(data)
-
         data, padding_info = pad_tensor(data, self.patch_size, 1)
         forcing, _ = pad_tensor(forcing, self.patch_size, 1)
 
         x, f_future = self.patch_embedding(data, forcing)
         x, skip = self.encode(x)
-        x = self.decode(x, step, skip, f_future)
+        x_core = self.decode(x, step, skip, f_future)
 
-        output = self.project_to_image(x)
-        output_ref = self.refinement_head(output.squeeze(2))
-        output = output + output_ref.unsqueeze(2)
+        out_core = self._tokens_to_output(x_core, padding_info, step)
 
-        if self.use_residual_io_adapter:
-            output = self.residual_output_adapter(output)
+        if self.use_obs_head:
+            return self.forward_noo(data, x_core, skip, padding_info, step)
 
-        elif self.use_residual_adapter_head:
-            B, T, C, H, W = output.shape
-            output = output.view(B * T, C, H, W)
-            output = output + self.residual_alpha * self.residual_adapter_head(output)
-            output = output.view(B, T, C, H, W)
-
-        output = depad_tensor(output, padding_info)
-
-        assert list(output.shape[-2:]) == list(
+        assert list(out_core.shape[-2:]) == list(
             self.real_input_resolution
-        ), f"Output shape {output.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
-        return output
+        ), f"Output shape {out_core.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
+
+        return out_core

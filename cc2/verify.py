@@ -28,6 +28,7 @@ from verif.composite_score import (
     plot_component_contributions,
 )
 from verif.ssim import ssim, plot_ssim
+from verif.hist import hist, plot_hist
 
 
 def get_args():
@@ -50,7 +51,7 @@ def get_args():
             "highk_power_ratio",
             "spectral_coherence",
             "change_metrics",
-            "error-spread",
+            "hist",
             "ssim",
         ],
         help="Score to produce",
@@ -65,6 +66,12 @@ def get_args():
         "--plot_only",
         action="store_true",
         help="If set, only plot the results without running the verification.",
+    )
+    parser.add_argument(
+        "--crop",
+        type=int,
+        default=0,
+        help="Crop pixels from each side",
     )
 
     args = parser.parse_args()
@@ -107,11 +114,24 @@ def read_data_from_dir(file_path, truth_cache):
             truth_file, map_location=torch.device("cpu"), weights_only=True
         )
 
-    predictions = torch.load(
+    prediction_files = [
+        f"{file_path}/predictions_noo.pt",
         f"{file_path}/predictions.pt",
-        map_location=torch.device("cpu"),
-        weights_only=True,
-    )
+    ]
+
+    for file in prediction_files:
+        if os.path.exists(file) is False:
+            continue
+
+        predictions = torch.load(
+            file,
+            map_location=torch.device("cpu"),
+            weights_only=True,
+        )
+
+        if "noo.pt" in file:
+            print(f"Read NOO file {file}")
+        break
     dates = torch.load(
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
@@ -280,6 +300,7 @@ def prepare_data(args):
             all_truth.append(truth)
             all_predictions.append(predictions)
             all_dates.append(dates)
+
     if args.path_name:
         for path_name in tqdm(args.path_name, desc="Reading data"):
 
@@ -289,10 +310,21 @@ def prepare_data(args):
             all_predictions.append(predictions)
             all_dates.append(dates)
 
-    if len(all_dates) == 1:
-        return all_truth, all_predictions, all_dates
+        # return all_truth, all_predictions, all_dates
 
-    return equalize_datasets(get_labels(args), all_truth, all_predictions, all_dates)
+    if len(all_dates) > 1:
+        all_truth, all_predictions, all_dates = equalize_datasets(
+            get_labels(args), all_truth, all_predictions, all_dates
+        )
+
+    if args.crop:
+        # B, T, C, H, W
+        c = args.crop
+        print(f"Cropping with c={c}")
+        all_truth = [x[:, :, :, c:-c, c:-c] for x in all_truth]
+        all_predictions = [x[:, :, :, c:-c, c:-c] for x in all_predictions]
+
+    return all_truth, all_predictions, all_dates
 
 
 def plot_one_stamp(truth, predictions, dates, filename):
@@ -437,11 +469,13 @@ if __name__ == "__main__":
 
             plot_fss(labels, results_t, args.save_path)
 
-        elif score == "error-spread":
-            _all_truth, _all_predictions, _ = prepare_data(args, True)
-            results = error_spread(labels, _all_truth, _all_predictions, args.save_path)
-            print(results)
-            plot_error_spread(results)
+        elif score == "hist":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = hist(labels, all_truth, all_predictions, args.save_path)
+
+            plot_hist(labels, results, args.save_path)
 
         elif score == "variance_ratio":
             if args.plot_only:

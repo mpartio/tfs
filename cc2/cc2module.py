@@ -52,26 +52,22 @@ class cc2module(L.LightningModule):
         use_scheduled_sampling: bool = False,
         ss_pred_min: float = 0.0,
         ss_pred_max: float = 1.0,
-        autoregressive_mode: bool = True,
         freeze_layers: list[str] = [],
         loss_fn: Callable | nn.Module | None = None,
-        use_deep_refinement_head: bool = False,
-        use_hard_skip: bool = False,
         test_output_directory: str | None = None,
         use_rollout_weighting: bool = False,
         use_statistics_from_checkpoint: bool = True,
-        use_residual_adapter_head: bool = False,
-        use_residual_io_adapter: bool = False,
         force_frozen_backbone_to_eval: bool = False,
+        use_obs_head: bool = False,
+        obs_head_base_channels: int = 64,
+        use_obs_head_skip: bool = False,
+        use_logit_calibration: bool = False,
+        use_obs_deep_net: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
 
         self.model_configured = False
-
-        assert (use_residual_adapter_head and use_residual_io_adapter == False) or (
-            use_residual_adapter_head == False
-        )
 
         # Extract only model-specific parameters
         model_kwargs = {
@@ -97,11 +93,11 @@ class cc2module(L.LightningModule):
                 "use_scheduled_sampling",
                 "ss_pred_min",
                 "ss_pred_max",
-                "autoregressive_mode",
-                "use_deep_refinement_head",
-                "use_hard_skip",
-                "use_residual_adapter_head",
-                "use_residual_io_adapter",
+                "use_obs_head",
+                "use_obs_head_skip",
+                "obs_head_base_channels",
+                "use_logit_calibration",
+                "use_obs_deep_net",
             ]
         }
 
@@ -109,6 +105,7 @@ class cc2module(L.LightningModule):
 
         self.test_predictions = []
         self.test_truth = []
+        self.test_predictions_noo = []
         self.test_dates = []
 
         self.latest_val_tendencies = None
@@ -123,7 +120,6 @@ class cc2module(L.LightningModule):
         self.use_statistics_from_checkpoint = use_statistics_from_checkpoint
         self.ss_pred_min = ss_pred_min
         self.ss_pred_max = ss_pred_max
-        self.autoregressive_mode = autoregressive_mode
         self.test_output_directory = test_output_directory
 
         self._loss_fn = loss_fn
@@ -210,11 +206,7 @@ class cc2module(L.LightningModule):
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
             from pgu.cc2 import cc2model
-
-            if self.hparams.autoregressive_mode:
-                from pgu.util import roll_forecast
-            else:
-                from pgu.util import roll_forecast_direct as roll_forecast
+            from pgu.util import roll_forecast
 
         elif self.hparams.model_family == "swinu":
             from swinu.cc2 import cc2model
@@ -285,9 +277,9 @@ class cc2module(L.LightningModule):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
     def training_step(self, batch, batch_idx):
-        data, forcing = batch
+        data, forcing, month_idx = batch
 
-        loss, tendencies, predictions = self._roll_forecast(
+        loss, outs = self._roll_forecast(
             self.model,
             data,
             forcing,
@@ -299,7 +291,11 @@ class cc2module(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
+            month_idx=month_idx,
         )
+
+        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
+        predictions = outs.get("predictions_obs", outs["predictions_core"])
 
         self.log("train_loss", loss["loss"], sync_dist=False)
 
@@ -331,9 +327,9 @@ class cc2module(L.LightningModule):
         }
 
     def validation_step(self, batch, batch_idx):
-        data, forcing = batch
+        data, forcing, month_idx = batch
 
-        loss, tendencies, predictions = self._roll_forecast(
+        loss, outs = self._roll_forecast(
             self.model,
             data,
             forcing,
@@ -341,7 +337,11 @@ class cc2module(L.LightningModule):
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
+            month_idx=month_idx,
         )
+
+        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
+        predictions = outs.get("predictions_obs", outs["predictions_core"])
 
         self.log("val_loss", loss["loss"], sync_dist=False)
 
@@ -370,64 +370,47 @@ class cc2module(L.LightningModule):
         }
 
     def test_step(self, batch, batch_idx):
-        data, forcing, dates = batch
+        data, forcing, month_idx, dates = batch
 
-        _, tendencies, predictions = self._roll_forecast(
-            self,
-            data,
-            forcing,
-            self.hparams.rollout_length,  # Access from hparams
-            loss_fn=None,
-            use_scheduled_sampling=False,
-            use_rollout_weighting=self.hparams.use_rollout_weighting,
-        )
-
-        # We want to include the analysis time also
-        analysis_time = data[0][:, -1, ...].unsqueeze(1)
-
-        predictions = torch.concatenate((analysis_time, predictions), dim=1)
-        truth = torch.concatenate((analysis_time, data[1]), dim=1)
-
-        self.test_predictions.append(predictions)
-        self.test_truth.append(truth)
-        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
-
-        return {
-            "tendencies": tendencies,
-            "predictions": predictions,
-            "source": data[0],
-            "truth": data[1],
-        }
-
-    def predict_step(self, batch, batch_idx):
-        data, forcing, dates = batch
-
-        _, tendencies, predictions = self._roll_forecast(
-            self,
+        _, outs = self._roll_forecast(
+            self.model,
             data,
             forcing,
             self.hparams.rollout_length,  # Access from hparams
             loss_fn=None,
             use_scheduled_sampling=False,
             use_rollout_weighting=False,
+            month_idx=month_idx,
         )
 
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
-
-        predictions = torch.concatenate((analysis_time, predictions), dim=1)
-
-        self.test_predictions.append(predictions)
         self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
+        truth = torch.concatenate((analysis_time, data[1]), dim=1)
+        self.test_truth.append(truth)
 
-        return {
-            "tendencies": tendencies,
-            "predictions": predictions,
-            "source": data[0],
-            "truth": data[1],
-        }
+        if self.hparams.use_obs_head:
+            tendencies_core = outs["tendencies_core"]
+            predictions_core = outs["predictions_core"]
+            predictions_obs = outs["predictions_obs"]
+            predictions_core = torch.concatenate(
+                (analysis_time, predictions_core), dim=1
+            )
+            predictions_obs = torch.concatenate((analysis_time, predictions_obs), dim=1)
 
-    def _gather(self, predictions, truth, dates):
+            self.test_predictions.append(predictions_core)
+            self.test_predictions_noo.append(predictions_obs)
+
+        else:
+            tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
+            predictions = outs.get("predictions_obs", outs["predictions_core"])
+            predictions = torch.concatenate((analysis_time, predictions), dim=1)
+            self.test_predictions.append(predictions)
+
+    def predict_step(self, batch, batch_idx):
+        self.test_step(batch, batch_idx)
+
+    def _gather(self, predictions, truth, dates, prediction_noo):
         # Gather across all DDP ranks
         predictions = self.all_gather(predictions)
 
@@ -449,7 +432,12 @@ class cc2module(L.LightningModule):
             truth = truth.reshape(-1, *truth.shape[2:])
             truth = truth[sort_idx]
 
-        return predictions, truth, dates
+        if len(predictions_noo):
+            predictions_noo = self.all_gather(predictions_noo)
+            predictions_noo = predictions_noo.reshape(-1, *predictions_noo.shape[2:])
+            predictions_noo = predictions_noo[sort_idx]
+
+        return predictions, truth, dates, predictions_noo
 
     def _write_results_on_test_predict_end(self):
         def _write(tensor, filename):
@@ -471,7 +459,9 @@ class cc2module(L.LightningModule):
             truth = torch.concatenate(self.test_truth)
 
         if self.trainer.world_size > 1:
-            predictions, truth, dates = self._gather(predictions, truth, dates)
+            predictions, truth, dates, predictions_noo = self._gather(
+                predictions, truth, dates, predictions_noo
+            )
 
         # Only rank 0 writes to avoid duplicate writes
         if self.trainer.is_global_zero:
@@ -482,6 +472,12 @@ class cc2module(L.LightningModule):
 
             _write(dates, f"{self.test_output_directory}/dates.pt")
 
+            if len(self.test_predictions_noo):
+                predictions_noo = torch.concatenate(self.test_predictions_noo)
+                _write(
+                    predictions_noo, f"{self.test_output_directory}/predictions_noo.pt"
+                )
+
     def on_test_end(self):
         self._write_results_on_test_predict_end()
 
@@ -490,10 +486,13 @@ class cc2module(L.LightningModule):
 
     def configure_optimizers(self):
         decay, no_decay = [], []
+
+        NO_DECAY_KEYS = ["bias", "pos_embed", "norm", "alpha", "gamma", ".A.", ".B."]
+
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if any(nd in name for nd in ["bias", "pos_embed", "norm"]):
+            if any(nd in name for nd in NO_DECAY_KEYS):
                 no_decay.append(param)
             else:
                 decay.append(param)
