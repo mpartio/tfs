@@ -292,8 +292,8 @@ class cc2model(nn.Module):
             self.obs_head = ObsStateUNetResidual(
                 base_channels=config.obs_head_base_channels,
                 num_groups=8,
-                ctx_channels=32,
-                ctx_token_dim=self.embed_dim * 2,
+                ctx_in_channels=1,
+                ctx_feat_channels=32,
                 use_obs_deep_net=config.use_obs_deep_net,
             )
 
@@ -505,18 +505,17 @@ class cc2model(nn.Module):
         obs_diag = {}
 
         # Optionally build context for obs head. For minimal change, pass None.
-        ctx = None
+        ctx_state = None
 
         if self.use_obs_head_skip:
-            skip_token = skip[:, -1, :, :]  # [B, P, D]
-            ctx = self.skip_proj(skip_token)  # [B, P, D2]
+            ctx_state = x_curr
 
         if want_diag:
             x_obs_next, obs_diag = self.obs_head(
-                x_core_next, ctx_tokens=ctx, return_diag=True
+                x_core_next, ctx_state=ctx_state, return_diag=True
             )
         else:
-            x_obs_next = self.obs_head(x_core_next, ctx_tokens=ctx)
+            x_obs_next = self.obs_head(x_core_next, ctx_state=ctx_state)
 
         # Observation operator correction relative to the core-next state
         corr_obs = x_obs_next - x_core_next  # [B,1,C,H,W]
