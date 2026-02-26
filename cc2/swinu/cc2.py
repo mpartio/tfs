@@ -43,6 +43,11 @@ class cc2model(nn.Module):
             config.static_forcing_params
         )
 
+        self.use_flow_matching = getattr(config, "use_flow_matching", False)
+        if self.use_flow_matching:
+            # x_alpha and alpha_map are injected as extra future forcing channels
+            self.num_forcings += 2
+
         self.patch_embed = PatchEmbedLossless(
             input_resolution=input_resolution,
             patch_size=self.patch_size,

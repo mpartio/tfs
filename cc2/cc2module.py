@@ -67,6 +67,9 @@ class cc2module(L.LightningModule):
         use_obs_deep_net: bool = False,
         preprocessor: Callable | None = None,
         use_obs_head_dilation: bool = False,
+        use_flow_matching: bool = False,
+        num_inference_steps: int = 4,
+        flow_warm_start: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -105,6 +108,7 @@ class cc2module(L.LightningModule):
                 "use_obs_deep_net",
                 "obs_head_skip_ctx_feat",
                 "use_obs_head_dilation",
+                "use_flow_matching",
             ]
         }
 
@@ -213,6 +217,36 @@ class cc2module(L.LightningModule):
         self._store_trainable_module_names()
         self._print_trainable_layers()
 
+    def _extend_proj_force_for_flow(self, state_dict: dict) -> dict:
+        """
+        When use_flow_matching=True the model's proj_force expects 2 extra input
+        channels (x_alpha and alpha_map). A checkpoint from before flow matching
+        has the smaller weight. Zero-extend it so load_state_dict works.
+        """
+        key_w = "patch_embed.proj_force.weight"
+        key_b = "patch_embed.proj_force.bias"
+
+        if key_w not in state_dict:
+            return state_dict
+
+        old_w = state_dict[key_w]  # [d_force, Cf_old*ps*ps]
+        model_w = self.model.patch_embed.proj_force.weight  # [d_force, Cf_new*ps*ps]
+
+        if old_w.shape == model_w.shape:
+            return state_dict  # already the right size
+
+        d_force, old_in = old_w.shape
+        new_in = model_w.shape[1]
+        new_w = torch.zeros(d_force, new_in, dtype=old_w.dtype, device=old_w.device)
+        new_w[:, :old_in] = old_w
+        state_dict[key_w] = new_w
+
+        rank_zero_info(
+            f"Extended proj_force.weight from [{d_force},{old_in}] to [{d_force},{new_in}] "
+            f"(zero-initialised columns for x_alpha and alpha_map channels)"
+        )
+        return state_dict
+
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
             from pgu.cc2 import cc2model
@@ -252,6 +286,9 @@ class cc2module(L.LightningModule):
             state_dict = ckpt["state_dict"]
             state_dict = strip_prefix(state_dict)
 
+            if self.hparams.use_flow_matching:
+                state_dict = self._extend_proj_force_for_flow(state_dict)
+
             # Load the state dict
             # strict=False allows missing/extra keys (e.g., different final layer)
             load_result = self.model.load_state_dict(state_dict, strict=False)
@@ -286,8 +323,42 @@ class cc2module(L.LightningModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
+    def _build_flow_forcing(self, forcing, y):
+        """
+        Corrupt the clean targets and inject as extra forcing channels for flow matching.
+
+        forcing : [B, T+n_step, C_force, H, W]  – original forcing (no flow channels)
+        y       : [B, n_step,   C_data,  H, W]  – clean future targets
+
+        Returns: [B, T+n_step, C_force+2, H, W] where the last 2 channels at each
+        future time slot carry (x_alpha, alpha_map); history slots carry zeros.
+        """
+        B, T_total, C_force, H, W = forcing.shape
+        _, n_step, C_data, _, _ = y.shape
+        T = T_total - n_step
+
+        # Sample one alpha per sample in the batch ~ Uniform(0, 1)
+        alpha = torch.rand(B, device=forcing.device)  # [B]
+
+        # Corrupt target: x_alpha = (1-alpha)*y + alpha*z
+        alpha_5d = alpha.view(B, 1, 1, 1, 1)
+        z = torch.randn_like(y)
+        x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
+
+        # Allocate extended forcing (history slots have zero flow channels)
+        extra = torch.zeros(B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype)
+        for t in range(n_step):
+            extra[:, T + t, 0, :, :] = x_alpha[:, t, 0, :, :]      # x_alpha  (TCC is single-channel)
+            extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)  # alpha_map
+
+        return torch.cat([forcing, extra], dim=2)  # [B, T+n_step, C_force+2, H, W]
+
     def training_step(self, batch, batch_idx):
         data, forcing, month_idx = batch
+
+        if self.hparams.use_flow_matching:
+            _, y = data
+            forcing = self._build_flow_forcing(forcing, y)
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -339,6 +410,10 @@ class cc2module(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         data, forcing, month_idx = batch
 
+        if self.hparams.use_flow_matching:
+            _, y = data
+            forcing = self._build_flow_forcing(forcing, y)
+
         loss, outs = self._roll_forecast(
             self.model,
             data,
@@ -382,16 +457,33 @@ class cc2module(L.LightningModule):
     def test_step(self, batch, batch_idx):
         data, forcing, month_idx, dates = batch
 
-        _, outs = self._roll_forecast(
-            self.model,
-            data,
-            forcing,
-            self.hparams.rollout_length,  # Access from hparams
-            loss_fn=None,
-            use_scheduled_sampling=False,
-            use_rollout_weighting=False,
-            month_idx=month_idx,
-        )
+        if self.hparams.use_flow_matching:
+            from swinu.util import flow_roll_forecast
+
+            # Pre-allocate the 2 extra flow channels (filled during denoising)
+            B, T_total, C_force, H, W = forcing.shape
+            extra = torch.zeros(B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype)
+            flow_forcing = torch.cat([forcing, extra], dim=2)
+
+            _, outs = flow_roll_forecast(
+                self.model,
+                data,
+                flow_forcing,
+                self.hparams.rollout_length,
+                num_inference_steps=self.hparams.num_inference_steps,
+                flow_warm_start=self.hparams.flow_warm_start,
+            )
+        else:
+            _, outs = self._roll_forecast(
+                self.model,
+                data,
+                forcing,
+                self.hparams.rollout_length,
+                loss_fn=None,
+                use_scheduled_sampling=False,
+                use_rollout_weighting=False,
+                month_idx=month_idx,
+            )
 
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
