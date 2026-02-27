@@ -72,7 +72,7 @@ model:
     num_inference_steps: 4
     flow_warm_start: true
     loss_fn:
-      class_path: loss.mae.MAELoss
+      class_path: loss.bce.BCELoss
       init_args:
         use_full_state: true
     use_rollout_weighting: false
