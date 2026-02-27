@@ -430,6 +430,7 @@ def flow_roll_forecast(
     num_inference_steps: int = 4,
     flow_warm_start: bool = True,
     warm_start_alpha: float = 0.4,
+    eta: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
@@ -460,22 +461,25 @@ def flow_roll_forecast(
 
     for t in range(n_step):
         do_calib = t < n_calib_steps
+        # Clone once per temporal step; the flow channels are modified in-place each
+        # denoising iteration — no further clones needed inside the loop.
         step_forcing = forcing[:, t : t + T + 1, ...].clone()  # [B, T+1, C_force+2, H, W]
 
         input_state = torch.cat([previous_state, current_state], dim=1)
         input_state = _maybe_calibrate_input(model, input_state, do_calib, month_idx=None)
 
         if flow_warm_start:
-            # Smooth pass: set flow channels to zero so model ignores them
-            warm_forcing = step_forcing.clone()
-            warm_forcing[:, T, -2:, :, :] = 0.0
-
+            # Smooth pass: flow channels are already zero from the pre-allocated tensor
             with torch.no_grad():
-                tendency_warm, _, _ = _forward_and_unpack(model, input_state, warm_forcing, t)
+                tendency_warm, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
 
             smooth_pred = current_state + tendency_warm  # [B, 1, C, H, W]
             alpha_init = warm_start_alpha
-            x_alpha = smooth_pred.detach().clone()
+            # Mix smooth prediction with noise at warm_start_alpha, matching the
+            # training distribution: x_alpha = (1-a)*clean + a*noise at alpha=a.
+            # Using the smooth prediction as a proxy for clean, then adding the
+            # correct amount of noise puts x_alpha in-distribution for the model.
+            x_alpha = (1.0 - warm_start_alpha) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
         else:
             alpha_init = 1.0
             x_alpha = torch.randn_like(current_state)
@@ -488,13 +492,12 @@ def flow_roll_forecast(
             alpha = alphas[i]
             alpha_next = alphas[i + 1]
 
-            # Inject x_alpha and alpha into the future slot of forcing
-            flow_forcing = step_forcing.clone()
-            flow_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]  # x_alpha (TCC is 1-channel)
-            flow_forcing[:, T, -1, :, :] = float(alpha)             # alpha broadcast to spatial map
+            # Modify the two flow channels in-place — no clone needed
+            step_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]  # x_alpha (TCC is 1-channel)
+            step_forcing[:, T, -1, :, :] = float(alpha)             # alpha broadcast to spatial map
 
             with torch.no_grad():
-                tendency, _, _ = _forward_and_unpack(model, input_state, flow_forcing, t)
+                tendency, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
 
             x1_hat = current_state + tendency  # predicted clean state [B, 1, C, H, W]
 
@@ -502,6 +505,8 @@ def flow_roll_forecast(
             alpha_clamped = alpha.clamp(min=1e-6)
             z_est = (x_alpha - (1.0 - alpha_clamped) * x1_hat) / alpha_clamped
             x_alpha = (1.0 - alpha_next) * x1_hat + alpha_next * z_est
+            if eta > 0.0:
+                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * torch.randn_like(x_alpha)
 
         # Clamp to valid TCC range
         final_pred = x1_hat.clamp(0.0, 1.0)

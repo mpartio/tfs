@@ -70,6 +70,7 @@ class cc2module(L.LightningModule):
         use_flow_matching: bool = False,
         num_inference_steps: int = 4,
         flow_warm_start: bool = True,
+        flow_eta: float = 0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -472,6 +473,7 @@ class cc2module(L.LightningModule):
                 self.hparams.rollout_length,
                 num_inference_steps=self.hparams.num_inference_steps,
                 flow_warm_start=self.hparams.flow_warm_start,
+                eta=self.hparams.flow_eta,
             )
         else:
             _, outs = self._roll_forecast(
