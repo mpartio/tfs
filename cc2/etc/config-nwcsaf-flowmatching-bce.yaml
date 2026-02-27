@@ -60,10 +60,10 @@ model:
     - 0.01
     - 0.1
     learning_rate: 5.0e-06
-    warmup_iterations: 300
+    warmup_iterations: 500
     weight_decay: 0.02
     rollout_length: 1
-    branch_from_run: pizzicato-transfer/1
+    branch_from_run: nwcsaf-cfm
     use_gradient_checkpointing: true
     model_family: swinu
     use_scheduled_sampling: false
@@ -72,7 +72,7 @@ model:
     num_inference_steps: 4
     flow_warm_start: true
     loss_fn:
-      class_path: loss.mae.MAELoss
+      class_path: loss.bce.BCELoss
       init_args:
         use_full_state: true
     use_rollout_weighting: false

@@ -38,7 +38,9 @@ class BCELoss(nn.Module):
         p = p.clamp(self.eps, 1.0 - self.eps)
         y = y.clamp(self.eps, 1.0 - self.eps)
 
-        loss = F.binary_cross_entropy(p, y, reduction="mean")
+        # F.binary_cross_entropy is unsafe under autocast; convert to logits
+        # and use the autocast-safe variant instead (mathematically equivalent)
+        loss = F.binary_cross_entropy_with_logits(torch.logit(p), y, reduction="mean")
 
         assert torch.isfinite(loss), f"Non-finite BCE loss: {loss}"
         return {"loss": loss}
