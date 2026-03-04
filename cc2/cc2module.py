@@ -58,15 +58,7 @@ class cc2module(L.LightningModule):
         use_rollout_weighting: bool = False,
         use_statistics_from_checkpoint: bool = True,
         force_frozen_backbone_to_eval: bool = False,
-        use_obs_head: bool = False,
-        obs_head_base_channels: int = 64,
-        use_obs_head_skip: bool = False,
-        obs_head_skip_dim: int = 1,
-        obs_head_skip_ctx_feat: int = 32,
-        use_logit_calibration: bool = False,
-        use_obs_deep_net: bool = False,
         preprocessor: Callable | None = None,
-        use_obs_head_dilation: bool = False,
         use_flow_matching: bool = False,
         num_inference_steps: int = 4,
         flow_warm_start: bool = True,
@@ -101,14 +93,6 @@ class cc2module(L.LightningModule):
                 "use_scheduled_sampling",
                 "ss_pred_min",
                 "ss_pred_max",
-                "use_obs_head",
-                "use_obs_head_skip",
-                "obs_head_skip_dim",
-                "obs_head_base_channels",
-                "use_logit_calibration",
-                "use_obs_deep_net",
-                "obs_head_skip_ctx_feat",
-                "use_obs_head_dilation",
                 "use_flow_matching",
             ]
         }
@@ -493,23 +477,10 @@ class cc2module(L.LightningModule):
         truth = torch.concatenate((analysis_time, data[1]), dim=1)
         self.test_truth.append(truth)
 
-        if self.hparams.use_obs_head:
-            tendencies_core = outs["tendencies_core"]
-            predictions_core = outs["predictions_core"]
-            predictions_obs = outs["predictions_obs"]
-            predictions_core = torch.concatenate(
-                (analysis_time, predictions_core), dim=1
-            )
-            predictions_obs = torch.concatenate((analysis_time, predictions_obs), dim=1)
-
-            self.test_predictions.append(predictions_core)
-            self.test_predictions_noo.append(predictions_obs)
-
-        else:
-            tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
-            predictions = outs.get("predictions_obs", outs["predictions_core"])
-            predictions = torch.concatenate((analysis_time, predictions), dim=1)
-            self.test_predictions.append(predictions)
+        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
+        predictions = outs.get("predictions_obs", outs["predictions_core"])
+        predictions = torch.concatenate((analysis_time, predictions), dim=1)
+        self.test_predictions.append(predictions)
 
     def predict_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)

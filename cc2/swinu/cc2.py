@@ -300,25 +300,7 @@ class cc2model(nn.Module):
             stride=2,
         )
 
-        self.use_obs_head = config.use_obs_head
-        self.use_obs_head_skip = config.use_obs_head_skip
-        self.obs_head_skip_dim = config.obs_head_skip_dim
-
-        if self.use_obs_head:
-            self.obs_head = ObsStateUNetResidual(
-                base_channels=config.obs_head_base_channels,
-                num_groups=8,
-                ctx_in_channels=config.obs_head_skip_dim,
-                ctx_feat_channels=config.obs_head_skip_ctx_feat,
-                use_obs_deep_net=config.use_obs_deep_net,
-                use_obs_head_dilation=config.use_obs_head_dilation,
-            )
-
-        self.use_logit_calibration = config.use_logit_calibration
-
-        if self.use_logit_calibration:
-            self.preprocessor = MonthlyAffineCalibrator()
-        elif config.preprocessor is not None:
+        if config.preprocessor is not None:
             self.preprocessor = config.preprocessor
         else:
             self.preprocessor = IdentityCalibrator()
@@ -508,58 +490,6 @@ class cc2model(nn.Module):
         out = depad_tensor(out, padding_info)
         return out
 
-    def forward_noo(
-        self,
-        data: torch.Tensor,
-        x_core: torch.Tensor,
-        skip: torch.Tensor,
-        padding_info: dict,
-        step: int,
-    ):
-        # Current input state (de-padded) is the last frame in the provided history
-        x_curr = depad_tensor(data[:, -1:, ...], padding_info)  # [B,1,C,H,W]
-
-        delta_core = self._tokens_to_output(x_core, padding_info, step)
-
-        # Core next state
-        x_core_next = x_curr + delta_core  # [B,1,C,H,W]
-
-        want_diag = not self.training
-        obs_diag = {}
-
-        # Optionally build context for obs head. For minimal change, pass None.
-        ctx_state = None
-
-        if self.use_obs_head_skip:
-            assert self.obs_head_skip_dim in [1, 3]
-            if self.obs_head_skip_dim == 1:
-                ctx_state = x_curr
-            elif self.obs_head_skip_dim == 3:
-                x_prev = depad_tensor(data[:, -2:-1, ...], padding_info)
-                ctx_state = torch.concatenate(
-                    [x_curr, x_curr - x_prev, delta_core], dim=2
-                )
-
-        if want_diag:
-            x_obs_next, obs_diag = self.obs_head(
-                x_core_next, ctx_state=ctx_state, return_diag=True
-            )
-        else:
-            x_obs_next = self.obs_head(x_core_next, ctx_state=ctx_state)
-
-        # Observation operator correction relative to the core-next state
-        corr_obs = x_obs_next - x_core_next  # [B,1,C,H,W]
-        if obs_diag:
-            obs_diag["abs_corr_obs"] = corr_obs.abs().mean()
-
-        # Convert to a tendency consistent with roll_forecast:
-        delta_obs = delta_core + corr_obs
-
-        assert list(delta_core.shape[-2:]) == list(self.real_input_resolution)
-        assert list(delta_obs.shape[-2:]) == list(self.real_input_resolution)
-
-        return {"core": delta_core, "obs": delta_obs, "diag": obs_diag}
-
     def forward(self, data, forcing, step):
         assert (
             data.ndim == 5
@@ -575,9 +505,6 @@ class cc2model(nn.Module):
         x_core = self.decode(x, step, skip, f_future)
 
         out_core = self._tokens_to_output(x_core, padding_info, step)
-
-        if self.use_obs_head:
-            return self.forward_noo(data, x_core, skip, padding_info, step)
 
         assert list(out_core.shape[-2:]) == list(
             self.real_input_resolution
