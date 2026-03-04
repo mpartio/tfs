@@ -18,7 +18,6 @@ from swinu.layers import (
     pad_tensor,
     depad_tensor,
 )
-from swinu.unet import ObsStateUNetResidual
 from types import SimpleNamespace
 from torch.utils.checkpoint import checkpoint
 
