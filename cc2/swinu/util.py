@@ -163,25 +163,18 @@ def _build_input_state(
         return input_state, None, metrics
 
 
-def _maybe_calibrate_input(model, input_state: torch.Tensor, do_calib: bool, month_idx: int | None = None):
+def _maybe_calibrate_input(model, input_state: torch.Tensor, do_calib: bool):
     if do_calib:
-        return model.preprocessor(x=input_state, month_idx=month_idx)
+        return model.preprocessor(x=input_state)
     return input_state
 
 
 def _forward_and_unpack(model, input_state, step_forcing, t):
     out = model(input_state, step_forcing, t)
-    metrics = {}
-    if isinstance(out, dict):
-        tendency_core = out["core"]
-        tendency_obs = out["obs"]
-        metrics.update(out.get("diag", {}))
-    else:
-        tendency_core = tendency_obs = out
-    return tendency_core, tendency_obs, metrics
+    return out, None, {}
 
 
-def _compute_step_loss(loss_fn, x, y, t, next_pred_obs, tendency_obs, step):
+def _compute_step_loss(loss_fn, x, y, t, next_pred, tendency, step):
     if loss_fn is None:
         return None
 
@@ -193,54 +186,50 @@ def _compute_step_loss(loss_fn, x, y, t, next_pred_obs, tendency_obs, step):
 
     return loss_fn(
         y_true_full=y_true_full,
-        y_pred_full=next_pred_obs,
+        y_pred_full=next_pred,
         y_true_delta=y_true_delta,
-        y_pred_delta=tendency_obs,
+        y_pred_delta=tendency,
         global_step=step,
     )
 
 
-def _next_core_state(
+def _next_state(
     model,
     current_state,
-    next_pred_core,
+    next_pred,
     y,
     t,
     training: bool,
     use_scheduled_sampling: bool,
     p_pred: float | None,
     do_calib: bool,
-    month_idx: torch.Tensor | None,
 ):
     metrics = {}
 
     if not training:
-        return ste_clamp(next_pred_core, False), metrics
+        return ste_clamp(next_pred, False), metrics
 
     if use_scheduled_sampling:
         assert p_pred is not None
         mask_next = torch.bernoulli(
             p_pred * torch.ones_like(current_state[:, :1, :, :, :])
         )
-        pred_core_clamped = ste_clamp(next_pred_core, True)
+        pred_clamped = ste_clamp(next_pred, True)
 
         next_gt = y[:, t : t + 1, ...]
         if do_calib:
-            assert month_idx is not None
-            next_gt = model.preprocessor(x=next_gt, month_idx=month_idx)
+            next_gt = model.preprocessor(x=next_gt)
 
-        next_state_core = mask_next * pred_core_clamped + (1 - mask_next) * next_gt
+        next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
         metrics["ss_mask_next"] = mask_next.float().mean()
-        return next_state_core, metrics
+        return next_state, metrics
 
     # training without SS feedback
-    return ste_clamp(next_pred_core, True), metrics
+    return ste_clamp(next_pred, True), metrics
 
 
-def _materialize_obs(next_pred_obs, training: bool):
-    return (
-        ste_clamp(next_pred_obs, True) if training else ste_clamp(next_pred_obs, False)
-    )
+def _materialize(next_pred, training: bool):
+    return ste_clamp(next_pred, True) if training else ste_clamp(next_pred, False)
 
 
 def _aggregate_losses(
@@ -297,7 +286,6 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     use_rollout_weighting: bool = False,
-    month_idx: torch.Tensor | None = None,
 ) -> Dict[str, torch.Tensor]:
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
@@ -319,10 +307,8 @@ def roll_forecast(
 
     # Initialize empty lists for multi-step evaluation
     all_losses = []
-    all_predictions_obs = []
-    all_tendencies_obs = []
-    all_predictions_core = []
-    all_tendencies_core = []
+    all_predictions = []
+    all_tendencies = []
 
     metrics = {}
 
@@ -353,66 +339,55 @@ def roll_forecast(
 
         # 2. Forward and unpack
 
-        input_state = _maybe_calibrate_input(model, input_state, do_calib, month_idx)
+        input_state = _maybe_calibrate_input(model, input_state, do_calib)
 
-        tendency_core, tendency_obs, diag = _forward_and_unpack(
-            model, input_state, step_forcing, t
-        )
-        metrics.update(diag)
+        tendency, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
 
-        next_pred_core = current_state + tendency_core
-        next_pred_obs = current_state + tendency_obs
+        next_pred = current_state + tendency
 
         # 3. Calculate loss
 
-        step_loss = _compute_step_loss(
-            loss_fn, x, y, t, next_pred_obs, tendency_obs, step
-        )
+        step_loss = _compute_step_loss(loss_fn, x, y, t, next_pred, tendency, step)
         if step_loss is not None:
             all_losses.append(step_loss)
 
         # 4. Get next core state
 
-        next_state_core, fb_metrics = _next_core_state(
+        next_state, fb_metrics = _next_state(
             model,
             current_state,
-            next_pred_core,
+            next_pred,
             y,
             t,
             training=model.training,
             use_scheduled_sampling=use_scheduled_sampling,
             p_pred=p_pred,
             do_calib=do_calib,
-            month_idx=month_idx,
         )
         metrics.update(fb_metrics)
 
-        next_state_obs = _materialize_obs(next_pred_obs, training=model.training)
+        next_state = _materialize(next_pred, training=model.training)
 
         # Store the prediction
-        all_predictions_core.append(next_state_core.detach())
-        all_tendencies_core.append(tendency_core.detach())
-        all_predictions_obs.append(next_state_obs.detach())
-        all_tendencies_obs.append(tendency_obs.detach())
+        all_predictions.append(next_state.detach())
+        all_tendencies.append(tendency.detach())
 
         # Update current state for next iteration
         previous_state = current_state
-        current_state = next_state_core
+        current_state = next_state
 
     loss, metrics = _aggregate_losses(
         all_losses, use_rollout_weighting, step, n_step, max_step, metrics
     )
 
-    assert all_tendencies_core[0].ndim == 5
+    assert all_tendencies[0].ndim == 5
 
     if loss is not None:
         loss.update(metrics)
 
     out = {
-        "tendencies_core": torch.cat(all_tendencies_core, dim=1),
-        "predictions_core": torch.cat(all_predictions_core, dim=1),
-        "tendencies_obs": torch.cat(all_tendencies_obs, dim=1),
-        "predictions_obs": torch.cat(all_predictions_obs, dim=1),
+        "tendencies": torch.cat(all_tendencies, dim=1),
+        "predictions": torch.cat(all_predictions, dim=1),
     }
 
     return loss, out
@@ -447,7 +422,7 @@ def flow_roll_forecast(
     x, y = data
     B, T, C_data, H, W = x.shape
 
-    current_state = x[:, -1, ...].unsqueeze(1)   # [B, 1, C, H, W]
+    current_state = x[:, -1, ...].unsqueeze(1)  # [B, 1, C, H, W]
     previous_state = x[:, -2, ...].unsqueeze(1)
 
     all_predictions = []
@@ -459,15 +434,19 @@ def flow_roll_forecast(
         do_calib = t < n_calib_steps
         # Clone once per temporal step; the flow channels are modified in-place each
         # denoising iteration — no further clones needed inside the loop.
-        step_forcing = forcing[:, t : t + T + 1, ...].clone()  # [B, T+1, C_force+2, H, W]
+        step_forcing = forcing[
+            :, t : t + T + 1, ...
+        ].clone()  # [B, T+1, C_force+2, H, W]
 
         input_state = torch.cat([previous_state, current_state], dim=1)
-        input_state = _maybe_calibrate_input(model, input_state, do_calib, month_idx=None)
+        input_state = _maybe_calibrate_input(model, input_state, do_calib)
 
         if flow_warm_start:
             # Smooth pass: flow channels are already zero from the pre-allocated tensor
             with torch.no_grad():
-                tendency_warm, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
+                tendency_warm, _, _ = _forward_and_unpack(
+                    model, input_state, step_forcing, t
+                )
 
             smooth_pred = current_state + tendency_warm  # [B, 1, C, H, W]
             alpha_init = warm_start_alpha
@@ -475,13 +454,17 @@ def flow_roll_forecast(
             # training distribution: x_alpha = (1-a)*clean + a*noise at alpha=a.
             # Using the smooth prediction as a proxy for clean, then adding the
             # correct amount of noise puts x_alpha in-distribution for the model.
-            x_alpha = (1.0 - warm_start_alpha) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
+            x_alpha = (
+                1.0 - warm_start_alpha
+            ) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
         else:
             alpha_init = 1.0
             x_alpha = torch.randn_like(current_state)
 
         # DDIM denoising loop: iterate from alpha_init down to near 0
-        alphas = torch.linspace(alpha_init, 0.05, num_inference_steps + 1, device=x.device)
+        alphas = torch.linspace(
+            alpha_init, 0.05, num_inference_steps + 1, device=x.device
+        )
 
         x1_hat = current_state  # will be overwritten in first iteration
         for i in range(num_inference_steps):
@@ -489,11 +472,17 @@ def flow_roll_forecast(
             alpha_next = alphas[i + 1]
 
             # Modify the two flow channels in-place — no clone needed
-            step_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]  # x_alpha (TCC is 1-channel)
-            step_forcing[:, T, -1, :, :] = float(alpha)             # alpha broadcast to spatial map
+            step_forcing[:, T, -2, :, :] = x_alpha[
+                :, 0, 0, :, :
+            ]  # x_alpha (TCC is 1-channel)
+            step_forcing[:, T, -1, :, :] = float(
+                alpha
+            )  # alpha broadcast to spatial map
 
             with torch.no_grad():
-                tendency, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
+                tendency, _, _ = _forward_and_unpack(
+                    model, input_state, step_forcing, t
+                )
 
             x1_hat = current_state + tendency  # predicted clean state [B, 1, C, H, W]
 
@@ -502,7 +491,9 @@ def flow_roll_forecast(
             z_est = (x_alpha - (1.0 - alpha_clamped) * x1_hat) / alpha_clamped
             x_alpha = (1.0 - alpha_next) * x1_hat + alpha_next * z_est
             if eta > 0.0:
-                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * torch.randn_like(x_alpha)
+                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * torch.randn_like(
+                    x_alpha
+                )
 
         # Clamp to valid TCC range
         final_pred = x1_hat.clamp(0.0, 1.0)
@@ -515,10 +506,8 @@ def flow_roll_forecast(
         current_state = ste_clamp(final_pred, False)
 
     out = {
-        "tendencies_core": torch.cat(all_tendencies, dim=1),
-        "predictions_core": torch.cat(all_predictions, dim=1),
-        "tendencies_obs": torch.cat(all_tendencies, dim=1),
-        "predictions_obs": torch.cat(all_predictions, dim=1),
+        "tendencies": torch.cat(all_tendencies, dim=1),
+        "predictions": torch.cat(all_predictions, dim=1),
     }
 
     return None, out

@@ -331,15 +331,19 @@ class cc2module(L.LightningModule):
         x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
 
         # Allocate extended forcing (history slots have zero flow channels)
-        extra = torch.zeros(B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype)
+        extra = torch.zeros(
+            B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype
+        )
         for t in range(n_step):
-            extra[:, T + t, 0, :, :] = x_alpha[:, t, 0, :, :]      # x_alpha  (TCC is single-channel)
+            extra[:, T + t, 0, :, :] = x_alpha[
+                :, t, 0, :, :
+            ]  # x_alpha  (TCC is single-channel)
             extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)  # alpha_map
 
         return torch.cat([forcing, extra], dim=2)  # [B, T+n_step, C_force+2, H, W]
 
     def training_step(self, batch, batch_idx):
-        data, forcing, month_idx = batch
+        data, forcing = batch
 
         if self.hparams.use_flow_matching:
             _, y = data
@@ -357,11 +361,10 @@ class cc2module(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
-            month_idx=month_idx,
         )
 
-        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
-        predictions = outs.get("predictions_obs", outs["predictions_core"])
+        tendencies = outs["tendencies"]
+        predictions = outs["predictions"]
 
         self.log("train_loss", loss["loss"], sync_dist=False)
 
@@ -393,7 +396,7 @@ class cc2module(L.LightningModule):
         }
 
     def validation_step(self, batch, batch_idx):
-        data, forcing, month_idx = batch
+        data, forcing = batch
 
         if self.hparams.use_flow_matching:
             _, y = data
@@ -407,11 +410,10 @@ class cc2module(L.LightningModule):
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
-            month_idx=month_idx,
         )
 
-        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
-        predictions = outs.get("predictions_obs", outs["predictions_core"])
+        tendencies = outs["tendencies"]
+        predictions = outs["predictions"]
 
         self.log("val_loss", loss["loss"], sync_dist=False)
 
@@ -440,14 +442,16 @@ class cc2module(L.LightningModule):
         }
 
     def test_step(self, batch, batch_idx):
-        data, forcing, month_idx, dates = batch
+        data, forcing, dates = batch
 
         if self.hparams.use_flow_matching:
             from swinu.util import flow_roll_forecast
 
             # Pre-allocate the 2 extra flow channels (filled during denoising)
             B, T_total, C_force, H, W = forcing.shape
-            extra = torch.zeros(B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype)
+            extra = torch.zeros(
+                B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype
+            )
             flow_forcing = torch.cat([forcing, extra], dim=2)
 
             _, outs = flow_roll_forecast(
@@ -468,7 +472,6 @@ class cc2module(L.LightningModule):
                 loss_fn=None,
                 use_scheduled_sampling=False,
                 use_rollout_weighting=False,
-                month_idx=month_idx,
             )
 
         # We want to include the analysis time also
@@ -477,8 +480,8 @@ class cc2module(L.LightningModule):
         truth = torch.concatenate((analysis_time, data[1]), dim=1)
         self.test_truth.append(truth)
 
-        tendencies = outs.get("tendencies_obs", outs["tendencies_core"])
-        predictions = outs.get("predictions_obs", outs["predictions_core"])
+        tendencies = outs["tendencies"]
+        predictions = outs["predictions"]
         predictions = torch.concatenate((analysis_time, predictions), dim=1)
         self.test_predictions.append(predictions)
 

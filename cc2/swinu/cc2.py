@@ -464,15 +464,6 @@ class cc2model(nn.Module):
 
         return delta_pred2
 
-    def _adapter_step_id(self, step: int) -> int:
-        """
-        0 = first rollout step (teacher-forced / clean history)
-        1 = subsequent rollout steps (model-conditioned), when not using scheduled sampling
-        """
-        if (not self.use_scheduled_sampling) and (step > 0):
-            return 1
-        return 0
-
     def _tokens_to_output(
         self,
         x_tokens: torch.Tensor,
@@ -501,12 +492,12 @@ class cc2model(nn.Module):
 
         x, f_future = self.patch_embedding(data, forcing)
         x, skip = self.encode(x)
-        x_core = self.decode(x, step, skip, f_future)
+        x = self.decode(x, step, skip, f_future)
 
-        out_core = self._tokens_to_output(x_core, padding_info, step)
+        out = self._tokens_to_output(x, padding_info, step)
 
-        assert list(out_core.shape[-2:]) == list(
+        assert list(out.shape[-2:]) == list(
             self.real_input_resolution
-        ), f"Output shape {out_core.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
+        ), f"Output shape {out.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
 
-        return out_core
+        return out
