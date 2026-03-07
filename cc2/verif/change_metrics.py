@@ -11,7 +11,7 @@ def change_metrics(
     all_truth: torch.Tensor,
     all_predictions: torch.Tensor,
     save_path: str,
-    tau: float = 0.02,  # threshold for "significant change"
+    tau: float = 0.05,  # threshold for "significant change"
 ):
     """
     Computes per-timestep change detection metrics:
