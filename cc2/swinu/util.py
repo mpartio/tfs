@@ -217,8 +217,8 @@ def _next_state(
         pred_clamped = ste_clamp(next_pred, True)
 
         next_gt = y[:, t : t + 1, ...]
-        if do_calib:
-            next_gt = model.preprocessor(x=next_gt)
+
+        _maybe_calibrate_input(model, input_state, do_calib)
 
         next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
         metrics["ss_mask_next"] = mask_next.float().mean()
@@ -472,12 +472,8 @@ def flow_roll_forecast(
             alpha_next = alphas[i + 1]
 
             # Modify the two flow channels in-place — no clone needed
-            step_forcing[:, T, -2, :, :] = x_alpha[
-                :, 0, 0, :, :
-            ]  # x_alpha (TCC is 1-channel)
-            step_forcing[:, T, -1, :, :] = float(
-                alpha
-            )  # alpha broadcast to spatial map
+            step_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]
+            step_forcing[:, T, -1, :, :] = float(alpha)
 
             with torch.no_grad():
                 tendency, _, _ = _forward_and_unpack(
