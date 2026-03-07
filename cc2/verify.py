@@ -27,6 +27,7 @@ from verif.composite_score import (
     plot_composite_bars,
     plot_component_contributions,
 )
+from verif.composite_score2 import compute_composite_v2, plot_component_bars_stacked
 from verif.ssim import ssim, plot_ssim
 from verif.hist import hist, plot_hist
 
@@ -551,10 +552,8 @@ if __name__ == "__main__":
         composite_score_values[s] = all_results[i]
 
     if len(composite_score_values.keys()) == len(composite_score_metrics):
-        composite_result = composite_score(labels, composite_score_values)
-        # plot_composite_bars(composite_result, save_path=args.save_path)
-        plot_component_contributions(composite_result, save_path=args.save_path)
-        print("Produced composite scores")
+        composite_result = compute_composite_v2(composite_score_values, lead_weights=None, save_path="runs/verification")
+        plot_component_bars_stacked(composite_result, save_path=args.save_path)
         print(composite_result)
     else:
         print("Not producing composite score: some scores not calculated")
