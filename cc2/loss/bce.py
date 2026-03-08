@@ -17,24 +17,16 @@ class BCELoss(nn.Module):
 
     def __init__(self, use_full_state: bool = True, eps: float = 1e-4):
         super().__init__()
-        self.use_full_state = use_full_state
         self.eps = eps
 
     def forward(
         self,
-        y_pred_delta: torch.Tensor,
-        y_true_delta: torch.Tensor,
         y_pred_full: torch.Tensor,
         y_true_full: torch.Tensor,
         **kwargs,
     ):
-        if self.use_full_state:
-            p = y_pred_full.float()
-            y = y_true_full.float()
-        else:
-            p = y_pred_delta.float()
-            y = y_true_delta.float()
-
+        p = y_pred_full.float()
+        y = y_true_full.float()
         p = p.clamp(self.eps, 1.0 - self.eps)
         y = y.clamp(self.eps, 1.0 - self.eps)
 
