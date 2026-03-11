@@ -18,12 +18,6 @@ from verif.change_metrics import (
     # plot_change_prf_timeseries,
     plot_change_corr_stationarity_timeseries,
 )
-from verif.composite_score import (
-    composite_score,
-    plot_composite_bars,
-    plot_component_contributions,
-)
-from verif.composite_score2 import compute_composite_v2, plot_component_bars_stacked
 from verif.final_composite_score import compute_final_composite, plot_final_composite
 from verif.genesis_lysis import genesis_lysis, plot_genesis_lysis
 from verif.hist import hist, plot_hist
@@ -521,31 +515,6 @@ if __name__ == "__main__":
 
         all_results.append(results)
         results_by_score[score] = results
-
-    composite_score_metrics = [
-        "mae",
-        "fss",
-        "variance_ratio",
-        "highk_power_ratio",
-        "change_metrics",
-    ]
-
-    composite_score_values = {}
-    for s in composite_score_metrics:
-        if s not in args.score:
-            break
-
-        i = args.score.index(s)
-        composite_score_values[s] = all_results[i]
-
-    if len(composite_score_values.keys()) == len(composite_score_metrics):
-        # Front-weight early leads; exclude t=0 (trivially perfect for all models)
-        lead_weights = {1: 4, 2: 3, 3: 2, 4: 2, 5: 1, 6: 1, 7: 1, 8: 1}
-        composite_result = compute_composite_v2(composite_score_values, lead_weights=lead_weights, save_path=args.save_path)
-        plot_component_bars_stacked(composite_result, save_path=args.save_path)
-        print(composite_result)
-    else:
-        print("Not producing composite score: some scores not calculated")
 
     final_composite_metrics = ["mae", "fss", "genesis_lysis"]
     if all(metric in results_by_score for metric in final_composite_metrics):
