@@ -37,7 +37,7 @@ import argparse
 import math
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -143,11 +143,17 @@ def compute_final_composite(
     if cfg is None:
         cfg = FinalCompositeConfig()
 
-    models = set()
+    models_per_df = []
     for df in (mae_df, fss_df, genesis_df):
-        if not df.empty and "model" in df.columns:
-            models |= set(df["model"].dropna().unique().tolist())
-    models = sorted(models)
+        if df.empty or "model" not in df.columns:
+            models_per_df.append(set())
+        else:
+            models_per_df.append(set(df["model"].dropna().unique().tolist()))
+
+    if any(not models for models in models_per_df):
+        raise ValueError("MAE, FSS, and genesis/lysis tables must all contain model data")
+
+    models = sorted(set.intersection(*models_per_df))
 
     if not models:
         raise ValueError("No models found across the provided metric tables")
@@ -233,6 +239,14 @@ def compute_final_composite(
                 component_values[k] * component_weights[k] for k in available
             ) / weight_sum
 
+        pixel_contrib = s_pixel * cfg.pixel_weight if np.isfinite(s_pixel) else float("nan")
+        spatial_contrib = (
+            s_spatial * cfg.spatial_weight if np.isfinite(s_spatial) else float("nan")
+        )
+        genesis_contrib = (
+            s_genesis * cfg.genesis_weight if np.isfinite(s_genesis) else float("nan")
+        )
+
         rows.append(
             {
                 "model": model,
@@ -246,6 +260,9 @@ def compute_final_composite(
                 "fss": fss_value,
                 "genesis_csi": genesis_csi,
                 "lysis_csi": lysis_csi,
+                "C_pixel": pixel_contrib,
+                "C_spatial": spatial_contrib,
+                "C_genesis": genesis_contrib,
                 "used_pixel_weight": cfg.pixel_weight if np.isfinite(s_pixel) else 0.0,
                 "used_spatial_weight": cfg.spatial_weight if np.isfinite(s_spatial) else 0.0,
                 "used_genesis_weight": cfg.genesis_weight if np.isfinite(s_genesis) else 0.0,
@@ -260,34 +277,43 @@ def plot_final_composite(df: pd.DataFrame, save_path: str) -> None:
     os.makedirs(save_path, exist_ok=True)
     plot_df = df.sort_values("composite", ascending=True)
 
-    fig, ax = plt.subplots(figsize=(10, max(4, 0.45 * len(plot_df))))
+    fig, ax = plt.subplots(figsize=(11, max(4, 0.55 * len(plot_df))))
     y = np.arange(len(plot_df))
 
-    ax.barh(y, plot_df["S_genesis"], color="#2a9d8f", alpha=0.85, label="Genesis/Lysis")
-    ax.barh(y, plot_df["S_spatial"], left=plot_df["S_genesis"].fillna(0.0), color="#e9c46a", alpha=0.85, label="Spatial")
+    c_genesis = plot_df["C_genesis"].fillna(0.0)
+    c_spatial = plot_df["C_spatial"].fillna(0.0)
+    c_pixel = plot_df["C_pixel"].fillna(0.0)
+
+    ax.barh(y, c_genesis, color="#0B6E4F", alpha=0.95, label="Genesis/Lysis")
     ax.barh(
         y,
-        plot_df["S_pixel"],
-        left=(plot_df["S_genesis"].fillna(0.0) + plot_df["S_spatial"].fillna(0.0)),
-        color="#f4a261",
-        alpha=0.85,
+        c_spatial,
+        left=c_genesis,
+        color="#D17A22",
+        alpha=0.95,
+        label="Spatial",
+    )
+    ax.barh(
+        y,
+        c_pixel,
+        left=(c_genesis + c_spatial),
+        color="#B33C2E",
+        alpha=0.95,
         label="Pixel",
     )
 
-    ax.scatter(
-        plot_df["composite"],
-        y,
-        color="black",
-        s=36,
-        zorder=3,
-        label="Composite",
-    )
     ax.set_yticks(y)
     ax.set_yticklabels(plot_df["model"])
-    ax.set_xlabel("Score")
+    ax.set_xlabel("Weighted contribution")
     ax.set_title("Final Composite: Pixel + Spatial + Genesis/Lysis")
     ax.grid(True, axis="x", alpha=0.3)
     ax.legend(loc="lower right")
+
+    x_pad = max(float(plot_df["composite"].max()) * 0.015, 0.005)
+    for yi, score in zip(y, plot_df["composite"]):
+        ax.text(score + x_pad, yi, f"{score:.3f}", va="center", ha="left", fontsize=10)
+
+    ax.set_xlim(0, float(plot_df["composite"].max()) + 6 * x_pad)
     fig.tight_layout()
     fig.savefig(os.path.join(save_path, "final_composite_score.png"), dpi=200)
     plt.close(fig)

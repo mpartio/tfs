@@ -13,10 +13,6 @@ from verif.fss import fss, plot_fss
 from verif.error_spread import error_spread, plot_error_spread
 from verif.variance_ratio import variance_ratio, plot_variance_ratio
 from verif.highk_power_ratio import highk_power_ratio, plot_highk_power_ratio
-from verif.spectral_coherence import (
-    spectral_coherence_bands,
-    plot_spectral_coherence_bands,
-)
 from verif.change_metrics import (
     change_metrics,
     # plot_change_prf_timeseries,
@@ -30,7 +26,6 @@ from verif.composite_score import (
 from verif.composite_score2 import compute_composite_v2, plot_component_bars_stacked
 from verif.final_composite_score import compute_final_composite, plot_final_composite
 from verif.genesis_lysis import genesis_lysis, plot_genesis_lysis
-from verif.ssim import ssim, plot_ssim
 from verif.hist import hist, plot_hist
 
 
@@ -52,11 +47,9 @@ def get_args():
             "fss",
             "variance_ratio",
             "highk_power_ratio",
-            "spectral_coherence",
             "change_metrics",
             "genesis_lysis",
             "hist",
-            "ssim",
         ],
         help="Score to produce",
     )
@@ -504,17 +497,6 @@ if __name__ == "__main__":
             print(results)
             plot_highk_power_ratio(results, args.save_path)
 
-        elif score == "spectral_coherence":
-            if args.plot_only:
-                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
-            else:
-                results = spectral_coherence_bands(
-                    labels, all_truth, all_predictions, args.save_path
-                )
-
-            print(results)
-            plot_spectral_coherence_bands(results, args.save_path)
-
         elif score == "change_metrics":
             if args.plot_only:
                 results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
@@ -526,14 +508,6 @@ if __name__ == "__main__":
             print(results)
             # plot_change_prf_timeseries(results, args.save_path)
             plot_change_corr_stationarity_timeseries(results, args.save_path)
-
-        elif score == "ssim":
-            if args.plot_only:
-                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
-            else:
-                results = ssim(labels, all_truth, all_predictions, args.save_path)
-            plot_ssim(results, args.save_path)
-            print(results)
 
         elif score == "genesis_lysis":
             if args.plot_only:
@@ -553,9 +527,7 @@ if __name__ == "__main__":
         "fss",
         "variance_ratio",
         "highk_power_ratio",
-        "spectral_coherence",
         "change_metrics",
-        "ssim",
     ]
 
     composite_score_values = {}
