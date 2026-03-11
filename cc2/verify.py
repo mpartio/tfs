@@ -28,6 +28,8 @@ from verif.composite_score import (
     plot_component_contributions,
 )
 from verif.composite_score2 import compute_composite_v2, plot_component_bars_stacked
+from verif.final_composite_score import compute_final_composite, plot_final_composite
+from verif.genesis_lysis import genesis_lysis, plot_genesis_lysis
 from verif.ssim import ssim, plot_ssim
 from verif.hist import hist, plot_hist
 
@@ -52,6 +54,7 @@ def get_args():
             "highk_power_ratio",
             "spectral_coherence",
             "change_metrics",
+            "genesis_lysis",
             "hist",
             "ssim",
         ],
@@ -422,6 +425,7 @@ if __name__ == "__main__":
         all_truth, all_predictions, all_dates = prepare_data(args)
 
     all_results = []
+    results_by_score = {}
 
     labels = get_labels(args)
 
@@ -531,7 +535,18 @@ if __name__ == "__main__":
             plot_ssim(results, args.save_path)
             print(results)
 
+        elif score == "genesis_lysis":
+            if args.plot_only:
+                results = pd.read_csv(f"{args.save_path}/results/{score}.csv")
+            else:
+                results = genesis_lysis(
+                    labels, all_truth, all_predictions, args.save_path
+                )
+            plot_genesis_lysis(results, args.save_path)
+            print(results)
+
         all_results.append(results)
+        results_by_score[score] = results
 
     composite_score_metrics = [
         "mae",
@@ -552,11 +567,31 @@ if __name__ == "__main__":
         composite_score_values[s] = all_results[i]
 
     if len(composite_score_values.keys()) == len(composite_score_metrics):
-        composite_result = compute_composite_v2(composite_score_values, lead_weights=None, save_path="runs/verification")
+        # Front-weight early leads; exclude t=0 (trivially perfect for all models)
+        lead_weights = {1: 4, 2: 3, 3: 2, 4: 2, 5: 1, 6: 1, 7: 1, 8: 1}
+        composite_result = compute_composite_v2(composite_score_values, lead_weights=lead_weights, save_path=args.save_path)
         plot_component_bars_stacked(composite_result, save_path=args.save_path)
         print(composite_result)
     else:
         print("Not producing composite score: some scores not calculated")
+
+    final_composite_metrics = ["mae", "fss", "genesis_lysis"]
+    if all(metric in results_by_score for metric in final_composite_metrics):
+        lead_weights = {1: 4, 2: 3, 3: 2, 4: 2, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1, 12: 1}
+        final_composite_result = compute_final_composite(
+            results_by_score["mae"],
+            results_by_score["fss"],
+            results_by_score["genesis_lysis"],
+            cfg=None,
+            lead_weights=lead_weights,
+        )
+        final_composite_result.to_csv(
+            f"{args.save_path}/results/final_composite_scores.csv", index=False
+        )
+        plot_final_composite(final_composite_result, f"{args.save_path}/figures")
+        print(final_composite_result)
+    else:
+        print("Not producing final composite score: mae, fss, and genesis_lysis are required")
 
     if args.plot_only is False:
         plot_stamps(labels, all_truth, all_predictions, all_dates, args.save_path)
