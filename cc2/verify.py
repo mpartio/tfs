@@ -15,8 +15,7 @@ from verif.variance_ratio import variance_ratio, plot_variance_ratio
 from verif.highk_power_ratio import highk_power_ratio, plot_highk_power_ratio
 from verif.change_metrics import (
     change_metrics,
-    # plot_change_prf_timeseries,
-    plot_change_corr_stationarity_timeseries,
+    plot_change_prf_timeseries,
 )
 from verif.final_composite_score import compute_final_composite, plot_final_composite
 from verif.genesis_lysis import genesis_lysis, plot_genesis_lysis
@@ -500,8 +499,7 @@ if __name__ == "__main__":
                 )
 
             print(results)
-            # plot_change_prf_timeseries(results, args.save_path)
-            plot_change_corr_stationarity_timeseries(results, args.save_path)
+            plot_change_prf_timeseries(results, args.save_path)
 
         elif score == "genesis_lysis":
             if args.plot_only:
