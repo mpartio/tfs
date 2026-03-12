@@ -401,6 +401,7 @@ def flow_roll_forecast(
     num_inference_steps: int = 4,
     flow_warm_start: bool = True,
     warm_start_alpha: float = 0.4,
+    init_noise_sigma: float = 1.0,
     eta: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -418,6 +419,7 @@ def flow_roll_forecast(
         flow_warm_start     : if True, start from smooth pred at warm_start_alpha
                               instead of pure noise at alpha=1.0
         warm_start_alpha    : noise level used as starting point for warm-start
+        init_noise_sigma    : scale factor for initial Gaussian noise
     """
     x, y = data
     B, T, C_data, H, W = x.shape
@@ -459,7 +461,7 @@ def flow_roll_forecast(
             ) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
         else:
             alpha_init = 1.0
-            x_alpha = torch.randn_like(current_state)
+            x_alpha = init_noise_sigma * torch.randn_like(current_state)
 
         # DDIM denoising loop: iterate from alpha_init down to near 0
         alphas = torch.linspace(
