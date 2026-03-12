@@ -62,6 +62,8 @@ class cc2module(L.LightningModule):
         use_flow_matching: bool = False,
         num_inference_steps: int = 4,
         flow_warm_start: bool = True,
+        warm_start_alpha: float = 0.4,
+        flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
     ):
         super().__init__()
@@ -461,6 +463,8 @@ class cc2module(L.LightningModule):
                 self.hparams.rollout_length,
                 num_inference_steps=self.hparams.num_inference_steps,
                 flow_warm_start=self.hparams.flow_warm_start,
+                warm_start_alpha=self.hparams.warm_start_alpha,
+                init_noise_sigma=self.hparams.flow_init_noise_sigma,
                 eta=self.hparams.flow_eta,
             )
         else:
