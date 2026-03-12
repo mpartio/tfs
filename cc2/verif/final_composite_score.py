@@ -89,9 +89,9 @@ def _ideal_one_log_gauss(r: float, sigma_log: float) -> float:
 
 @dataclass
 class FinalCompositeConfig:
-    pixel_weight: float = 0.20
-    spatial_weight: float = 0.30
-    genesis_weight: float = 0.50
+    pixel_weight: float = 0.15
+    spatial_weight: float = 0.50
+    genesis_weight: float = 0.35
     mae_sigma_ratio: float = 0.35
     genesis_event_weighted: bool = True
     fss_category: Optional[str] = None
@@ -340,9 +340,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--out_csv", default="results/final_composite_scores.csv")
     parser.add_argument("--lead_weights", default=None, help="e.g. 1:1,2:1,3:0.8,4:0.6")
     parser.add_argument("--fss_category", default=None)
-    parser.add_argument("--pixel_weight", type=float, default=0.20)
-    parser.add_argument("--spatial_weight", type=float, default=0.30)
-    parser.add_argument("--genesis_weight", type=float, default=0.50)
+    parser.add_argument("--pixel_weight", type=float, default=0.15)
+    parser.add_argument("--spatial_weight", type=float, default=0.50)
+    parser.add_argument("--genesis_weight", type=float, default=0.35)
     parser.add_argument("--mae_sigma_ratio", type=float, default=0.35)
     parser.add_argument(
         "--genesis_pair_prefixes",
