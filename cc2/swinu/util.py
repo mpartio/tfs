@@ -218,7 +218,7 @@ def _next_state(
 
         next_gt = y[:, t : t + 1, ...]
 
-        _maybe_calibrate_input(model, input_state, do_calib)
+        _maybe_calibrate_input(model, next_gt, do_calib)
 
         next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
         metrics["ss_mask_next"] = mask_next.float().mean()
