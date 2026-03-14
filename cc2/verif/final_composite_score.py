@@ -80,9 +80,11 @@ def _avg_with_optional_weights(
     return _weighted_mean(df[value_col], df[weight_col])
 
 
-def _ideal_one_log_gauss(r: float, sigma_log: float) -> float:
+def _one_sided_log_gauss(r: float, sigma_log: float) -> float:
     if np.isnan(r) or r <= 0:
         return float("nan")
+    if r <= 1.0:
+        return 1.0
     z = math.log(r) / max(1e-8, sigma_log)
     return float(math.exp(-(z * z)))
 
@@ -190,9 +192,10 @@ def compute_final_composite(
         else:
             mae_value = _safe_mean(m_mae["mae"])
 
-        # Lower MAE is better. Use a smooth ratio-to-reference score.
+        # Lower MAE is better. Matching or beating the reference gets full score;
+        # worse-than-reference decays smoothly on a log scale.
         mae_ratio = mae_value / mae_ref if np.isfinite(mae_value) and mae_ref > 0 else np.nan
-        s_pixel = _ideal_one_log_gauss(mae_ratio, cfg.mae_sigma_ratio)
+        s_pixel = _one_sided_log_gauss(mae_ratio, cfg.mae_sigma_ratio)
 
         m_fss = fss_df[fss_df["model"] == model].copy()
         if cfg.fss_category and "category" in m_fss.columns:
