@@ -53,7 +53,7 @@ class cc2module(L.LightningModule):
         ss_pred_min: float = 0.0,
         ss_pred_max: float = 1.0,
         freeze_layers: list[str] = [],
-        loss_fn: Callable | nn.Module | None = None,
+        loss_fn: nn.Module | None = None,
         test_output_directory: str | None = None,
         use_rollout_weighting: bool = False,
         use_statistics_from_checkpoint: bool = True,
@@ -61,8 +61,12 @@ class cc2module(L.LightningModule):
         use_obs_head: bool = False,
         obs_head_base_channels: int = 64,
         use_obs_head_skip: bool = False,
+        obs_head_skip_dim: int = 1,
+        obs_head_skip_ctx_feat: int = 32,
         use_logit_calibration: bool = False,
         use_obs_deep_net: bool = False,
+        preprocessor: Callable | None = None,
+        use_obs_head_dilation: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -95,11 +99,17 @@ class cc2module(L.LightningModule):
                 "ss_pred_max",
                 "use_obs_head",
                 "use_obs_head_skip",
+                "obs_head_skip_dim",
                 "obs_head_base_channels",
                 "use_logit_calibration",
                 "use_obs_deep_net",
+                "obs_head_skip_ctx_feat",
+                "use_obs_head_dilation",
             ]
         }
+
+        # hparams serializes values to dict, so assign preprocessor here manually
+        model_kwargs["preprocessor"] = preprocessor
 
         self.model_kwargs = model_kwargs
 
