@@ -480,14 +480,14 @@ class cc2module(L.LightningModule):
 
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
-        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1))
+        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1).cpu())
         truth = torch.concatenate((analysis_time, data[1]), dim=1)
-        self.test_truth.append(truth)
+        self.test_truth.append(truth.cpu())
 
         tendencies = outs["tendencies"]
         predictions = outs["predictions"]
         predictions = torch.concatenate((analysis_time, predictions), dim=1)
-        self.test_predictions.append(predictions)
+        self.test_predictions.append(predictions.cpu())
 
     def predict_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
