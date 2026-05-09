@@ -484,6 +484,7 @@ class cc2DataModule(L.LightningDataModule):
         test_end: str | None = None,
         predict_start: str | None = None,
         predict_end: str | None = None,
+        test_time_stride: int | None = None,
         seed: int = 0,
         batch_size: int = 32,
         num_workers: int = 6,
@@ -605,6 +606,21 @@ class cc2DataModule(L.LightningDataModule):
             t1 = np.datetime64(self.hparams.test_end)
 
             test_mask = (date_starts >= t0) & (date_starts < t1)
+
+            if self.hparams.test_time_stride is not None:
+                stride = self.hparams.test_time_stride
+                # analysis time = last history step = window_start + (history_length-1) hours
+                analysis_dates = date_starts + np.timedelta64(ds_full.history_length - 1, "h")
+                analysis_hours = (
+                    analysis_dates.astype("datetime64[h]").astype(np.int64) % 24
+                )
+                test_mask = test_mask & (analysis_hours % stride == 0)
+                rank_zero_info(
+                    "test_time_stride={}: keeping analysis times at 00/{:02d}/{:02d}/... UTC".format(
+                        stride, stride, stride * 2
+                    )
+                )
+
             test_indices = valid_pos[test_mask]
 
             rank_zero_info(
