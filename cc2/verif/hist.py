@@ -31,7 +31,7 @@ def hist(
               }
         )
     print(results)
-    torch.save(results, f"{save_path}/results/hist.pt", weights_only=False)
+    torch.save(results, f"{save_path}/results/hist.pt")
 
     return results
 

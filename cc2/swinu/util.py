@@ -509,3 +509,81 @@ def flow_roll_forecast(
     }
 
     return None, out
+
+
+def rf_roll_forecast(
+    model: nn.Module,
+    data: list,
+    forcing: torch.Tensor,
+    n_step: int,
+    num_inference_steps: int = 16,
+    init_noise_sigma: float = 1.0,
+) -> Dict[str, torch.Tensor]:
+    """
+    Autoregressive forecast with Rectified Flow (Euler) inference.
+
+    The model is trained to predict velocity v = z - y (noise minus clean).
+    Inference integrates the ODE dx/dt = v from alpha=1 (pure noise) to alpha=0 (clean)
+    using uniform Euler steps: x_{t-dt} = x_t - v * dt, dt = 1/num_inference_steps.
+
+    forcing must have 2 extra channels at the end (x_alpha, alpha_map) that are
+    all-zero on entry; this function fills them during the integration loop.
+    """
+    x, y = data
+    B, T, C_data, H, W = x.shape
+
+    current_state = x[:, -1, ...].unsqueeze(1)
+    previous_state = x[:, -2, ...].unsqueeze(1)
+
+    all_predictions = []
+    all_tendencies = []
+
+    n_calib_steps = 2
+    dt = 1.0 / num_inference_steps
+
+    for t in range(n_step):
+        do_calib = t < n_calib_steps
+        step_forcing = forcing[:, t : t + T + 1, ...].clone()
+
+        input_state = torch.cat([previous_state, current_state], dim=1)
+        input_state = _maybe_calibrate_input(model, input_state, do_calib)
+
+        # Start from pure noise
+        x_alpha = init_noise_sigma * torch.randn_like(current_state)
+
+        # Euler integration: alpha goes from 1 → 0 in num_inference_steps steps.
+        # The model predicts velocity v = z - y_true (pointing from data to noise),
+        # so the backward (denoising) step is: x_{alpha-dt} = x_alpha - v * dt.
+        # After K steps, x_alpha ≈ y_true (the next clean state, in absolute terms).
+        alphas = torch.linspace(1.0, 0.0, num_inference_steps + 1, device=x.device)
+
+        for i in range(num_inference_steps):
+            alpha = alphas[i]
+
+            step_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]
+            step_forcing[:, T, -1, :, :] = float(alpha)
+
+            with torch.no_grad():
+                velocity, _, _ = _forward_and_unpack(
+                    model, input_state, step_forcing, t
+                )
+
+            # Euler step: integrate backward along the velocity field
+            x_alpha = x_alpha - velocity * dt
+
+        # x_alpha ≈ y_true (absolute next state) after integration
+        x1_hat = x_alpha.clamp(0.0, 1.0)
+        tendency_out = (x1_hat - current_state).detach()
+
+        all_predictions.append(x1_hat.detach())
+        all_tendencies.append(tendency_out)
+
+        previous_state = current_state
+        current_state = ste_clamp(x1_hat, False)
+
+    out = {
+        "tendencies": torch.cat(all_tendencies, dim=1),
+        "predictions": torch.cat(all_predictions, dim=1),
+    }
+
+    return None, out

@@ -110,15 +110,14 @@ def interp1d_torch(x, xp, fp):
     return result.reshape(*original_shape, len(x))
 
 
-def calculate_psd(data: torch.Tensor):
+def calculate_psd(data: torch.Tensor, batch_size: int = 32):
     data = data.squeeze()
     B, T, nx, ny = data.shape
-    device, dtype = data.device, data.dtype
-    window = _hann2d(nx, ny, device, dtype, periodic=True)
+    # Always run on CPU to avoid OOM with large datasets
+    cpu = torch.device("cpu")
+    dtype = data.dtype
+    window = _hann2d(nx, ny, cpu, dtype, periodic=True)
     win_power = (window**2).sum()
-
-    # d = data.reshape(-1, nx, ny) * window
-    d = data * window
 
     dx, dy = infer_spacing_from_original(
         nx_down=nx,
@@ -130,26 +129,34 @@ def calculate_psd(data: torch.Tensor):
         periodic=False,
     )
 
-    F = torch.fft.fft2(d, dim=(-2, -1), norm="ortho")
-    F = torch.fft.fftshift(F, dim=(-2, -1))
-    P2 = F.real**2 + F.imag**2
-
-    kx = torch.fft.fftfreq(nx, d=dx, device=device, dtype=dtype)
-    ky = torch.fft.fftfreq(ny, d=dy, device=device, dtype=dtype)
+    kx = torch.fft.fftfreq(nx, d=dx, device=cpu, dtype=dtype)
+    ky = torch.fft.fftfreq(ny, d=dy, device=cpu, dtype=dtype)
     kx = torch.fft.fftshift(kx)
     ky = torch.fft.fftshift(ky)
-
-    # axis Nyquist in km^-1 (smallest resolvable scale = 2*min(dx,dy))
     k_max_axis = min(0.5 / dx, 0.5 / dy)
-    k, Pk = _radial_bin(kx, ky, P2, k_max=k_max_axis)
 
-    nz = (k > 0) & (k <= k_max_axis)  # enforce scale >= 2*min(dx,dy)
-    k = k[nz]
-    Pk = Pk[:, :, nz]
+    Pk_accum = None
+    n_batches = 0
+    for start in range(0, B, batch_size):
+        chunk = data[start : start + batch_size].to(cpu)
+        d = chunk * window
+        F = torch.fft.fft2(d, dim=(-2, -1), norm="ortho")
+        F = torch.fft.fftshift(F, dim=(-2, -1))
+        P2 = F.real**2 + F.imag**2
+        k, Pk = _radial_bin(kx, ky, P2, k_max=k_max_axis)
+        if Pk_accum is None:
+            Pk_accum = Pk.sum(dim=0)
+            k_out = k
+        else:
+            Pk_accum = Pk_accum + Pk.sum(dim=0)
+        n_batches += chunk.shape[0]
 
-    wavelength = 1.0 / k
-    Pk = Pk / (win_power / (nx * ny))
-    Pk_mean = Pk.mean(dim=0)
+    nz = (k_out > 0) & (k_out <= k_max_axis)
+    k_out = k_out[nz]
+    Pk_mean = Pk_accum[:, nz] / n_batches
+
+    wavelength = 1.0 / k_out
+    Pk_mean = Pk_mean / (win_power / (nx * ny))
 
     return wavelength, wavelength, Pk_mean
 
@@ -158,7 +165,6 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
     _ensure_dir(os.path.join(save_path, "results"))
 
     truth = all_truth[0]
-    truth = truth.to(device)
     # Remove initialization time as it skewes the results
     truth = truth[:, 1:, ...]
 
@@ -172,7 +178,7 @@ def psd(all_truth: torch.tensor, all_predictions: torch.tensor, save_path: str):
         # Remove initialization time as it skewes the results
         prediction = prediction[:, 1:, ...]
 
-        sx_p, sy_p, psd_p = calculate_psd(prediction.to(device))
+        sx_p, sy_p, psd_p = calculate_psd(prediction)
         predicted_psds.append({"sx": sx_p, "sy": sy_p, "psd": psd_p})
 
     torch.save(observed_psd, f"{save_path}/results/observed_psd.pt")

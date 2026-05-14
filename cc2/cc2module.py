@@ -60,6 +60,7 @@ class cc2module(L.LightningModule):
         force_frozen_backbone_to_eval: bool = False,
         preprocessor: Callable | None = None,
         use_flow_matching: bool = False,
+        use_rectified_flow: bool = False,
         num_inference_steps: int = 4,
         flow_warm_start: bool = True,
         warm_start_alpha: float = 0.4,
@@ -317,8 +318,11 @@ class cc2module(L.LightningModule):
         forcing : [B, T+n_step, C_force, H, W]  – original forcing (no flow channels)
         y       : [B, n_step,   C_data,  H, W]  – clean future targets
 
-        Returns: [B, T+n_step, C_force+2, H, W] where the last 2 channels at each
-        future time slot carry (x_alpha, alpha_map); history slots carry zeros.
+        Returns:
+            extended_forcing : [B, T+n_step, C_force+2, H, W] where the last 2 channels
+                               at each future slot carry (x_alpha, alpha_map); history=0.
+            z                : [B, n_step, C_data, H, W] — the noise sample used to build
+                               x_alpha, returned so callers can compute velocity targets.
         """
         B, T_total, C_force, H, W = forcing.shape
         _, n_step, C_data, _, _ = y.shape
@@ -342,14 +346,19 @@ class cc2module(L.LightningModule):
             ]  # x_alpha  (TCC is single-channel)
             extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)  # alpha_map
 
-        return torch.cat([forcing, extra], dim=2)  # [B, T+n_step, C_force+2, H, W]
+        return torch.cat([forcing, extra], dim=2), z  # [B, T+n_step, C_force+2, H, W]
 
     def training_step(self, batch, batch_idx):
         data, forcing = batch
 
         if self.hparams.use_flow_matching:
-            _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            x, y = data
+            forcing, z = self._build_flow_forcing(forcing, y)
+            if self.hparams.use_rectified_flow:
+                # Velocity target: model should predict (z - y) per step
+                # Substitute y in data with the velocity target so _compute_step_loss
+                # compares tendency (model output) vs (z - y).
+                data = (x, z - y)
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -401,8 +410,10 @@ class cc2module(L.LightningModule):
         data, forcing = batch
 
         if self.hparams.use_flow_matching:
-            _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            x, y = data
+            forcing, z = self._build_flow_forcing(forcing, y)
+            if self.hparams.use_rectified_flow:
+                data = (x, z - y)
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -447,7 +458,7 @@ class cc2module(L.LightningModule):
         data, forcing, dates = batch
 
         if self.hparams.use_flow_matching:
-            from swinu.util import flow_roll_forecast
+            from swinu.util import flow_roll_forecast, rf_roll_forecast
 
             # Pre-allocate the 2 extra flow channels (filled during denoising)
             B, T_total, C_force, H, W = forcing.shape
@@ -456,17 +467,27 @@ class cc2module(L.LightningModule):
             )
             flow_forcing = torch.cat([forcing, extra], dim=2)
 
-            _, outs = flow_roll_forecast(
-                self.model,
-                data,
-                flow_forcing,
-                self.hparams.rollout_length,
-                num_inference_steps=self.hparams.num_inference_steps,
-                flow_warm_start=self.hparams.flow_warm_start,
-                warm_start_alpha=self.hparams.warm_start_alpha,
-                init_noise_sigma=self.hparams.flow_init_noise_sigma,
-                eta=self.hparams.flow_eta,
-            )
+            if self.hparams.use_rectified_flow:
+                _, outs = rf_roll_forecast(
+                    self.model,
+                    data,
+                    flow_forcing,
+                    self.hparams.rollout_length,
+                    num_inference_steps=self.hparams.num_inference_steps,
+                    init_noise_sigma=self.hparams.flow_init_noise_sigma,
+                )
+            else:
+                _, outs = flow_roll_forecast(
+                    self.model,
+                    data,
+                    flow_forcing,
+                    self.hparams.rollout_length,
+                    num_inference_steps=self.hparams.num_inference_steps,
+                    flow_warm_start=self.hparams.flow_warm_start,
+                    warm_start_alpha=self.hparams.warm_start_alpha,
+                    init_noise_sigma=self.hparams.flow_init_noise_sigma,
+                    eta=self.hparams.flow_eta,
+                )
         else:
             _, outs = self._roll_forecast(
                 self.model,

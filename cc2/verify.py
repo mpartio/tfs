@@ -63,6 +63,12 @@ def get_args():
         default=0,
         help="Crop pixels from each side",
     )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Limit to first N samples (for quick testing)",
+    )
 
     args = parser.parse_args()
 
@@ -87,7 +93,7 @@ def get_labels(args):
     return labels
 
 
-def read_data_from_dir(file_path, truth_cache):
+def read_data_from_dir(file_path, truth_cache, max_samples=None):
     truth_file = f"{file_path}/truth.pt"
 
     if truth_cache is not None:
@@ -98,11 +104,15 @@ def read_data_from_dir(file_path, truth_cache):
             truth = torch.load(
                 truth_file, map_location=torch.device("cpu"), weights_only=True
             )
+            if max_samples is not None:
+                truth = truth[:max_samples]
             truth_cache[truth_file_real] = truth
     else:
         truth = torch.load(
             truth_file, map_location=torch.device("cpu"), weights_only=True
         )
+        if max_samples is not None:
+            truth = truth[:max_samples]
 
     prediction_files = [
         f"{file_path}/predictions_noo.pt",
@@ -119,17 +129,22 @@ def read_data_from_dir(file_path, truth_cache):
             weights_only=True,
         )
 
+        if max_samples is not None:
+            predictions = predictions[:max_samples]
+
         if "noo.pt" in file:
             print(f"Read NOO file {file}")
         break
     dates = torch.load(
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
+    if max_samples is not None:
+        dates = dates[:max_samples]
 
     return truth, predictions, dates
 
 
-def read_data(run_name, truth_cache=None):
+def read_data(run_name, truth_cache=None, max_samples=None):
     if "/" in run_name:
         run_dir = f"runs/{run_name}"
     else:
@@ -139,7 +154,7 @@ def read_data(run_name, truth_cache=None):
 
     file_path = f"{run_dir}/test-output"
 
-    truth, predictions, dates = read_data_from_dir(file_path, truth_cache)
+    truth, predictions, dates = read_data_from_dir(file_path, truth_cache, max_samples)
 
     assert (
         predictions.ndim == 5
@@ -282,10 +297,12 @@ def prepare_data(args):
 
     check_that_all_files_exist(args.run_name, args.path_name)
 
+    n = args.max_samples  # None means load all
+
     if args.run_name:
         for run_name in tqdm(args.run_name, desc="Reading data"):
 
-            truth, predictions, dates = read_data(run_name, truth_cache)
+            truth, predictions, dates = read_data(run_name, truth_cache, n)
 
             all_truth.append(truth)
             all_predictions.append(predictions)
@@ -294,13 +311,11 @@ def prepare_data(args):
     if args.path_name:
         for path_name in tqdm(args.path_name, desc="Reading data"):
 
-            truth, predictions, dates = read_data_from_dir(path_name, truth_cache)
+            truth, predictions, dates = read_data_from_dir(path_name, truth_cache, n)
 
             all_truth.append(truth)
             all_predictions.append(predictions)
             all_dates.append(dates)
-
-        # return all_truth, all_predictions, all_dates
 
     if len(all_dates) > 1:
         all_truth, all_predictions, all_dates = equalize_datasets(
