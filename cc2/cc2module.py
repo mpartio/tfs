@@ -65,6 +65,8 @@ class cc2module(L.LightningModule):
         warm_start_alpha: float = 0.4,
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
+        flow_alpha_a: float = 1.0,
+        flow_alpha_b: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -324,8 +326,18 @@ class cc2module(L.LightningModule):
         _, n_step, C_data, _, _ = y.shape
         T = T_total - n_step
 
-        # Sample one alpha per sample in the batch ~ Uniform(0, 1)
-        alpha = torch.rand(B, device=forcing.device)  # [B]
+        # Sample one alpha per sample in the batch.
+        # Defaults flow_alpha_a=flow_alpha_b=1.0 reproduce Uniform(0,1); any other
+        # pair selects a Beta(a,b) distribution (e.g. Beta(2,5) skews toward small α).
+        a, b = self.hparams.flow_alpha_a, self.hparams.flow_alpha_b
+        if a == 1.0 and b == 1.0:
+            alpha = torch.rand(B, device=forcing.device)  # [B]
+        else:
+            alpha = (
+                torch.distributions.Beta(a, b)
+                .sample((B,))
+                .to(device=forcing.device, dtype=forcing.dtype)
+            )
 
         # Corrupt target: x_alpha = (1-alpha)*y + alpha*z
         alpha_5d = alpha.view(B, 1, 1, 1, 1)
