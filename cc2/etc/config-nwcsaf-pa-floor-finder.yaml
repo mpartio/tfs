@@ -1,0 +1,189 @@
+# P-A floor-finder: Beta(2,5) α + MeanConservation, fine-tune from kinetic-creative.
+#
+# Tests whether biasing α-sampling toward the refinement regime (small α) plus a
+# small symmetric mean-conservation pressure shrinks the +0.026 bias at t+12
+# without regressing the metrics where cc2 currently wins (clear/overcast FSS,
+# high-k power retention, genesis/lysis CSI).
+#
+# Branches from kinetic-creative-k16-eta0p05-sig1p0/1 — short fine-tune, low lr,
+# everything else (loss skeleton, rollout, K, η) inherited from kinetic-creative.
+
+seed_everything: 42
+
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: 1
+  num_nodes: 1
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2_nwcsaf_pa_floor_finder
+      save_dir: ./mlruns
+      log_model: false
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_loss
+      save_last: true
+      save_top_k: 2
+      mode: min
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  max_steps: 5000
+  limit_val_batches: 0.25
+  val_check_interval: 0.25
+  log_every_n_steps: 100
+  enable_model_summary: false
+  accumulate_grad_batches: 4
+  gradient_clip_val: 1.0
+  inference_mode: true
+  use_distributed_sampler: true
+
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+
+    # Fine-tune optimiser: 5x lower lr than kinetic-creative (5e-6 → 1e-6)
+    # since we are nudging, not retraining
+    learning_rate: 1.0e-06
+    warmup_iterations: 100
+    weight_decay: 0.02
+
+    rollout_length: 1
+    branch_from_run: kinetic-creative-k16-eta0p05-sig1p0/1
+    use_gradient_checkpointing: true
+    model_family: swinu
+    use_scheduled_sampling: false
+    ss_pred_min: 0.0
+    ss_pred_max: 1.0
+    freeze_layers: []
+
+    loss_fn:
+      class_path: loss.combined.CombinedLoss
+      init_args:
+        losses:
+        # Inherit kinetic-creative's loss skeleton exactly...
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+        - class_path: loss.softfss.SoftFSSLoss
+          init_args:
+            thresholds: [0.0625, 0.5625, 0.9375]
+            window_sizes: [3, 6, 12]
+            tau: 0.015625
+            soften_true: false
+            threshold_weights: [0.5, 0.35, 0.15]
+            scale_weights: [0.5, 0.35, 0.15]
+            eps: 1.0e-08
+        # ...and add the new mean-conservation pressure (symmetric L1 on field mean).
+        - class_path: loss.mean_conservation.MeanConservationLoss
+          init_args:
+            one_sided_positive: false
+            use_full_state: true
+        weights: [1.0, 0.2, 0.10]
+        ramps: null
+        names: [bce, soft_fss, mean_cons]
+
+    test_output_directory: null
+    use_rollout_weighting: false
+    use_statistics_from_checkpoint: true
+    force_frozen_backbone_to_eval: false
+    preprocessor: null
+
+    # Flow-matching settings: keep kinetic-creative's K=16, η=0.05, no warm start
+    use_flow_matching: true
+    num_inference_steps: 16
+    flow_warm_start: false
+    flow_eta: 0.05
+
+    # The P-A lever: shift α from U(0,1) to Beta(2,5) — mean ≈ 0.286, mass on
+    # small α (clean-end / refinement regime).
+    flow_alpha_a: 2.0
+    flow_alpha_b: 5.0
+
+data:
+  data_path:
+  - /anemoi-data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_path: /anemoi-data/meps-const-v4.zarr
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  train_start: '2020-01-01'
+  train_end: '2024-01-01'
+  val_start: '2024-01-01'
+  val_end: '2025-01-01'
+  seed: 0
+  batch_size: 2
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+  normalization: null
+  apply_smoothing: false
+  data_options: {}
