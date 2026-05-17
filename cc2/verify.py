@@ -121,7 +121,6 @@ def read_data_from_dir(file_path, truth_cache):
         )
 
     prediction_files = [
-        f"{file_path}/predictions_noo.pt",
         f"{file_path}/predictions.pt",
     ]
 
@@ -135,9 +134,6 @@ def read_data_from_dir(file_path, truth_cache):
             weights_only=True,
         )
 
-        if "noo.pt" in file:
-            print(f"Read NOO file {file}")
-        break
     dates = torch.load(
         f"{file_path}/dates.pt", map_location=torch.device("cpu"), weights_only=True
     )
