@@ -254,7 +254,7 @@ class cc2module(L.LightningModule):
             self.run_number = int(os.environ.get("CC2_RUN_NUMBER", -1))
             self.run_dir = os.environ["CC2_RUN_DIR"]
 
-        if self.hparams.branch_from_run:
+        if self.trainer.state.stage == "train" and self.hparams.branch_from_run:
             if "/" in self.hparams.branch_from_run:
                 branch_run_dir = "runs/{}".format(self.hparams.branch_from_run)
             else:
