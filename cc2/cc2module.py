@@ -108,7 +108,6 @@ class cc2module(L.LightningModule):
 
         self.test_predictions = []
         self.test_truth = []
-        self.test_predictions_noo = []
         self.test_dates = []
 
         self.latest_val_tendencies = None
@@ -492,7 +491,9 @@ class cc2module(L.LightningModule):
 
         # We want to include the analysis time also
         analysis_time = data[0][:, -1, ...].unsqueeze(1)
-        self.test_dates.append(torch.concatenate((dates[0][:, -1:], dates[1]), dim=1).cpu())
+        self.test_dates.append(
+            torch.concatenate((dates[0][:, -1:], dates[1]), dim=1).cpu()
+        )
         truth = torch.concatenate((analysis_time, data[1]), dim=1)
         self.test_truth.append(truth.cpu())
 
@@ -504,7 +505,7 @@ class cc2module(L.LightningModule):
     def predict_step(self, batch, batch_idx):
         self.test_step(batch, batch_idx)
 
-    def _gather(self, predictions, truth, dates, prediction_noo):
+    def _gather(self, predictions, truth, dates):
         # Gather across all DDP ranks
         predictions = self.all_gather(predictions)
 
@@ -526,12 +527,7 @@ class cc2module(L.LightningModule):
             truth = truth.reshape(-1, *truth.shape[2:])
             truth = truth[sort_idx]
 
-        if len(predictions_noo):
-            predictions_noo = self.all_gather(predictions_noo)
-            predictions_noo = predictions_noo.reshape(-1, *predictions_noo.shape[2:])
-            predictions_noo = predictions_noo[sort_idx]
-
-        return predictions, truth, dates, predictions_noo
+        return predictions, truth, dates
 
     def _write_results_on_test_predict_end(self):
         def _write(tensor, filename):
@@ -553,9 +549,7 @@ class cc2module(L.LightningModule):
             truth = torch.concatenate(self.test_truth)
 
         if self.trainer.world_size > 1:
-            predictions, truth, dates, predictions_noo = self._gather(
-                predictions, truth, dates, predictions_noo
-            )
+            predictions, truth, dates = self._gather(predictions, truth, dates)
 
         # Only rank 0 writes to avoid duplicate writes
         if self.trainer.is_global_zero:
@@ -565,12 +559,6 @@ class cc2module(L.LightningModule):
                 _write(truth, f"{self.test_output_directory}/truth.pt")
 
             _write(dates, f"{self.test_output_directory}/dates.pt")
-
-            if len(self.test_predictions_noo):
-                predictions_noo = torch.concatenate(self.test_predictions_noo)
-                _write(
-                    predictions_noo, f"{self.test_output_directory}/predictions_noo.pt"
-                )
 
     def on_test_end(self):
         self._write_results_on_test_predict_end()
