@@ -163,12 +163,6 @@ def _build_input_state(
         return input_state, None, metrics
 
 
-def _maybe_calibrate_input(model, input_state: torch.Tensor, do_calib: bool):
-    if do_calib:
-        return model.preprocessor(x=input_state)
-    return input_state
-
-
 def _forward_and_unpack(model, input_state, step_forcing, t):
     out = model(input_state, step_forcing, t)
     return out, None, {}
@@ -202,7 +196,6 @@ def _next_state(
     training: bool,
     use_scheduled_sampling: bool,
     p_pred: float | None,
-    do_calib: bool,
 ):
     metrics = {}
 
@@ -217,8 +210,6 @@ def _next_state(
         pred_clamped = ste_clamp(next_pred, True)
 
         next_gt = y[:, t : t + 1, ...]
-
-        _maybe_calibrate_input(model, next_gt, do_calib)
 
         next_state = mask_next * pred_clamped + (1 - mask_next) * next_gt
         metrics["ss_mask_next"] = mask_next.float().mean()
@@ -312,11 +303,8 @@ def roll_forecast(
 
     metrics = {}
 
-    n_calib_steps = 2
-
     # Loop through each rollout step
     for t in range(n_step):
-        do_calib = t < n_calib_steps
         # Model always sees forcings two history times and one prediction time
         step_forcing = forcing[:, t : t + T + 1, ...]
 
@@ -339,8 +327,6 @@ def roll_forecast(
 
         # 2. Forward and unpack
 
-        input_state = _maybe_calibrate_input(model, input_state, do_calib)
-
         tendency, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
 
         next_pred = current_state + tendency
@@ -362,7 +348,6 @@ def roll_forecast(
             training=model.training,
             use_scheduled_sampling=use_scheduled_sampling,
             p_pred=p_pred,
-            do_calib=do_calib,
         )
         metrics.update(fb_metrics)
 
@@ -430,10 +415,7 @@ def flow_roll_forecast(
     all_predictions = []
     all_tendencies = []
 
-    n_calib_steps = 2
-
     for t in range(n_step):
-        do_calib = t < n_calib_steps
         # Clone once per temporal step; the flow channels are modified in-place each
         # denoising iteration — no further clones needed inside the loop.
         step_forcing = forcing[
@@ -441,7 +423,6 @@ def flow_roll_forecast(
         ].clone()  # [B, T+1, C_force+2, H, W]
 
         input_state = torch.cat([previous_state, current_state], dim=1)
-        input_state = _maybe_calibrate_input(model, input_state, do_calib)
 
         if flow_warm_start:
             # Smooth pass: flow channels are already zero from the pre-allocated tensor

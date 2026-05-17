@@ -289,11 +289,10 @@ class cc2model(nn.Module):
         )
 
         if config.preprocessor is not None:
-            self.preprocessor = config.preprocessor
-        else:
-            self.preprocessor = IdentityCalibrator()
+            print("Preprocessor deprecated")
 
-        print("Using preprocessor", self.preprocessor)
+        self.preprocessor = IdentityCalibrator()
+
 
     def patch_embedding(self, x, forcing):
         x_tokens, f_future = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
