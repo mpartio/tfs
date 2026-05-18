@@ -44,9 +44,9 @@ seed_everything: 42
 
 trainer:
   accelerator: auto
-  strategy: auto
-  devices: 1
-  num_nodes: 1
+  strategy: ddp_find_unused_parameters_true
+  devices: auto
+  num_nodes: 8
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
@@ -54,6 +54,7 @@ trainer:
       experiment_name: cc2_trustingradar_s2
       save_dir: ./mlruns
       log_model: false
+      prefix: ''
   callbacks:
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
@@ -71,15 +72,16 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
+  - class_path: lightning.pytorch.callbacks.TQDMProgressBar
+    init_args:
+      refresh_rate: 20
   max_steps: 15000
-  limit_val_batches: 0.25
+  limit_val_batches: 0.5
   val_check_interval: 0.25
   log_every_n_steps: 100
   enable_model_summary: false
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
-  inference_mode: true
-  use_distributed_sampler: true
 
 model:
   class_path: cc2module.cc2module
@@ -103,6 +105,8 @@ model:
     - 0.01
     - 0.1
 
+    # lr: 5e-6 — lower than S1's 7e-6 because S2 fine-tunes from a calibrated
+    # base (S1 best ckpt) rather than doing a regime change
     learning_rate: 5.0e-06
     warmup_iterations: 100
     weight_decay: 0.02
@@ -114,7 +118,7 @@ model:
     # SET THIS to S1's run dir before launching:
     branch_from_run: trusting-radar-s1/1
 
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
     model_family: swinu
     use_scheduled_sampling: false
     ss_pred_min: 0.0
@@ -175,7 +179,7 @@ model:
 
 data:
   data_path:
-  - /anemoi-data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr
   prognostic_params:
   - tcc
   forcing_params:
@@ -209,7 +213,7 @@ data:
   - r_700
   - r_850
   - r_925
-  static_forcing_path: /anemoi-data/meps-const-v4.zarr
+  static_forcing_path: ../data/meps-const-v4.zarr
   static_forcing_params:
   - z
   - lsm
@@ -222,10 +226,10 @@ data:
   val_start: '2024-01-01'
   val_end: '2025-01-01'
   seed: 0
-  batch_size: 2
-  num_workers: 4
+  batch_size: 1
+  num_workers: 2
   persistent_workers: true
-  prefetch_factor: 3
+  prefetch_factor: 2
   pin_memory: true
   normalization: null
   apply_smoothing: false
