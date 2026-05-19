@@ -67,6 +67,7 @@ class cc2module(L.LightningModule):
         flow_eta: float = 0.0,
         flow_alpha_a: float = 1.0,
         flow_alpha_b: float = 1.0,
+        flow_init_alpha: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -477,6 +478,7 @@ class cc2module(L.LightningModule):
                 warm_start_alpha=self.hparams.warm_start_alpha,
                 init_noise_sigma=self.hparams.flow_init_noise_sigma,
                 eta=self.hparams.flow_eta,
+                init_alpha=self.hparams.flow_init_alpha,
             )
         else:
             _, outs = self._roll_forecast(

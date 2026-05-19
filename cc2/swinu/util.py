@@ -388,6 +388,7 @@ def flow_roll_forecast(
     warm_start_alpha: float = 0.4,
     init_noise_sigma: float = 1.0,
     eta: float = 0.0,
+    init_alpha: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
@@ -441,8 +442,20 @@ def flow_roll_forecast(
                 1.0 - warm_start_alpha
             ) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
         else:
-            alpha_init = 1.0
-            x_alpha = init_noise_sigma * torch.randn_like(current_state)
+            # init_alpha defaults to 1.0 (pure noise — standard DDIM start). Override
+            # to skip the highest-α portion of the trajectory when the model was
+            # trained with α-distributions that under-sample α≈1 (e.g. Beta(2,5)) or
+            # when diagnosing whether the first DDIM step is the dominant source of
+            # smoothing on a U(0,1)-trained model.
+            alpha_init = init_alpha
+            # Scale noise variance to the chosen α: x_alpha = α·z + (1-α)·y, where
+            # y here is approximated by current_state (no smooth_pred — we want a
+            # principled init that respects the training x_alpha distribution).
+            noise = init_noise_sigma * torch.randn_like(current_state)
+            if init_alpha < 1.0:
+                x_alpha = (1.0 - init_alpha) * current_state + init_alpha * noise
+            else:
+                x_alpha = noise
 
         # DDIM denoising loop: iterate from alpha_init down to near 0
         alphas = torch.linspace(
