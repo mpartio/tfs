@@ -389,6 +389,7 @@ def flow_roll_forecast(
     init_noise_sigma: float = 1.0,
     eta: float = 0.0,
     init_alpha: float = 1.0,
+    alpha_schedule_rho: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
@@ -457,10 +458,21 @@ def flow_roll_forecast(
             else:
                 x_alpha = noise
 
-        # DDIM denoising loop: iterate from alpha_init down to near 0
-        alphas = torch.linspace(
-            alpha_init, 0.05, num_inference_steps + 1, device=x.device
-        )
+        # DDIM denoising loop: iterate from alpha_init down to near 0.
+        # alpha_schedule_rho controls the non-uniform spacing:
+        #   rho = 1.0 → linear (backward compatible with original behaviour)
+        #   rho > 1  → concentrate steps at low α (refinement regime); α drops
+        #              fast at the start of the trajectory, then dwells near 0.05
+        # Mechanism: t_warped = 1 - (1-t)^rho is concave-down for rho > 1, so
+        # linearly-spaced t produces α values clustered near the low end.
+        if alpha_schedule_rho == 1.0:
+            alphas = torch.linspace(
+                alpha_init, 0.05, num_inference_steps + 1, device=x.device
+            )
+        else:
+            t = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=x.device)
+            t_warped = 1.0 - (1.0 - t) ** alpha_schedule_rho
+            alphas = alpha_init - (alpha_init - 0.05) * t_warped
 
         x1_hat = current_state  # will be overwritten in first iteration
         for i in range(num_inference_steps):
