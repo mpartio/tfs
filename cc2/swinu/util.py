@@ -470,9 +470,12 @@ def flow_roll_forecast(
                 alpha_init, 0.05, num_inference_steps + 1, device=x.device
             )
         else:
-            t = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=x.device)
-            t_warped = 1.0 - (1.0 - t) ** alpha_schedule_rho
-            alphas = alpha_init - (alpha_init - 0.05) * t_warped
+            # NB: do not shadow outer `t` (rollout step counter); use `tau` here.
+            tau = torch.linspace(
+                0.0, 1.0, num_inference_steps + 1, device=x.device
+            )
+            tau_warped = 1.0 - (1.0 - tau) ** alpha_schedule_rho
+            alphas = alpha_init - (alpha_init - 0.05) * tau_warped
 
         x1_hat = current_state  # will be overwritten in first iteration
         for i in range(num_inference_steps):
