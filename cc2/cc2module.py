@@ -275,7 +275,7 @@ class cc2module(L.LightningModule):
         self._adv_u_idx = fp.index(u_name)
         self._adv_v_idx = fp.index(v_name)
 
-        ds = dm._full_dataset
+        ds = dm._get_or_create_full_dataset()
         all_params = list(ds.all_combined_params)
         u_global = all_params.index(u_name)
         v_global = all_params.index(v_name)
