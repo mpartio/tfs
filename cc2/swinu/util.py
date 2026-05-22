@@ -390,24 +390,31 @@ def flow_roll_forecast(
     eta: float = 0.0,
     init_alpha: float = 1.0,
     alpha_schedule_rho: float = 1.0,
+    has_advected_persistence: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
 
-    forcing must have 2 extra channels at the end (x_alpha, alpha_map) that are
-    all-zero on entry; this function fills them during the denoising loop.
+    Trailing forcing-channel layout at each future time slot:
+        (x_alpha, alpha_map [, advected_persistence])
+    The caller pre-fills advected_persistence; x_alpha and alpha_map are written
+    here each DDIM iteration. When `has_advected_persistence=True`, x_alpha/alpha_map
+    live at index -3/-2 instead of -2/-1.
 
     Args:
-        model               : the cc2model with use_flow_matching=True
-        data                : [x, y] where x is history [B, T, C, H, W]
-        forcing             : [B, T+n_step, C_force+2, H, W]  (last 2 channels = 0)
-        n_step              : number of autoregressive rollout steps
-        num_inference_steps : K denoising iterations per temporal step
-        flow_warm_start     : if True, start from smooth pred at warm_start_alpha
-                              instead of pure noise at alpha=1.0
-        warm_start_alpha    : noise level used as starting point for warm-start
-        init_noise_sigma    : scale factor for initial Gaussian noise
+        model                    : the cc2model with use_flow_matching=True
+        data                     : [x, y] where x is history [B, T, C, H, W]
+        forcing                  : [B, T+n_step, C_force+E, H, W]; E=2 or E=3
+        n_step                   : number of autoregressive rollout steps
+        num_inference_steps      : K denoising iterations per temporal step
+        flow_warm_start          : if True, start from smooth pred at warm_start_alpha
+                                   instead of pure noise at alpha=1.0
+        warm_start_alpha         : noise level used as starting point for warm-start
+        init_noise_sigma         : scale factor for initial Gaussian noise
+        has_advected_persistence : if True, layout has an extra trailing channel
     """
+    x_alpha_idx = -3 if has_advected_persistence else -2
+    alpha_map_idx = -2 if has_advected_persistence else -1
     x, y = data
     B, T, C_data, H, W = x.shape
 
@@ -482,9 +489,10 @@ def flow_roll_forecast(
             alpha = alphas[i]
             alpha_next = alphas[i + 1]
 
-            # Modify the two flow channels in-place — no clone needed
-            step_forcing[:, T, -2, :, :] = x_alpha[:, 0, 0, :, :]
-            step_forcing[:, T, -1, :, :] = float(alpha)
+            # Modify the two flow channels in-place — no clone needed.
+            # (advected_persistence channel, if present, was pre-filled by caller.)
+            step_forcing[:, T, x_alpha_idx, :, :] = x_alpha[:, 0, 0, :, :]
+            step_forcing[:, T, alpha_map_idx, :, :] = float(alpha)
 
             with torch.no_grad():
                 tendency, _, _ = _forward_and_unpack(

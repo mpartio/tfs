@@ -69,6 +69,11 @@ class cc2module(L.LightningModule):
         flow_alpha_b: float = 1.0,
         flow_init_alpha: float = 1.0,
         flow_alpha_schedule_rho: float = 1.0,
+        use_advected_persistence: bool = False,
+        advection_wind_level: str = "925",
+        advection_dt_seconds: float = 3 * 3600.0,
+        advection_grid_spacing_m: float = 5000.0,
+        advection_flip_v_axis: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -100,6 +105,7 @@ class cc2module(L.LightningModule):
                 "ss_pred_min",
                 "ss_pred_max",
                 "use_flow_matching",
+                "use_advected_persistence",
             ]
         }
 
@@ -209,12 +215,21 @@ class cc2module(L.LightningModule):
 
     def _extend_proj_force_for_flow(self, state_dict: dict) -> dict:
         """
-        When use_flow_matching=True the model's proj_force expects 2 extra input
-        channels (x_alpha and alpha_map). A checkpoint from before flow matching
-        has the smaller weight. Zero-extend it so load_state_dict works.
+        When use_flow_matching=True the model's proj_force expects extra input
+        channels at the END of the forcing tensor. A checkpoint from before flow
+        matching (or from CFM-only, when adding advected-persistence on top) has
+        a narrower weight matrix. Zero-extend at the END so existing trained
+        columns keep their original meaning.
+
+        Channel layout (in tensor and weight column order):
+            [..F_original.., x_alpha, alpha_map, (adv_persistence if enabled)]
+
+        Both transitions are handled by the same zero-pad-at-end rule:
+        - non-CFM ckpt → CFM model        : +2 cols zero-init at end
+        - non-CFM ckpt → CFM+adv model    : +3 cols zero-init at end
+        - CFM ckpt → CFM+adv model        : +1 col  zero-init at end
         """
         key_w = "patch_embed.proj_force.weight"
-        key_b = "patch_embed.proj_force.bias"
 
         if key_w not in state_dict:
             return state_dict
@@ -233,9 +248,95 @@ class cc2module(L.LightningModule):
 
         rank_zero_info(
             f"Extended proj_force.weight from [{d_force},{old_in}] to [{d_force},{new_in}] "
-            f"(zero-initialised columns for x_alpha and alpha_map channels)"
+            f"(zero-init trailing columns for new flow/advection channels)"
         )
         return state_dict
+
+    def _setup_advection(self) -> None:
+        """Cache forcing-tensor indices and m/s denormalization stats for the
+        u/v wind components at `advection_wind_level`. Lazy: called from
+        `_build_flow_forcing`/`test_step` on first use because trainer.datamodule
+        isn't bound at __init__.
+        """
+        if getattr(self, "_adv_setup_done", False):
+            return
+
+        lvl = self.hparams.advection_wind_level
+        u_name = f"u_{lvl}"
+        v_name = f"v_{lvl}"
+
+        dm = self.trainer.datamodule
+        fp = list(dm.hparams.forcing_params)
+        if u_name not in fp or v_name not in fp:
+            raise ValueError(
+                f"advected-persistence requires {u_name} and {v_name} in forcing_params; "
+                f"found: {fp}"
+            )
+        self._adv_u_idx = fp.index(u_name)
+        self._adv_v_idx = fp.index(v_name)
+
+        ds = dm._full_dataset
+        all_params = list(ds.all_combined_params)
+        u_global = all_params.index(u_name)
+        v_global = all_params.index(v_name)
+
+        # means/stds are reshaped [1, total_channels, 1, 1]
+        self._adv_u_mean = float(ds.means[0, u_global, 0, 0])
+        self._adv_u_std = float(ds.stds[0, u_global, 0, 0])
+        self._adv_v_mean = float(ds.means[0, v_global, 0, 0])
+        self._adv_v_std = float(ds.stds[0, v_global, 0, 0])
+
+        rank_zero_info(
+            f"Advected-persistence: {u_name}@(idx={self._adv_u_idx}, "
+            f"mean={self._adv_u_mean:.3f}, std={self._adv_u_std:.3f}), "
+            f"{v_name}@(idx={self._adv_v_idx}, "
+            f"mean={self._adv_v_mean:.3f}, std={self._adv_v_std:.3f})"
+        )
+        self._adv_setup_done = True
+
+    def _compute_advected_persistence(
+        self,
+        forcing: torch.Tensor,
+        current_state: torch.Tensor,
+        n_step: int,
+    ) -> torch.Tensor:
+        """Backward semi-Lagrangian advection of `current_state` at each lead
+        k in 1..n_step. Wind is read from the analysis-time slot of `forcing`,
+        de-standardized to m/s, converted to pixel/step, then used for all leads
+        (frozen wind — first-iteration design).
+
+        Args:
+            forcing       : [B, T+n_step, C_force, H, W] — PRE-extension forcing.
+            current_state : [B, 1, C_data, H, W] — analysis-time state to advect.
+            n_step        : number of forecast leads.
+
+        Returns:
+            [B, n_step, C_data, H, W] — advected fields, one per lead.
+        """
+        from dataloader.advection import advect_semi_lagrangian, winds_to_pixel_per_step
+
+        self._setup_advection()
+        B, T_total, _, H, W = forcing.shape
+        T = T_total - n_step
+
+        u_norm = forcing[:, T - 1, self._adv_u_idx, :, :]
+        v_norm = forcing[:, T - 1, self._adv_v_idx, :, :]
+        u_ms = u_norm * self._adv_u_std + self._adv_u_mean
+        v_ms = v_norm * self._adv_v_std + self._adv_v_mean
+
+        u_pix, v_pix = winds_to_pixel_per_step(
+            u_ms,
+            v_ms,
+            dt_seconds=self.hparams.advection_dt_seconds,
+            grid_spacing_m=self.hparams.advection_grid_spacing_m,
+            flip_v_for_image_origin=self.hparams.advection_flip_v_axis,
+        )
+
+        field0 = current_state[:, 0, :, :, :]  # [B, C_data, H, W]
+        out = torch.zeros(B, n_step, *field0.shape[1:], device=forcing.device, dtype=forcing.dtype)
+        for k in range(n_step):
+            out[:, k, ...] = advect_semi_lagrangian(field0, u_pix, v_pix, n_steps=k + 1)
+        return out
 
     def _build_model(self) -> None:
         if self.hparams.model_family == "pgu":
@@ -313,19 +414,24 @@ class cc2module(L.LightningModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
-    def _build_flow_forcing(self, forcing, y):
+    def _build_flow_forcing(self, forcing, y, x=None):
         """
         Corrupt the clean targets and inject as extra forcing channels for flow matching.
 
         forcing : [B, T+n_step, C_force, H, W]  – original forcing (no flow channels)
         y       : [B, n_step,   C_data,  H, W]  – clean future targets
+        x       : [B, T,        C_data,  H, W]  – history (required when
+                  use_advected_persistence=True; analysis-time frame is x[:, -1])
 
-        Returns: [B, T+n_step, C_force+2, H, W] where the last 2 channels at each
-        future time slot carry (x_alpha, alpha_map); history slots carry zeros.
+        Returns: [B, T+n_step, C_force+E, H, W] where E=2 (no adv) or E=3 (with adv).
+        Trailing-channel layout at each future time slot:
+            (x_alpha, alpha_map[, advected_persistence])
+        History slots carry zeros for all extras.
         """
         B, T_total, C_force, H, W = forcing.shape
         _, n_step, C_data, _, _ = y.shape
         T = T_total - n_step
+        use_adv = bool(self.hparams.use_advected_persistence)
 
         # Sample one alpha per sample in the batch.
         # Defaults flow_alpha_a=flow_alpha_b=1.0 reproduce Uniform(0,1); any other
@@ -345,24 +451,33 @@ class cc2module(L.LightningModule):
         z = torch.randn_like(y)
         x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
 
-        # Allocate extended forcing (history slots have zero flow channels)
+        n_extra = 3 if use_adv else 2
         extra = torch.zeros(
-            B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype
+            B, T_total, n_extra, H, W, device=forcing.device, dtype=forcing.dtype
         )
         for t in range(n_step):
-            extra[:, T + t, 0, :, :] = x_alpha[
-                :, t, 0, :, :
-            ]  # x_alpha  (TCC is single-channel)
-            extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)  # alpha_map
+            extra[:, T + t, 0, :, :] = x_alpha[:, t, 0, :, :]
+            extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)
 
-        return torch.cat([forcing, extra], dim=2)  # [B, T+n_step, C_force+2, H, W]
+        if use_adv:
+            if x is None:
+                raise ValueError(
+                    "use_advected_persistence=True requires `x` (history) in "
+                    "_build_flow_forcing; caller must pass data[0]."
+                )
+            current_state = x[:, -1, ...].unsqueeze(1)  # [B, 1, C_data, H, W]
+            adv = self._compute_advected_persistence(forcing, current_state, n_step)
+            for t in range(n_step):
+                extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
+
+        return torch.cat([forcing, extra], dim=2)
 
     def training_step(self, batch, batch_idx):
         data, forcing = batch
 
         if self.hparams.use_flow_matching:
-            _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            x, y = data
+            forcing = self._build_flow_forcing(forcing, y, x)
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -414,8 +529,8 @@ class cc2module(L.LightningModule):
         data, forcing = batch
 
         if self.hparams.use_flow_matching:
-            _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            x, y = data
+            forcing = self._build_flow_forcing(forcing, y, x)
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -462,11 +577,22 @@ class cc2module(L.LightningModule):
         if self.hparams.use_flow_matching:
             from swinu.util import flow_roll_forecast
 
-            # Pre-allocate the 2 extra flow channels (filled during denoising)
             B, T_total, C_force, H, W = forcing.shape
+            use_adv = bool(self.hparams.use_advected_persistence)
+            n_extra = 3 if use_adv else 2
             extra = torch.zeros(
-                B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype
+                B, T_total, n_extra, H, W, device=forcing.device, dtype=forcing.dtype
             )
+
+            if use_adv:
+                x = data[0]
+                n_step = self.hparams.rollout_length
+                T = T_total - n_step
+                current_state = x[:, -1, ...].unsqueeze(1)
+                adv = self._compute_advected_persistence(forcing, current_state, n_step)
+                for t in range(n_step):
+                    extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
+
             flow_forcing = torch.cat([forcing, extra], dim=2)
 
             _, outs = flow_roll_forecast(
@@ -481,6 +607,7 @@ class cc2module(L.LightningModule):
                 eta=self.hparams.flow_eta,
                 init_alpha=self.hparams.flow_init_alpha,
                 alpha_schedule_rho=self.hparams.flow_alpha_schedule_rho,
+                has_advected_persistence=use_adv,
             )
         else:
             _, outs = self._roll_forecast(

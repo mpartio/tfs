@@ -46,6 +46,14 @@ class cc2model(nn.Module):
             # x_alpha and alpha_map are injected as extra future forcing channels
             self.num_forcings += 2
 
+        self.use_advected_persistence = getattr(
+            config, "use_advected_persistence", False
+        )
+        if self.use_advected_persistence:
+            # Backward semi-Lagrangian advection of analysis-time state at each
+            # future lead — injected as one more forcing channel after x_alpha/alpha_map.
+            self.num_forcings += 1
+
         self.patch_embed = PatchEmbedLossless(
             input_resolution=input_resolution,
             patch_size=self.patch_size,
