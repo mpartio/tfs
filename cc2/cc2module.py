@@ -71,9 +71,12 @@ class cc2module(L.LightningModule):
         flow_alpha_schedule_rho: float = 1.0,
         use_advected_persistence: bool = False,
         advection_wind_level: str = "925",
+        advection_secondary_level: str | None = None,
+        advection_secondary_weight: float = 0.0,
         advection_dt_seconds: float = 3 * 3600.0,
         advection_grid_spacing_m: float = 5000.0,
         advection_flip_v_axis: bool = True,
+        use_rolling_advection: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -254,45 +257,87 @@ class cc2module(L.LightningModule):
 
     def _setup_advection(self) -> None:
         """Cache forcing-tensor indices and m/s denormalization stats for the
-        u/v wind components at `advection_wind_level`. Lazy: called from
-        `_build_flow_forcing`/`test_step` on first use because trainer.datamodule
-        isn't bound at __init__.
+        u/v wind components used to advect cloud state. Optionally blends a
+        secondary wind level (e.g. 0.4·925 + 0.6·850).
+
+        Lazy: called from `_build_flow_forcing`/`test_step` on first use because
+        trainer.datamodule isn't bound at __init__.
         """
         if getattr(self, "_adv_setup_done", False):
             return
 
-        lvl = self.hparams.advection_wind_level
-        u_name = f"u_{lvl}"
-        v_name = f"v_{lvl}"
-
         dm = self.trainer.datamodule
         fp = list(dm.hparams.forcing_params)
-        if u_name not in fp or v_name not in fp:
-            raise ValueError(
-                f"advected-persistence requires {u_name} and {v_name} in forcing_params; "
-                f"found: {fp}"
-            )
-        self._adv_u_idx = fp.index(u_name)
-        self._adv_v_idx = fp.index(v_name)
-
         ds = dm._get_or_create_full_dataset()
         all_params = list(ds.all_combined_params)
-        u_global = all_params.index(u_name)
-        v_global = all_params.index(v_name)
 
-        # means/stds are reshaped [1, total_channels, 1, 1]
-        self._adv_u_mean = float(ds.means[0, u_global, 0, 0])
-        self._adv_u_std = float(ds.stds[0, u_global, 0, 0])
-        self._adv_v_mean = float(ds.means[0, v_global, 0, 0])
-        self._adv_v_std = float(ds.stds[0, v_global, 0, 0])
+        def _lookup(name: str):
+            if name not in fp:
+                raise ValueError(
+                    f"advection requires {name} in forcing_params; found: {fp}"
+                )
+            idx = fp.index(name)
+            g = all_params.index(name)
+            return idx, float(ds.means[0, g, 0, 0]), float(ds.stds[0, g, 0, 0])
 
-        rank_zero_info(
-            f"Advected-persistence: {u_name}@(idx={self._adv_u_idx}, "
-            f"mean={self._adv_u_mean:.3f}, std={self._adv_u_std:.3f}), "
-            f"{v_name}@(idx={self._adv_v_idx}, "
-            f"mean={self._adv_v_mean:.3f}, std={self._adv_v_std:.3f})"
-        )
+        lvl_p = self.hparams.advection_wind_level
+        self._adv_u_idx, self._adv_u_mean, self._adv_u_std = _lookup(f"u_{lvl_p}")
+        self._adv_v_idx, self._adv_v_mean, self._adv_v_std = _lookup(f"v_{lvl_p}")
+
+        lvl_s = self.hparams.advection_secondary_level
+        w_s = float(self.hparams.advection_secondary_weight)
+        if lvl_s is not None and w_s > 0.0:
+            self._adv2_u_idx, self._adv2_u_mean, self._adv2_u_std = _lookup(f"u_{lvl_s}")
+            self._adv2_v_idx, self._adv2_v_mean, self._adv2_v_std = _lookup(f"v_{lvl_s}")
+            self._adv_w_secondary = w_s
+            blend_desc = f"{1.0 - w_s:.2f}·{lvl_p} + {w_s:.2f}·{lvl_s}"
+        else:
+            self._adv2_u_idx = None
+            self._adv_w_secondary = 0.0
+            blend_desc = f"single-level {lvl_p}"
+
+        rank_zero_info(f"Advected-persistence wind: {blend_desc}")
         self._adv_setup_done = True
+
+    def _compute_advection_winds(self, forcing: torch.Tensor):
+        """De-standardize and (optionally) blend wind components from the
+        analysis-time slot of `forcing`. Returns pixel-per-step displacements
+        (u_pix, v_pix) suitable for `advect_semi_lagrangian`.
+
+        Wind is held CONSTANT in time — the analysis-time field is used at
+        every rollout step. This matches both frozen-x_0 and rolling-state
+        advection schemes (only the input field differs between them).
+        """
+        from dataloader.advection import winds_to_pixel_per_step
+
+        self._setup_advection()
+        B, T_total, _, H, W = forcing.shape
+        # Analysis time is the last history slot; we don't have n_step here
+        # so we use T-1 of the absolute T_total, knowing history_length=2
+        # → analysis is at index history_length-1=1. We index by name elsewhere
+        # but here the convention is the same as in _build_flow_forcing.
+        T = T_total - self.hparams.rollout_length
+        u_norm = forcing[:, T - 1, self._adv_u_idx, :, :]
+        v_norm = forcing[:, T - 1, self._adv_v_idx, :, :]
+        u_ms = u_norm * self._adv_u_std + self._adv_u_mean
+        v_ms = v_norm * self._adv_v_std + self._adv_v_mean
+
+        if self._adv2_u_idx is not None:
+            u2_norm = forcing[:, T - 1, self._adv2_u_idx, :, :]
+            v2_norm = forcing[:, T - 1, self._adv2_v_idx, :, :]
+            u2_ms = u2_norm * self._adv2_u_std + self._adv2_u_mean
+            v2_ms = v2_norm * self._adv2_v_std + self._adv2_v_mean
+            w = self._adv_w_secondary
+            u_ms = (1.0 - w) * u_ms + w * u2_ms
+            v_ms = (1.0 - w) * v_ms + w * v2_ms
+
+        return winds_to_pixel_per_step(
+            u_ms,
+            v_ms,
+            dt_seconds=self.hparams.advection_dt_seconds,
+            grid_spacing_m=self.hparams.advection_grid_spacing_m,
+            flip_v_for_image_origin=self.hparams.advection_flip_v_axis,
+        )
 
     def _compute_advected_persistence(
         self,
@@ -301,38 +346,19 @@ class cc2module(L.LightningModule):
         n_step: int,
     ) -> torch.Tensor:
         """Backward semi-Lagrangian advection of `current_state` at each lead
-        k in 1..n_step. Wind is read from the analysis-time slot of `forcing`,
-        de-standardized to m/s, converted to pixel/step, then used for all leads
-        (frozen wind — first-iteration design).
+        k = 1..n_step using the (optionally-blended) analysis-time wind.
 
-        Args:
-            forcing       : [B, T+n_step, C_force, H, W] — PRE-extension forcing.
-            current_state : [B, 1, C_data, H, W] — analysis-time state to advect.
-            n_step        : number of forecast leads.
-
-        Returns:
-            [B, n_step, C_data, H, W] — advected fields, one per lead.
+        Frozen-x_0 mode: at lead k, advect by k steps with constant wind. This
+        is what gets pre-filled before the rollout in `test_step` or used at
+        training time (where R=1 means k=1 only). For rolling-state inference,
+        see `_compute_advection_winds` and the per-step recomputation in
+        `flow_roll_forecast`.
         """
-        from dataloader.advection import advect_semi_lagrangian, winds_to_pixel_per_step
+        from dataloader.advection import advect_semi_lagrangian
 
-        self._setup_advection()
-        B, T_total, _, H, W = forcing.shape
-        T = T_total - n_step
-
-        u_norm = forcing[:, T - 1, self._adv_u_idx, :, :]
-        v_norm = forcing[:, T - 1, self._adv_v_idx, :, :]
-        u_ms = u_norm * self._adv_u_std + self._adv_u_mean
-        v_ms = v_norm * self._adv_v_std + self._adv_v_mean
-
-        u_pix, v_pix = winds_to_pixel_per_step(
-            u_ms,
-            v_ms,
-            dt_seconds=self.hparams.advection_dt_seconds,
-            grid_spacing_m=self.hparams.advection_grid_spacing_m,
-            flip_v_for_image_origin=self.hparams.advection_flip_v_axis,
-        )
-
-        field0 = current_state[:, 0, :, :, :]  # [B, C_data, H, W]
+        u_pix, v_pix = self._compute_advection_winds(forcing)
+        B = forcing.shape[0]
+        field0 = current_state[:, 0, :, :, :]
         out = torch.zeros(B, n_step, *field0.shape[1:], device=forcing.device, dtype=forcing.dtype)
         for k in range(n_step):
             out[:, k, ...] = advect_semi_lagrangian(field0, u_pix, v_pix, n_steps=k + 1)
@@ -579,19 +605,32 @@ class cc2module(L.LightningModule):
 
             B, T_total, C_force, H, W = forcing.shape
             use_adv = bool(self.hparams.use_advected_persistence)
+            use_rolling = bool(self.hparams.use_rolling_advection)
+            if use_rolling and not use_adv:
+                raise ValueError(
+                    "use_rolling_advection=True requires use_advected_persistence=True"
+                )
             n_extra = 3 if use_adv else 2
             extra = torch.zeros(
                 B, T_total, n_extra, H, W, device=forcing.device, dtype=forcing.dtype
             )
 
+            rolling_winds = None
             if use_adv:
                 x = data[0]
                 n_step = self.hparams.rollout_length
                 T = T_total - n_step
-                current_state = x[:, -1, ...].unsqueeze(1)
-                adv = self._compute_advected_persistence(forcing, current_state, n_step)
-                for t in range(n_step):
-                    extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
+                if use_rolling:
+                    # Channel will be recomputed inside the rollout loop from
+                    # the model's evolving prediction. Leave extra channel zero
+                    # at entry; flow_roll_forecast overwrites at each step.
+                    rolling_winds = self._compute_advection_winds(forcing)
+                else:
+                    # Frozen-x_0 pre-fill (Path A behaviour)
+                    current_state = x[:, -1, ...].unsqueeze(1)
+                    adv = self._compute_advected_persistence(forcing, current_state, n_step)
+                    for t in range(n_step):
+                        extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
 
             flow_forcing = torch.cat([forcing, extra], dim=2)
 
@@ -608,6 +647,7 @@ class cc2module(L.LightningModule):
                 init_alpha=self.hparams.flow_init_alpha,
                 alpha_schedule_rho=self.hparams.flow_alpha_schedule_rho,
                 has_advected_persistence=use_adv,
+                rolling_advection_winds=rolling_winds,
             )
         else:
             _, outs = self._roll_forecast(

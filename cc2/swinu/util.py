@@ -391,6 +391,7 @@ def flow_roll_forecast(
     init_alpha: float = 1.0,
     alpha_schedule_rho: float = 1.0,
     has_advected_persistence: bool = False,
+    rolling_advection_winds: tuple | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
@@ -401,6 +402,12 @@ def flow_roll_forecast(
     here each DDIM iteration. When `has_advected_persistence=True`, x_alpha/alpha_map
     live at index -3/-2 instead of -2/-1.
 
+    Rolling advection: when `rolling_advection_winds=(u_pix, v_pix)` is passed,
+    the advected_persistence channel is RECOMPUTED at every rollout step from
+    the model's most-recent `current_state`, advected by 1 step. This makes the
+    channel a fresh 1-step transport prior at each lead instead of a k-step
+    extrapolation from the analysis snapshot.
+
     Args:
         model                    : the cc2model with use_flow_matching=True
         data                     : [x, y] where x is history [B, T, C, H, W]
@@ -408,13 +415,22 @@ def flow_roll_forecast(
         n_step                   : number of autoregressive rollout steps
         num_inference_steps      : K denoising iterations per temporal step
         flow_warm_start          : if True, start from smooth pred at warm_start_alpha
-                                   instead of pure noise at alpha=1.0
         warm_start_alpha         : noise level used as starting point for warm-start
         init_noise_sigma         : scale factor for initial Gaussian noise
         has_advected_persistence : if True, layout has an extra trailing channel
+        rolling_advection_winds  : optional (u_pix, v_pix) tensors; when set
+                                   AND has_advected_persistence, the channel is
+                                   recomputed per step from current_state.
     """
     x_alpha_idx = -3 if has_advected_persistence else -2
     alpha_map_idx = -2 if has_advected_persistence else -1
+    adv_idx = -1  # only meaningful if has_advected_persistence
+    use_rolling = (
+        has_advected_persistence and rolling_advection_winds is not None
+    )
+    if use_rolling:
+        from dataloader.advection import advect_semi_lagrangian
+        u_pix_roll, v_pix_roll = rolling_advection_winds
     x, y = data
     B, T, C_data, H, W = x.shape
 
@@ -429,7 +445,19 @@ def flow_roll_forecast(
         # denoising iteration — no further clones needed inside the loop.
         step_forcing = forcing[
             :, t : t + T + 1, ...
-        ].clone()  # [B, T+1, C_force+2, H, W]
+        ].clone()  # [B, T+1, C_force+E, H, W]
+
+        if use_rolling:
+            # Refresh the advected_persistence channel from current_state.
+            # 1-step advection: the channel becomes "where current cloud will
+            # be in 3 hours given analysis-time wind."
+            adv_field = advect_semi_lagrangian(
+                current_state[:, 0, ...],  # [B, C, H, W]
+                u_pix_roll,
+                v_pix_roll,
+                n_steps=1,
+            )
+            step_forcing[:, T, adv_idx, :, :] = adv_field[:, 0, :, :]
 
         input_state = torch.cat([previous_state, current_state], dim=1)
 
