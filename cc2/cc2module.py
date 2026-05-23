@@ -566,6 +566,8 @@ class cc2module(L.LightningModule):
             loss_fn=self._loss_fn,
             use_scheduled_sampling=False,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
+            step=self.global_step,
+            max_step=self.max_steps,
         )
 
         tendencies = outs["tendencies"]
