@@ -277,7 +277,15 @@ def roll_forecast(
     ss_pred_min: float = 0.0,
     ss_pred_max: float = 1.0,
     use_rollout_weighting: bool = False,
+    residual_base: torch.Tensor | None = None,
 ) -> Dict[str, torch.Tensor]:
+    """
+    residual_base : optional [B, n_step, C, H, W] tensor. When provided,
+    next_pred at rollout step t becomes residual_base[:, t:t+1] + tendency
+    instead of current_state + tendency — i.e., the model's tendency is
+    interpreted as a RESIDUAL on top of a per-step base field (used by
+    CFM-on-residual: residual_base is the advected-persistence field).
+    """
     # torch.Size([32, 2, 1, 128, 128]) torch.Size([32, 1, 1, 128, 128])
     x, y = data
     B, T, C_data, H, W = x.shape
@@ -329,7 +337,11 @@ def roll_forecast(
 
         tendency, _, _ = _forward_and_unpack(model, input_state, step_forcing, t)
 
-        next_pred = current_state + tendency
+        if residual_base is not None:
+            base = residual_base[:, t : t + 1, ...]
+        else:
+            base = current_state
+        next_pred = base + tendency
 
         # 3. Calculate loss
 
@@ -392,6 +404,7 @@ def flow_roll_forecast(
     alpha_schedule_rho: float = 1.0,
     has_advected_persistence: bool = False,
     rolling_advection_winds: tuple | None = None,
+    residual_base: torch.Tensor | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Autoregressive forecast with DDIM denoising for flow matching inference.
@@ -527,7 +540,11 @@ def flow_roll_forecast(
                     model, input_state, step_forcing, t
                 )
 
-            x1_hat = current_state + tendency  # predicted clean state [B, 1, C, H, W]
+            if residual_base is not None:
+                base = residual_base[:, t : t + 1, ...]
+            else:
+                base = current_state
+            x1_hat = base + tendency  # predicted clean state [B, 1, C, H, W]
 
             # DDIM update: estimate noise, step to next alpha level
             alpha_clamped = alpha.clamp(min=1e-6)

@@ -78,6 +78,7 @@ class cc2module(L.LightningModule):
         advection_flip_v_axis: bool = True,
         use_rolling_advection: bool = False,
         advection_proj_init: str = "zero",
+        use_residual_target: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -512,13 +513,41 @@ class cc2module(L.LightningModule):
         _, n_step, C_data, _, _ = y.shape
         T = T_total - n_step
         use_adv = bool(self.hparams.use_advected_persistence)
+        use_residual = bool(self.hparams.use_residual_target)
+        if use_residual and not use_adv:
+            raise ValueError(
+                "use_residual_target=True requires use_advected_persistence=True"
+            )
+
+        # Pre-compute advection (used by both the channel injection and, in
+        # residual mode, the target re-definition).
+        adv = None
+        if use_adv:
+            if x is None:
+                raise ValueError(
+                    "use_advected_persistence=True requires `x` (history)."
+                )
+            current_state = x[:, -1, ...].unsqueeze(1)  # [B, 1, C_data, H, W]
+            adv = self._compute_advected_persistence(forcing, current_state, n_step)
+            # adv: [B, n_step, C_data, H, W]
+
+        # In residual mode, the target the model learns is `y - advected`. We
+        # corrupt the RESIDUAL, not the full y, so the model produces residual
+        # samples. At inference we add `advected` back. Stash the residual
+        # target on self so training_step/_compute_step_loss can retrieve it
+        # (the rollout loop in swinu/util uses y for the loss target — we'll
+        # apply the residual via a wrapper around the loss instead).
+        if use_residual:
+            y_target = y - adv
+            self._latest_advected = adv  # kept for inference / loss
+        else:
+            y_target = y
+            self._latest_advected = None
 
         # Sample one alpha per sample in the batch.
-        # Defaults flow_alpha_a=flow_alpha_b=1.0 reproduce Uniform(0,1); any other
-        # pair selects a Beta(a,b) distribution (e.g. Beta(2,5) skews toward small α).
         a, b = self.hparams.flow_alpha_a, self.hparams.flow_alpha_b
         if a == 1.0 and b == 1.0:
-            alpha = torch.rand(B, device=forcing.device)  # [B]
+            alpha = torch.rand(B, device=forcing.device)
         else:
             alpha = (
                 torch.distributions.Beta(a, b)
@@ -526,10 +555,10 @@ class cc2module(L.LightningModule):
                 .to(device=forcing.device, dtype=forcing.dtype)
             )
 
-        # Corrupt target: x_alpha = (1-alpha)*y + alpha*z
+        # Corrupt target (residual or full): x_alpha = (1-alpha)*y_target + alpha*z
         alpha_5d = alpha.view(B, 1, 1, 1, 1)
-        z = torch.randn_like(y)
-        x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
+        z = torch.randn_like(y_target)
+        x_alpha = (1.0 - alpha_5d) * y_target + alpha_5d * z
 
         n_extra = 3 if use_adv else 2
         extra = torch.zeros(
@@ -540,13 +569,6 @@ class cc2module(L.LightningModule):
             extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)
 
         if use_adv:
-            if x is None:
-                raise ValueError(
-                    "use_advected_persistence=True requires `x` (history) in "
-                    "_build_flow_forcing; caller must pass data[0]."
-                )
-            current_state = x[:, -1, ...].unsqueeze(1)  # [B, 1, C_data, H, W]
-            adv = self._compute_advected_persistence(forcing, current_state, n_step)
             for t in range(n_step):
                 extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
 
@@ -558,6 +580,8 @@ class cc2module(L.LightningModule):
         if self.hparams.use_flow_matching:
             x, y = data
             forcing = self._build_flow_forcing(forcing, y, x)
+
+        residual_base = self._latest_advected if self.hparams.use_residual_target else None
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -571,6 +595,7 @@ class cc2module(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
+            residual_base=residual_base,
         )
 
         tendencies = outs["tendencies"]
@@ -612,6 +637,8 @@ class cc2module(L.LightningModule):
             x, y = data
             forcing = self._build_flow_forcing(forcing, y, x)
 
+        residual_base = self._latest_advected if self.hparams.use_residual_target else None
+
         loss, outs = self._roll_forecast(
             self.model,
             data,
@@ -622,6 +649,7 @@ class cc2module(L.LightningModule):
             use_rollout_weighting=self.hparams.use_rollout_weighting,
             step=self.global_step,
             max_step=self.max_steps,
+            residual_base=residual_base,
         )
 
         tendencies = outs["tendencies"]
@@ -672,21 +700,29 @@ class cc2module(L.LightningModule):
             )
 
             rolling_winds = None
+            residual_base = None
+            adv = None
             if use_adv:
                 x = data[0]
                 n_step = self.hparams.rollout_length
                 T = T_total - n_step
+                current_state = x[:, -1, ...].unsqueeze(1)
+                # Always compute frozen-x0 advection here; it's used to fill
+                # the channel slot AND (in residual mode) as residual_base.
+                adv = self._compute_advected_persistence(forcing, current_state, n_step)
                 if use_rolling:
-                    # Channel will be recomputed inside the rollout loop from
-                    # the model's evolving prediction. Leave extra channel zero
-                    # at entry; flow_roll_forecast overwrites at each step.
                     rolling_winds = self._compute_advection_winds(forcing)
+                    # Leave channel slot zero — flow_roll_forecast refills it
+                    # per rollout step from the model's evolving prediction.
                 else:
-                    # Frozen-x_0 pre-fill (Path A behaviour)
-                    current_state = x[:, -1, ...].unsqueeze(1)
-                    adv = self._compute_advected_persistence(forcing, current_state, n_step)
                     for t in range(n_step):
                         extra[:, T + t, 2, :, :] = adv[:, t, 0, :, :]
+
+                if self.hparams.use_residual_target:
+                    # Residual mode: model output is the residual; the rollout
+                    # adds advected back to produce the cloud-cover prediction.
+                    # For now we use frozen-x_0 advection as the residual_base.
+                    residual_base = adv
 
             flow_forcing = torch.cat([forcing, extra], dim=2)
 
@@ -704,6 +740,7 @@ class cc2module(L.LightningModule):
                 alpha_schedule_rho=self.hparams.flow_alpha_schedule_rho,
                 has_advected_persistence=use_adv,
                 rolling_advection_winds=rolling_winds,
+                residual_base=residual_base,
             )
         else:
             _, outs = self._roll_forecast(
