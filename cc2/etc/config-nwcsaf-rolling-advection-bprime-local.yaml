@@ -1,0 +1,199 @@
+# Path B' — rolling-advection with NON-ZERO init for the advection projection
+# column. Local single-A100 probe.
+#
+# Why: forward-parapet (Path B) ended with the advection channel's projection
+# column at L2 norm 0.013 — essentially unchanged from zero-init. The model
+# learned to ignore the channel. DE-13 documents this as the "zero-init
+# deadlock": when a new input channel's gradient signal is zero at init, the
+# optimiser has no incentive to develop it. Path B never actually tested the
+# rolling-advection hypothesis.
+#
+# Fix: init the new column from a blend of u/v wind columns (0.4·925 + 0.6·850
+# for both u and v). This is physically motivated — the advection channel is
+# computed from this same wind blend, so its projection weights should respond
+# to "wind-like" input activations.
+#
+# Probe gates at 1.5k steps:
+#   - advection column L2 norm > 0.5 (vs Path B's 0.013) — channel must be USED
+#   - val BCE within +10% of candied-circle
+#   - high-k power@t+1 ≥ 0.115
+#   - S_BIAS not destroyed (≥ 0.5 at probe; Path B's was 0.249)
+#
+# Local config (1 A100): batch_size 1, accumulate_grad_batches 8 → effective
+# BS 8 (matching lumi reference). 1500-step probe is ~14 hours wall.
+
+seed_everything: 42
+
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: 1
+  num_nodes: 1
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2_rolling_advection_bprime
+      save_dir: ./mlruns
+      log_model: false
+      prefix: ''
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_loss
+      save_last: true
+      save_top_k: 2
+      mode: min
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  - class_path: lightning.pytorch.callbacks.TQDMProgressBar
+    init_args:
+      refresh_rate: 20
+  max_steps: 1500
+  limit_val_batches: 0.25
+  val_check_interval: 500
+  log_every_n_steps: 50
+  enable_model_summary: false
+  accumulate_grad_batches: 4
+  gradient_clip_val: 1.0
+
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+
+    learning_rate: 5.0e-06
+    warmup_iterations: 100
+    weight_decay: 0.02
+
+    rollout_length: 1
+    branch_from_run: candied-circle/1
+    use_gradient_checkpointing: false
+    model_family: swinu
+    use_scheduled_sampling: false
+    ss_pred_min: 0.0
+    ss_pred_max: 1.0
+    freeze_layers: []
+
+    loss_fn:
+      class_path: loss.combined.CombinedLoss
+      init_args:
+        losses:
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+        weights: [1.0]
+        ramps:
+        - null
+        names: [bce]
+
+    test_output_directory: null
+    use_rollout_weighting: false
+    use_statistics_from_checkpoint: true
+    force_frozen_backbone_to_eval: false
+    preprocessor: null
+
+    use_flow_matching: true
+    num_inference_steps: 16
+    flow_warm_start: false
+    flow_eta: 0.05
+    flow_alpha_a: 1.0
+    flow_alpha_b: 1.0
+    flow_init_alpha: 0.85
+    flow_alpha_schedule_rho: 1.0
+
+    # Advected-persistence with 0.4·925 + 0.6·850 wind blend
+    use_advected_persistence: true
+    advection_wind_level: '925'
+    advection_secondary_level: '850'
+    advection_secondary_weight: 0.6
+    advection_dt_seconds: 10800.0
+    advection_grid_spacing_m: 5000.0
+    advection_flip_v_axis: true
+    use_rolling_advection: true
+
+    # B′ key change: non-zero init for the advection channel column
+    advection_proj_init: uv_blend_925_850
+
+data:
+  data_path:
+  - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_path: ../data/meps-const-v4.zarr
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  train_start: '2020-01-01'
+  train_end: '2024-01-01'
+  val_start: '2024-01-01'
+  val_end: '2025-01-01'
+  seed: 0
+  batch_size: 2
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 4
+  pin_memory: true
+  normalization: null
+  apply_smoothing: false

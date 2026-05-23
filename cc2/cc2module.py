@@ -77,6 +77,7 @@ class cc2module(L.LightningModule):
         advection_grid_spacing_m: float = 5000.0,
         advection_flip_v_axis: bool = True,
         use_rolling_advection: bool = False,
+        advection_proj_init: str = "zero",
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -247,11 +248,64 @@ class cc2module(L.LightningModule):
         new_in = model_w.shape[1]
         new_w = torch.zeros(d_force, new_in, dtype=old_w.dtype, device=old_w.device)
         new_w[:, :old_in] = old_w
-        state_dict[key_w] = new_w
 
+        # Non-zero init for the advection column (DE-13 fix).
+        # Trigger: extending by exactly one channel (i.e., adding only the adv
+        # column on top of an existing CFM ckpt) AND scheme != "zero".
+        ps = int(self.hparams.patch_size)
+        ps2 = ps * ps
+        scheme = getattr(self.hparams, "advection_proj_init", "zero")
+        delta_cols = new_in - old_in
+        if delta_cols == ps2 and scheme != "zero":
+            try:
+                fp = list(self.trainer.datamodule.hparams.forcing_params)
+                Cf_new = new_in // ps2
+                old_3d = new_w[:, :old_in].reshape(d_force, Cf_new - 1, ps2)  # [d_force, Cf-1, ps²]
+
+                if scheme == "uv_blend_925_850":
+                    # Init the adv column from a wind-blend of existing forcing
+                    # columns. The advection channel itself is computed from
+                    # 0.4·u_925 + 0.6·u_850 winds; matching the projection
+                    # weights to this blend gives the model a sensible starting
+                    # gradient path through u/v-shaped activations.
+                    idxs = {n: fp.index(n) for n in ("u_925","u_850","v_925","v_850") if n in fp}
+                    assert len(idxs) == 4, f"need u/v at 925+850, found {idxs}"
+                    blend = (
+                        0.4 * old_3d[:, idxs["u_925"], :]
+                      + 0.6 * old_3d[:, idxs["u_850"], :]
+                      + 0.4 * old_3d[:, idxs["v_925"], :]
+                      + 0.6 * old_3d[:, idxs["v_850"], :]
+                    ) * 0.5   # ½ to scale magnitude into the per-column range
+                    new_w_3d = new_w.reshape(d_force, Cf_new, ps2)
+                    new_w_3d[:, -1, :] = blend
+                    new_w = new_w_3d.reshape(d_force, new_in)
+                    init_desc = "0.5·(0.4·u_925 + 0.6·u_850 + 0.4·v_925 + 0.6·v_850) column blend"
+                elif scheme == "kaiming":
+                    fan_in = ps2
+                    std = (2.0 / fan_in) ** 0.5
+                    new_w_3d = new_w.reshape(d_force, Cf_new, ps2)
+                    new_w_3d[:, -1, :] = torch.randn(d_force, ps2, dtype=old_w.dtype) * std
+                    new_w = new_w_3d.reshape(d_force, new_in)
+                    init_desc = f"Kaiming-normal init, std={std:.4f}"
+                else:
+                    raise ValueError(f"Unknown advection_proj_init scheme: {scheme}")
+
+                state_dict[key_w] = new_w
+                rank_zero_info(
+                    f"Extended proj_force.weight [{d_force},{old_in}]→[{d_force},{new_in}] with "
+                    f"advection column init: {init_desc}"
+                )
+                return state_dict
+            except Exception as e:
+                rank_zero_warn(
+                    f"Non-zero advection init failed ({e}); falling back to zero-init."
+                )
+                # Fall through to plain assignment
+
+        state_dict[key_w] = new_w
         rank_zero_info(
             f"Extended proj_force.weight from [{d_force},{old_in}] to [{d_force},{new_in}] "
-            f"(zero-init trailing columns for new flow/advection channels)"
+            f"(zero-init trailing columns)"
         )
         return state_dict
 
