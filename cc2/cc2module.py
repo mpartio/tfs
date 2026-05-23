@@ -648,7 +648,7 @@ class cc2module(L.LightningModule):
             use_scheduled_sampling=False,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
             step=self.global_step,
-            max_step=self.max_steps,
+            max_step=getattr(self, "max_steps", None) or self.trainer.max_steps or 1,
             residual_base=residual_base,
         )
 
