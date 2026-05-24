@@ -550,13 +550,22 @@ def flow_roll_forecast(
                     model, input_state, step_forcing, t
                 )
 
+            # In residual mode, the DDIM loop iterates in RESIDUAL space:
+            # x_alpha represents corrupted-y_residual, and x1_hat (DDIM's
+            # "clean prediction") is the predicted residual itself = tendency.
+            # The base (advected) is added back only AFTER the DDIM loop
+            # converges, to recover the cover-space final prediction.
+            #
+            # In cover mode, x_alpha lives in cover space and x1_hat = current_state
+            # + tendency is the predicted clean cover-space state (unchanged).
             if residual_base is not None:
                 base = residual_base[:, t : t + 1, ...]
+                x1_hat = tendency  # residual prediction, stays in residual space
             else:
                 base = current_state
-            x1_hat = base + tendency  # predicted clean state [B, 1, C, H, W]
+                x1_hat = base + tendency
 
-            # DDIM update: estimate noise, step to next alpha level
+            # DDIM update — in whichever space x_alpha lives
             alpha_clamped = alpha.clamp(min=1e-6)
             z_est = (x_alpha - (1.0 - alpha_clamped) * x1_hat) / alpha_clamped
             x_alpha = (1.0 - alpha_next) * x1_hat + alpha_next * z_est
@@ -565,8 +574,12 @@ def flow_roll_forecast(
                     x_alpha
                 )
 
-        # Clamp to valid TCC range
-        final_pred = x1_hat.clamp(0.0, 1.0)
+        # End of DDIM loop. In residual mode, lift x1_hat from residual space
+        # to cover space by adding back the advected base. Then clamp.
+        if residual_base is not None:
+            final_pred = (residual_base[:, t : t + 1, ...] + x1_hat).clamp(0.0, 1.0)
+        else:
+            final_pred = x1_hat.clamp(0.0, 1.0)
         tendency_out = (final_pred - current_state).detach()
 
         all_predictions.append(final_pred.detach())
