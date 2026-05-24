@@ -498,11 +498,21 @@ def flow_roll_forecast(
             # smoothing on a U(0,1)-trained model.
             alpha_init = init_alpha
             # Scale noise variance to the chosen α: x_alpha = α·z + (1-α)·y, where
-            # y here is approximated by current_state (no smooth_pred — we want a
-            # principled init that respects the training x_alpha distribution).
+            # y here is approximated by current_state in cover mode, or 0 in
+            # residual mode (where the model was trained on x_alpha in
+            # residual space — y_target = y_truth - advected has mean ~ 0).
+            # Using current_state as anchor in residual mode shifts x_alpha
+            # out of the training distribution by ~0.15 * current_state at
+            # α=0.85, which the model "explains" by emitting a large positive
+            # residual → systematic over-cloud bias (caught 2026-05-24 on
+            # bipartite-fort's first inference).
             noise = init_noise_sigma * torch.randn_like(current_state)
+            if residual_base is not None:
+                anchor = torch.zeros_like(current_state)
+            else:
+                anchor = current_state
             if init_alpha < 1.0:
-                x_alpha = (1.0 - init_alpha) * current_state + init_alpha * noise
+                x_alpha = (1.0 - init_alpha) * anchor + init_alpha * noise
             else:
                 x_alpha = noise
 
