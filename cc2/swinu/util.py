@@ -460,10 +460,14 @@ def flow_roll_forecast(
             :, t : t + T + 1, ...
         ].clone()  # [B, T+1, C_force+E, H, W]
 
+        # rolling_base_t: 1-step advection of the model's current state at
+        # this rollout step. Used (a) to refresh the advected_persistence
+        # channel, and (b) in residual mode as the per-step residual_base
+        # — closing the R=1 training / R=12 inference distribution mismatch
+        # (Fix A, 2026-05-25). When use_rolling is False, the precomputed
+        # frozen-x_0 residual_base is used instead.
+        rolling_base_t = None
         if use_rolling:
-            # Refresh the advected_persistence channel from current_state.
-            # 1-step advection: the channel becomes "where current cloud will
-            # be in 3 hours given analysis-time wind."
             adv_field = advect_semi_lagrangian(
                 current_state[:, 0, ...],  # [B, C, H, W]
                 u_pix_roll,
@@ -471,6 +475,7 @@ def flow_roll_forecast(
                 n_steps=1,
             )
             step_forcing[:, T, adv_idx, :, :] = adv_field[:, 0, :, :]
+            rolling_base_t = adv_field.unsqueeze(1)  # [B, 1, C, H, W]
 
         input_state = torch.cat([previous_state, current_state], dim=1)
 
@@ -559,7 +564,14 @@ def flow_roll_forecast(
             # In cover mode, x_alpha lives in cover space and x1_hat = current_state
             # + tendency is the predicted clean cover-space state (unchanged).
             if residual_base is not None:
-                base = residual_base[:, t : t + 1, ...]
+                # In rolling mode, residual_base is rebuilt per step from the
+                # model's current_state (Fix A) — every step sees a 1-step
+                # residual, matching R=1 training. In frozen mode, the
+                # precomputed (k-step) base from x_0 is used.
+                if rolling_base_t is not None:
+                    base = rolling_base_t
+                else:
+                    base = residual_base[:, t : t + 1, ...]
                 x1_hat = tendency  # residual prediction, stays in residual space
             else:
                 base = current_state
@@ -575,9 +587,10 @@ def flow_roll_forecast(
                 )
 
         # End of DDIM loop. In residual mode, lift x1_hat from residual space
-        # to cover space by adding back the advected base. Then clamp.
+        # to cover space by adding back the advected base (rolling or frozen).
         if residual_base is not None:
-            final_pred = (residual_base[:, t : t + 1, ...] + x1_hat).clamp(0.0, 1.0)
+            base_lift = rolling_base_t if rolling_base_t is not None else residual_base[:, t : t + 1, ...]
+            final_pred = (base_lift + x1_hat).clamp(0.0, 1.0)
         else:
             final_pred = x1_hat.clamp(0.0, 1.0)
         tendency_out = (final_pred - current_state).detach()
