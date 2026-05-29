@@ -85,9 +85,41 @@ model:
     use_rollout_weighting: false
     use_statistics_from_checkpoint: true
     loss_fn:
-      class_path: loss.mae.MAELoss
+      class_path: loss.combined.CombinedLoss
       init_args:
-        use_full_state: true
+        losses:
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+        - class_path: loss.softfss.SoftFSSLoss
+          init_args:
+            thresholds:
+            - 0.0625
+            - 0.5625
+            - 0.9375
+            window_sizes:
+            - 3
+            - 6
+            - 12
+            tau: 0.015625
+            soften_true: false
+            threshold_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            scale_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            eps: 1.0e-08
+        weights:
+        - 1.0
+        - 0.2
+        ramps: null
+        names:
+        - bce
+        - soft_fss
 
 data:
   data_path:
