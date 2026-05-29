@@ -490,3 +490,102 @@ def flow_roll_forecast(
     }
 
     return None, out
+
+
+def direct_forecast(
+    model: nn.Module,
+    data: list[torch.Tensor],
+    forcing: torch.Tensor,
+    n_step: int,
+    loss_fn: nn.Module | None,
+    step: int | None = None,
+    max_step: int | None = None,
+    use_rollout_weighting: bool = False,
+    **_ignored,
+) -> Dict[str, torch.Tensor]:
+    """
+    Direct (non-autoregressive) multi-lead forecast.
+
+    Every lead t is predicted INDEPENDENTLY from the analysis state — no
+    autoregressive feedback.  The model's tendency output is interpreted as the
+    analysis → t+1 displacement:
+
+        pred[t] = analysis_curr + tendency[t]
+
+    Loss delta is ALWAYS analysis-relative (not relative to the previous lead)
+    so the model learns analysis→horizon displacements, not incremental steps.
+
+    Args:
+        model    : cc2model with direct_prediction=True (uses lead_embeddings)
+        data     : [x, y] where x is history [B, T, C, H, W]
+        forcing  : [B, T+n_step, C_force, H, W]
+        n_step   : number of independent leads to predict
+        loss_fn  : loss module or None
+        step     : global training step (for ramps / logging)
+        max_step : total training steps (for ramps)
+        use_rollout_weighting : passed to _aggregate_losses (no-op when False)
+        **_ignored : absorbs scheduled-sampling kwargs from the generic call site
+    """
+    x, y = data
+    B, T, C_data, H, W = x.shape
+
+    if loss_fn is not None:
+        _, T_y, _, _, _ = y.shape
+        assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
+
+    assert (
+        forcing.shape[1] == n_step + T
+    ), "Forcing length {} insufficient for direct_forecast n_step={}".format(
+        forcing.shape[1], n_step
+    )
+
+    # Analysis state — computed ONCE, reused for every lead
+    analysis_prev = x[:, -2].unsqueeze(1)   # [B, 1, C, H, W]
+    analysis_curr = x[:, -1].unsqueeze(1)   # [B, 1, C, H, W]
+    analysis_state = torch.cat([analysis_prev, analysis_curr], dim=1)  # [B, 2, C, H, W]
+
+    all_losses = []
+    all_predictions = []
+    all_tendencies = []
+    metrics = {}
+
+    for t in range(n_step):
+        # Each lead sees its own per-lead NWP forcing window
+        step_forcing = forcing[:, t : t + T + 1, ...]  # [B, T+1, C_force, H, W]
+
+        # Forward pass — always from analysis, never from a previous prediction
+        tendency, _, _ = _forward_and_unpack(model, analysis_state, step_forcing, t)
+
+        next_pred = analysis_curr + tendency  # [B, 1, C, H, W]
+
+        # Loss: delta is ALWAYS analysis-relative for ALL leads
+        if loss_fn is not None:
+            y_true_full = y[:, t : t + 1, ...]
+            y_true_delta = y_true_full - x[:, -1].unsqueeze(1)
+            step_loss = loss_fn(
+                y_true_full=y_true_full,
+                y_pred_full=next_pred,
+                y_true_delta=y_true_delta,
+                y_pred_delta=tendency,
+                global_step=step,
+            )
+            all_losses.append(step_loss)
+
+        all_predictions.append(_materialize(next_pred, training=model.training).detach())
+        all_tendencies.append(tendency.detach())
+
+    loss, metrics = _aggregate_losses(
+        all_losses, use_rollout_weighting, step, n_step, max_step, metrics
+    )
+
+    assert all_tendencies[0].ndim == 5
+
+    if loss is not None:
+        loss.update(metrics)
+
+    out = {
+        "tendencies": torch.cat(all_tendencies, dim=1),
+        "predictions": torch.cat(all_predictions, dim=1),
+    }
+
+    return loss, out

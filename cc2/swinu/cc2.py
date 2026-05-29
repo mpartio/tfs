@@ -46,6 +46,8 @@ class cc2model(nn.Module):
             # x_alpha and alpha_map are injected as extra future forcing channels
             self.num_forcings += 2
 
+        self.direct_prediction = getattr(config, "direct_prediction", False)
+
         self.patch_embed = PatchEmbedLossless(
             input_resolution=input_resolution,
             patch_size=self.patch_size,
@@ -255,6 +257,10 @@ class cc2model(nn.Module):
         self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
         nn.init.normal_(self.step_id_embeddings, std=0.02)
 
+        # Per-lead embeddings for direct (non-autoregressive) prediction mode.
+        # 16 leads covers all foreseeable rollout lengths.
+        self.lead_embeddings = nn.Parameter(torch.randn(16, self.embed_dim * 2) * 0.02)
+
         # Initialize weights
         # self.apply(self._init_weights)
         # nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -363,11 +369,15 @@ class cc2model(nn.Module):
         decoder_in = decoder_input.reshape(B, -1, D)
 
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
-        step_id = 0
-        if not self.use_scheduled_sampling and step > 0:
-            step_id = 1
-        # Get appropriate step embedding
-        step_embedding = self.step_id_embeddings[step_id]  # [D]
+        # Determine step embedding: lead index (direct mode) or binary AR step
+        if self.direct_prediction:
+            # step is the lead index 0..n-1 passed from direct_forecast
+            step_embedding = self.lead_embeddings[step]  # [embed_dim*2]
+        else:
+            step_id = 0
+            if not self.use_scheduled_sampling and step > 0:
+                step_id = 1
+            step_embedding = self.step_id_embeddings[step_id]  # [embed_dim*2]
 
         # Add step embedding to decoder input
         # For first token in each sequence (acts as a "step type" token)

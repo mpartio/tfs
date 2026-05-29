@@ -65,6 +65,7 @@ class cc2module(L.LightningModule):
         warm_start_alpha: float = 0.4,
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
+        direct_prediction: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -96,6 +97,7 @@ class cc2module(L.LightningModule):
                 "ss_pred_min",
                 "ss_pred_max",
                 "use_flow_matching",
+                "direct_prediction",
             ]
         }
 
@@ -240,10 +242,13 @@ class cc2module(L.LightningModule):
 
         elif self.hparams.model_family == "swinu":
             from swinu.cc2 import cc2model
-            from swinu.util import roll_forecast
+            from swinu.util import roll_forecast, direct_forecast
 
         self.model_class = self.hparams.model_family
-        self._roll_forecast = roll_forecast
+        if self.hparams.direct_prediction:
+            self._roll_forecast = direct_forecast
+        else:
+            self._roll_forecast = roll_forecast
 
         self.model = cc2model(config=self.model_kwargs)
 
@@ -467,6 +472,15 @@ class cc2module(L.LightningModule):
                 warm_start_alpha=self.hparams.warm_start_alpha,
                 init_noise_sigma=self.hparams.flow_init_noise_sigma,
                 eta=self.hparams.flow_eta,
+            )
+        elif self.hparams.direct_prediction:
+            _, outs = self._roll_forecast(
+                self.model,
+                data,
+                forcing,
+                self.hparams.rollout_length,
+                loss_fn=None,
+                use_rollout_weighting=False,
             )
         else:
             _, outs = self._roll_forecast(
