@@ -91,8 +91,8 @@ model:
 
 data:
   data_path:
-  - /anemoi-data/meps-nwcsaf-475x535-2020-2025-v4.zarr
-  static_forcing_path: /anemoi-data/meps-const-v4.zarr
+  - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  static_forcing_path: ../data/meps-const-v4.zarr
   prognostic_params:
   - tcc
   forcing_params:
