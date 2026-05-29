@@ -64,8 +64,12 @@ model:
     - 0.01
     - 0.01
     - 0.1
-    learning_rate: 5.0e-06
-    warmup_iterations: 300
+    # 3e-5: above kinetic-creative's 5e-6 fine-tune LR, below from-scratch's 1e-4.
+    # Fresh lead_embeddings + the 1-step-tendency -> analysis->t+k displacement task
+    # shift need real learning; 5e-6 would undertrain the long-lead embeddings
+    # (the congruent-foley false-negative trap). Backbone is a good init, so not 1e-4.
+    learning_rate: 3.0e-05
+    warmup_iterations: 500
     weight_decay: 0.02
     # MUST be 12 in direct mode: each lead has its own lead_embeddings[t] and is
     # learned independently — there is no shared step-operator to extrapolate, so
