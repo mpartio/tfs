@@ -506,14 +506,15 @@ def direct_forecast(
     """
     Direct (non-autoregressive) multi-lead forecast.
 
-    Every lead t is predicted INDEPENDENTLY from the analysis state — no
-    autoregressive feedback.  The model's tendency output is interpreted as the
-    analysis → t+1 displacement:
+    Encode the analysis context ONCE, then decode independently per lead by
+    injecting only that lead's future-forcing frame.  This is O(1) encoder
+    calls instead of O(n_step), which eliminates the OOM at n_step=12.
 
-        pred[t] = analysis_curr + tendency[t]
-
-    Loss delta is ALWAYS analysis-relative (not relative to the previous lead)
-    so the model learns analysis→horizon displacements, not incremental steps.
+    Temporal alignment follows MetNet-style: the encoder always sees the fixed
+    analysis frames and their concurrent forcing; each decoder call receives the
+    NWP forcing valid at the target lead time.  The old implementation slid the
+    forcing window per lead, which both redundantly re-encoded and misaligned
+    the history forcing with the analysis data.
 
     Args:
         model    : cc2model with direct_prediction=True (uses lead_embeddings)
@@ -530,8 +531,9 @@ def direct_forecast(
     B, T, C_data, H, W = x.shape
 
     if loss_fn is not None:
-        _, T_y, _, _, _ = y.shape
-        assert T_y == n_step, "y does not match n_steps: {} vs {}".format(T_y, n_step)
+        assert y.shape[1] == n_step, "y does not match n_steps: {} vs {}".format(
+            y.shape[1], n_step
+        )
 
     assert (
         forcing.shape[1] == n_step + T
@@ -539,10 +541,13 @@ def direct_forecast(
         forcing.shape[1], n_step
     )
 
-    # Analysis state — computed ONCE, reused for every lead
-    analysis_prev = x[:, -2].unsqueeze(1)   # [B, 1, C, H, W]
-    analysis_curr = x[:, -1].unsqueeze(1)   # [B, 1, C, H, W]
-    analysis_state = torch.cat([analysis_prev, analysis_curr], dim=1)  # [B, 2, C, H, W]
+    # Fixed analysis context — shapes: [B, T, C, H, W] and [B, T, Cf, H, W]
+    analysis = x[:, -T:, ...]           # [B, T, C, H, W]
+    history_forcing = forcing[:, :T, ...]  # analysis-time forcing (T frames, fixed)
+    analysis_curr = x[:, -1:, ...]      # [B, 1, C, H, W]  — the "current" state
+
+    # ----- ENCODE ONCE -----
+    encoded, skip, padding_info = model.encode_context(analysis, history_forcing)
 
     all_losses = []
     all_predictions = []
@@ -550,18 +555,20 @@ def direct_forecast(
     metrics = {}
 
     for t in range(n_step):
-        # Each lead sees its own per-lead NWP forcing window
-        step_forcing = forcing[:, t : t + T + 1, ...]  # [B, T+1, C_force, H, W]
+        # Per-lead: inject only this lead's NWP forcing frame
+        future_forcing = forcing[:, T + t : T + t + 1, ...]  # [B, 1, Cf, H, W]
 
-        # Forward pass — always from analysis, never from a previous prediction
-        tendency, _, _ = _forward_and_unpack(model, analysis_state, step_forcing, t)
+        # ----- DECODE per lead (encoder graph reused; grads accumulate) -----
+        tendency = model.decode_lead(
+            encoded, skip, padding_info, future_forcing, t
+        )  # [B, 1, C, H, W]
 
-        next_pred = analysis_curr + tendency  # [B, 1, C, H, W]
+        next_pred = analysis_curr + tendency  # always analysis-relative
 
-        # Loss: delta is ALWAYS analysis-relative for ALL leads
+        # Loss: delta always relative to analysis state
         if loss_fn is not None:
             y_true_full = y[:, t : t + 1, ...]
-            y_true_delta = y_true_full - x[:, -1].unsqueeze(1)
+            y_true_delta = y_true_full - x[:, -1, ...].unsqueeze(1)
             step_loss = loss_fn(
                 y_true_full=y_true_full,
                 y_pred_full=next_pred,
@@ -583,9 +590,7 @@ def direct_forecast(
     if loss is not None:
         loss.update(metrics)
 
-    out = {
+    return loss, {
         "tendencies": torch.cat(all_tendencies, dim=1),
         "predictions": torch.cat(all_predictions, dim=1),
     }
-
-    return loss, out

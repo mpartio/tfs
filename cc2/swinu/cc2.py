@@ -498,3 +498,39 @@ class cc2model(nn.Module):
         ), f"Output shape {out.shape[-2:]} does not match real input resolution {self.real_input_resolution}"
 
         return out
+
+    def encode_context(self, data, forcing_history):
+        """Encode analysis context once for use across all decode_lead calls.
+
+        Args:
+            data:            [B, T, C, H, W]  analysis (history) frames
+            forcing_history: [B, T, Cf, H, W] analysis-time forcing (T frames only)
+        Returns:
+            encoded:      [B, T, P, D*2]
+            skip:         [B, T, P, D]
+            padding_info: dict for depad_tensor
+        """
+        data, padding_info = pad_tensor(data, self.patch_size, 1)
+        forcing_history, _ = pad_tensor(forcing_history, self.patch_size, 1)
+        # Tf == T, so f_future will be None from patch_embedding
+        x_tokens, _ = self.patch_embedding(data, forcing_history)
+        encoded, skip = self.encode(x_tokens)
+        return encoded, skip, padding_info
+
+    def decode_lead(self, encoded, skip, padding_info, future_forcing, step):
+        """Decode a single lead from the pre-computed encoder context.
+
+        Args:
+            encoded:        [B, T, P, D*2]  output of encode_context
+            skip:           [B, T, P, D]    skip connection from encode_context
+            padding_info:   dict            from encode_context
+            future_forcing: [B, 1, Cf, H, W] forcing at the target lead time
+            step:           int              lead index 0..n_step-1
+        Returns:
+            tendency: [B, 1, C, H, W]
+        """
+        ff, _ = pad_tensor(future_forcing, self.patch_size, 1)  # [B, 1, Cf, Hp, Wp]
+        f_future = self.patch_embed.embed_future_frame(ff[:, 0])  # [B, 1, P, embed_dim]
+        x = self.decode(encoded, step, skip, f_future)
+        out = self._tokens_to_output(x, padding_info, step)
+        return out
