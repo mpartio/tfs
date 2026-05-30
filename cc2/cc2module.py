@@ -53,6 +53,7 @@ class cc2module(L.LightningModule):
         ss_pred_min: float = 0.0,
         ss_pred_max: float = 1.0,
         freeze_layers: list[str] = [],
+        train_bias_only: bool = False,
         loss_fn: nn.Module | None = None,
         test_output_directory: str | None = None,
         use_rollout_weighting: bool = False,
@@ -215,6 +216,37 @@ class cc2module(L.LightningModule):
                     frozen.append(name)
 
         rank_zero_info(f"Froze layers: {frozen}")
+        self._store_trainable_module_names()
+
+    def _apply_bitfit(self) -> None:
+        """BitFit (Zaken et al. 2022): train ONLY bias terms + LayerNorm affine
+        params, freeze all weight matrices. Targets a pretrain->finetune output
+        DISTRIBUTION SHIFT (mean offset) without distorting the pretrained
+        feature/transport backbone (Kumar et al. 2022 feature-distortion).
+        Probe for: is the CERRA cloudier prior carried in the output-side bias
+        scalars (BitFit fixes it) or distributed through the weight matrices
+        (BitFit can't; LP-FT needed)?"""
+        if not self.hparams.train_bias_only:
+            return
+        # freeze everything, then unfreeze biases + LayerNorm affine
+        for p in self.model.parameters():
+            p.requires_grad = False
+        trainable = 0
+        for name, p in self.model.named_parameters():
+            if name.endswith("bias"):
+                p.requires_grad = True
+                trainable += p.numel()
+        for m in self.model.modules():
+            if isinstance(m, nn.LayerNorm):
+                for p in m.parameters():
+                    if not p.requires_grad:
+                        trainable += p.numel()
+                    p.requires_grad = True
+        total = sum(p.numel() for p in self.model.parameters())
+        rank_zero_info(
+            f"BitFit: {trainable}/{total} params trainable "
+            f"({100.0 * trainable / max(total, 1):.3f}%)"
+        )
         self._store_trainable_module_names()
         self._print_trainable_layers()
 
@@ -467,6 +499,7 @@ class cc2module(L.LightningModule):
             rank_zero_info(f"Weight loading results: {load_result}")
 
         self._freeze_layers()
+        self._apply_bitfit()
 
         rank = get_rank()
 
