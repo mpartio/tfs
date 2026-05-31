@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import lightning.pytorch as pl
 from typing import Dict
 from torch.fft import rfftfreq, fftfreq
+from torch.utils.checkpoint import checkpoint
 
 
 def apply_hann_window(field: torch.Tensor, H: int, W: int):
@@ -559,9 +560,20 @@ def direct_forecast(
         future_forcing = forcing[:, T + t : T + t + 1, ...]  # [B, 1, Cf, H, W]
 
         # ----- DECODE per lead (encoder graph reused; grads accumulate) -----
-        tendency = model.decode_lead(
-            encoded, skip, padding_info, future_forcing, t
-        )  # [B, 1, C, H, W]
+        # OOM fix: outer-checkpoint each decode so only ONE lead's decode
+        # activations live during backward, not all n_step at once. The 12
+        # decodes otherwise hold their (already block-checkpointed) segments
+        # simultaneously for the combined backward -> memory scales ~n_step.
+        if model.training and getattr(model, "use_gradient_checkpointing", False):
+            tendency = checkpoint(
+                model.decode_lead,
+                encoded, skip, padding_info, future_forcing, t,
+                use_reentrant=False,
+            )  # [B, 1, C, H, W]
+        else:
+            tendency = model.decode_lead(
+                encoded, skip, padding_info, future_forcing, t
+            )  # [B, 1, C, H, W]
 
         next_pred = analysis_curr + tendency  # always analysis-relative
 
