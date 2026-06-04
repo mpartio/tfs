@@ -66,6 +66,8 @@ class cc2module(L.LightningModule):
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
+        use_continuous_lead_embedding: bool = False,
+        lead_times: list | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -98,6 +100,7 @@ class cc2module(L.LightningModule):
                 "ss_pred_max",
                 "use_flow_matching",
                 "direct_prediction",
+                "use_continuous_lead_embedding",
             ]
         }
 
@@ -474,13 +477,20 @@ class cc2module(L.LightningModule):
                 eta=self.hparams.flow_eta,
             )
         elif self.hparams.direct_prediction:
+            # lead_times (if set) is the single source for the lead count; else rollout_length
+            n_step = (
+                len(self.hparams.lead_times)
+                if self.hparams.lead_times
+                else self.hparams.rollout_length
+            )
             _, outs = self._roll_forecast(
                 self.model,
                 data,
                 forcing,
-                self.hparams.rollout_length,
+                n_step,
                 loss_fn=None,
                 use_rollout_weighting=False,
+                lead_times=self.hparams.lead_times,
             )
         else:
             _, outs = self._roll_forecast(

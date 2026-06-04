@@ -502,6 +502,7 @@ def direct_forecast(
     step: int | None = None,
     max_step: int | None = None,
     use_rollout_weighting: bool = False,
+    lead_times: list | None = None,
     **_ignored,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -542,6 +543,23 @@ def direct_forecast(
         forcing.shape[1], n_step
     )
 
+    # Lead-time list. Default = integer steps 0..n_step-1 (training: hourly stepping,
+    # lead value == frame index). At INFERENCE an explicit lead_times list (step-units)
+    # lets the CONTINUOUS embedding be queried at arbitrary times (sub-hour, >horizon):
+    # the i-th provided forcing/target frame is used for lead_times[i] (NO interpolation
+    # — the caller supplies forcing already aligned to lead_times). len must == n_step,
+    # so set rollout_length == len(lead_times) (that's how many frames the loader provides).
+    leads = lead_times if lead_times is not None else list(range(n_step))
+    assert len(leads) == n_step, (
+        "lead_times length {} must equal n_step/rollout_length {} "
+        "(= number of forcing/target frames provided)".format(len(leads), n_step)
+    )
+    if any(float(tau) != int(tau) for tau in leads):
+        assert getattr(model, "use_continuous_lead_embedding", False), (
+            "fractional lead_times require use_continuous_lead_embedding=True "
+            "(the discrete lead table only supports integer leads)"
+        )
+
     # Fixed analysis context — shapes: [B, T, C, H, W] and [B, T, Cf, H, W]
     analysis = x[:, -T:, ...]           # [B, T, C, H, W]
     history_forcing = forcing[:, :T, ...]  # analysis-time forcing (T frames, fixed)
@@ -555,9 +573,10 @@ def direct_forecast(
     all_tendencies = []
     metrics = {}
 
-    for t in range(n_step):
-        # Per-lead: inject only this lead's NWP forcing frame
-        future_forcing = forcing[:, T + t : T + t + 1, ...]  # [B, 1, Cf, H, W]
+    for i, tau in enumerate(leads):
+        # i = sequential frame index (forcing/target); tau = lead-time value (embedding).
+        # For training (leads = range(n_step)) tau == i, so behaviour is unchanged.
+        future_forcing = forcing[:, T + i : T + i + 1, ...]  # [B, 1, Cf, H, W]
 
         # ----- DECODE per lead (encoder graph reused; grads accumulate) -----
         # OOM fix: outer-checkpoint each decode so only ONE lead's decode
@@ -567,19 +586,19 @@ def direct_forecast(
         if model.training and getattr(model, "use_gradient_checkpointing", False):
             tendency = checkpoint(
                 model.decode_lead,
-                encoded, skip, padding_info, future_forcing, t,
+                encoded, skip, padding_info, future_forcing, tau,
                 use_reentrant=False,
             )  # [B, 1, C, H, W]
         else:
             tendency = model.decode_lead(
-                encoded, skip, padding_info, future_forcing, t
+                encoded, skip, padding_info, future_forcing, tau
             )  # [B, 1, C, H, W]
 
         next_pred = analysis_curr + tendency  # always analysis-relative
 
         # Loss: delta always relative to analysis state
         if loss_fn is not None:
-            y_true_full = y[:, t : t + 1, ...]
+            y_true_full = y[:, i : i + 1, ...]
             y_true_delta = y_true_full - x[:, -1, ...].unsqueeze(1)
             step_loss = loss_fn(
                 y_true_full=y_true_full,

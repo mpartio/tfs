@@ -522,7 +522,10 @@ class cc2DataModule(L.LightningDataModule):
             model = model.module if hasattr(model, "module") else model
 
             self.history_length = model.hparams.history_length
-            self.rollout_length = model.hparams.rollout_length
+            # lead_times (inference only) is the single source for how many future
+            # frames to load; falls back to rollout_length when unset (training).
+            lt = getattr(model.hparams, "lead_times", None)
+            self.rollout_length = len(lt) if lt else model.hparams.rollout_length
 
             group_size = self.history_length + self.rollout_length
 
