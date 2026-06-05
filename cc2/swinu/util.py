@@ -493,6 +493,124 @@ def flow_roll_forecast(
     return None, out
 
 
+def direct_flow_forecast(
+    model: nn.Module,
+    data: list,
+    forcing: torch.Tensor,
+    n_step: int,
+    num_inference_steps: int = 4,
+    flow_warm_start: bool = True,
+    warm_start_alpha: float = 0.4,
+    init_noise_sigma: float = 1.0,
+    eta: float = 0.0,
+    lead_times: list | None = None,
+    **_ignored,
+):
+    """
+    Direct (non-autoregressive) CFM inference.
+
+    Encode the analysis context ONCE (like ``direct_forecast``), then for each
+    lead run an INDEPENDENT K-step DDIM denoising loop (the refinement math of
+    ``flow_roll_forecast``). There is NO autoregressive loop: each lead is
+    decoded from the shared analysis encode, so the bias-accumulation path is
+    absent and CFM only supplies sharpness (bland-layer "Path 3" de-blur).
+
+    The flow anchor (x_alpha, alpha_map) is consumed ONLY by ``decode_lead``
+    (decoder-side future-forcing frame), not the encoder — so encode-once is
+    valid and each DDIM step re-runs only the (cheap) per-lead decode.
+
+    forcing : [B, T+n_step, C_force+2, H, W]; last 2 channels (x_alpha, alpha_map)
+              are 0 on entry and filled by the denoising loop.
+    Returns (None, {"tendencies", "predictions"}) — matches direct_forecast.
+    """
+    x, y = data
+    B, T, C_data, H, W = x.shape
+
+    leads = lead_times if lead_times is not None else list(range(n_step))
+    assert len(leads) == n_step, "lead_times length {} must equal n_step {}".format(
+        len(leads), n_step
+    )
+    if any(float(tau) != int(tau) for tau in leads):
+        assert getattr(model, "use_continuous_lead_embedding", False), (
+            "fractional lead_times require use_continuous_lead_embedding=True"
+        )
+    assert (
+        forcing.shape[1] == n_step + T
+    ), "Forcing length {} insufficient for direct_flow_forecast n_step={}".format(
+        forcing.shape[1], n_step
+    )
+
+    analysis = x[:, -T:, ...]              # [B, T, C, H, W]
+    history_forcing = forcing[:, :T, ...]  # [B, T, Cf+2, H, W] (flow channels 0 in history)
+    analysis_curr = x[:, -1:, ...]         # [B, 1, C, H, W]
+
+    # ----- ENCODE ONCE -----
+    encoded, skip, padding_info = model.encode_context(analysis, history_forcing)
+
+    all_predictions = []
+    all_tendencies = []
+
+    for i, tau in enumerate(leads):
+        # Per-lead future-forcing frame; clone so the flow channels can be written
+        # in-place each DDIM iteration without corrupting the shared forcing tensor.
+        future_forcing = forcing[:, T + i : T + i + 1, ...].clone()  # [B,1,Cf+2,H,W]
+
+        if flow_warm_start:
+            # Smooth pass: flow channels are 0 -> deterministic (mean) prediction,
+            # used as the in-distribution starting point for the DDIM chain.
+            with torch.no_grad():
+                tendency_warm = model.decode_lead(
+                    encoded, skip, padding_info, future_forcing, tau
+                )
+            smooth_pred = analysis_curr + tendency_warm
+            alpha_init = warm_start_alpha
+            x_alpha = (
+                1.0 - warm_start_alpha
+            ) * smooth_pred.detach() + warm_start_alpha * torch.randn_like(smooth_pred)
+        else:
+            alpha_init = 1.0
+            x_alpha = init_noise_sigma * torch.randn_like(analysis_curr)
+
+        # DDIM schedule: alpha_init -> ~0 (matches flow_roll_forecast)
+        alphas = torch.linspace(
+            alpha_init, 0.05, num_inference_steps + 1, device=x.device
+        )
+
+        x1_hat = analysis_curr  # overwritten on first iteration
+        for k in range(num_inference_steps):
+            alpha = alphas[k]
+            alpha_next = alphas[k + 1]
+
+            # Write the flow anchor into this lead's future-forcing frame (in-place).
+            future_forcing[:, 0, -2, :, :] = x_alpha[:, 0, 0, :, :]
+            future_forcing[:, 0, -1, :, :] = float(alpha)
+
+            with torch.no_grad():
+                tendency = model.decode_lead(
+                    encoded, skip, padding_info, future_forcing, tau
+                )
+
+            x1_hat = analysis_curr + tendency  # predicted clean state [B, 1, C, H, W]
+
+            # DDIM update: estimate noise, step to next alpha level
+            alpha_clamped = alpha.clamp(min=1e-6)
+            z_est = (x_alpha - (1.0 - alpha_clamped) * x1_hat) / alpha_clamped
+            x_alpha = (1.0 - alpha_next) * x1_hat + alpha_next * z_est
+            if eta > 0.0:
+                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * torch.randn_like(
+                    x_alpha
+                )
+
+        final_pred = x1_hat.clamp(0.0, 1.0)
+        all_predictions.append(final_pred.detach())
+        all_tendencies.append((final_pred - analysis_curr).detach())
+
+    return None, {
+        "tendencies": torch.cat(all_tendencies, dim=1),
+        "predictions": torch.cat(all_predictions, dim=1),
+    }
+
+
 def direct_forecast(
     model: nn.Module,
     data: list[torch.Tensor],

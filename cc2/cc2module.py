@@ -455,7 +455,36 @@ class cc2module(L.LightningModule):
     def test_step(self, batch, batch_idx):
         data, forcing, dates = batch
 
-        if self.hparams.use_flow_matching:
+        if self.hparams.use_flow_matching and self.hparams.direct_prediction:
+            # CFM on the direct-prediction path: encode-once + per-lead independent
+            # DDIM (no AR loop). See swinu.util.direct_flow_forecast / bland-layer Path 3.
+            from swinu.util import direct_flow_forecast
+
+            n_step = (
+                len(self.hparams.lead_times)
+                if self.hparams.lead_times
+                else self.hparams.rollout_length
+            )
+            # Pre-allocate the 2 extra flow channels (filled during denoising)
+            B, T_total, C_force, H, W = forcing.shape
+            extra = torch.zeros(
+                B, T_total, 2, H, W, device=forcing.device, dtype=forcing.dtype
+            )
+            flow_forcing = torch.cat([forcing, extra], dim=2)
+
+            _, outs = direct_flow_forecast(
+                self.model,
+                data,
+                flow_forcing,
+                n_step,
+                num_inference_steps=self.hparams.num_inference_steps,
+                flow_warm_start=self.hparams.flow_warm_start,
+                warm_start_alpha=self.hparams.warm_start_alpha,
+                init_noise_sigma=self.hparams.flow_init_noise_sigma,
+                eta=self.hparams.flow_eta,
+                lead_times=self.hparams.lead_times,
+            )
+        elif self.hparams.use_flow_matching:
             from swinu.util import flow_roll_forecast
 
             # Pre-allocate the 2 extra flow channels (filled during denoising)
