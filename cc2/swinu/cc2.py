@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -300,12 +301,21 @@ class cc2model(nn.Module):
         self.use_continuous_lead_embedding = getattr(
             config, "use_continuous_lead_embedding", False
         )
-        if self.use_continuous_lead_embedding:
-            self.lead_embed = ContinuousLeadEmbedding(self.embed_dim * 2)
-        else:
-            self.lead_embeddings = nn.Parameter(
-                torch.randn(16, self.embed_dim * 2) * 0.02
-            )
+        # Variant C: a direct-prediction model with NO per-lead embedding at all,
+        # relying entirely on the (target-time) forcing to carry the lead/clock
+        # signal. Continuous-by-construction with no interpolation seam.
+        self.use_lead_embedding = getattr(config, "use_lead_embedding", True)
+        # Only direct-prediction models use a per-lead embedding; autoregressive
+        # models (e.g. kinetic-creative) rely on step_id_embeddings and never had
+        # this parameter. Creating it unconditionally broke strict checkpoint
+        # loading for AR checkpoints ("Missing key model.lead_embeddings").
+        if self.direct_prediction and self.use_lead_embedding:
+            if self.use_continuous_lead_embedding:
+                self.lead_embed = ContinuousLeadEmbedding(self.embed_dim * 2)
+            else:
+                self.lead_embeddings = nn.Parameter(
+                    torch.randn(16, self.embed_dim * 2) * 0.02
+                )
 
         # Initialize weights
         # self.apply(self._init_weights)
@@ -416,12 +426,20 @@ class cc2model(nn.Module):
 
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
         # Determine step embedding: lead index (direct mode) or binary AR step
+        step_embedding = None
         if self.direct_prediction:
             # step is the lead index 0..n-1 passed from direct_forecast
-            if self.use_continuous_lead_embedding:
-                step_embedding = self.lead_embed(step)  # [embed_dim*2]
-            else:
-                step_embedding = self.lead_embeddings[step]  # [embed_dim*2]
+            if self.use_lead_embedding:
+                if self.use_continuous_lead_embedding:
+                    step_embedding = self.lead_embed(step)  # [embed_dim*2]
+                else:
+                    step_embedding = self.lead_embeddings[step]  # [embed_dim*2]
+                # Diagnostic hook (pre-check C): when set, zero the per-lead embedding
+                # at inference to measure how much the model relies on it vs. on the
+                # (target-time) forcing. Dormant unless CC2_ZERO_LEAD_EMBED=1.
+                if os.environ.get("CC2_ZERO_LEAD_EMBED") == "1":
+                    step_embedding = torch.zeros_like(step_embedding)
+            # else: variant C — no per-lead embedding; lead signal comes from forcing.
         else:
             step_id = 0
             if not self.use_scheduled_sampling and step > 0:
@@ -432,9 +450,10 @@ class cc2model(nn.Module):
         # For first token in each sequence (acts as a "step type" token)
         # We'll add it to the last P tokens which represent our current state
         decoder_in_with_id = decoder_in.clone()
-        decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
-            0
-        ).unsqueeze(1)
+        if step_embedding is not None:
+            decoder_in_with_id[:, -P:] = decoder_in[:, -P:] + step_embedding.unsqueeze(
+                0
+            ).unsqueeze(1)
 
         if f_future is not None:
             # f_future: [B, 1, P, D_enc]  (from patch embed)
