@@ -290,9 +290,13 @@ class cc2model(nn.Module):
             undo_scale=False,
         )
 
-        # Step identification embeddings
-        self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
-        nn.init.normal_(self.step_id_embeddings, std=0.02)
+        # Step identification embeddings — autoregressive mode only. Direct
+        # prediction decodes each lead independently and never reads this (the
+        # AR branch of decode() is the sole consumer), so don't allocate the
+        # vestigial parameter there.
+        if not self.direct_prediction:
+            self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
+            nn.init.normal_(self.step_id_embeddings, std=0.02)
 
         # Per-lead embeddings for direct (non-autoregressive) prediction mode.
         # Continuous (sinusoidal+MLP) encoding enables ANY lead time from one model;

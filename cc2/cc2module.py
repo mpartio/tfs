@@ -152,6 +152,33 @@ class cc2module(L.LightningModule):
 
         self.model_configured = True
 
+    def on_load_checkpoint(self, checkpoint) -> None:
+        """Tolerate embedding params this model variant no longer creates.
+
+        ``step_id_embeddings`` (AR-only now) and ``lead_embeddings`` (omitted by
+        the no-embedding variant C) are conditionally instantiated, so an older
+        checkpoint may carry a key the current variant omits. Drop only those
+        specific orphaned keys from the incoming state_dict so strict loading
+        still catches genuinely-missing weights. Note: this fixes weight loading
+        (test / branch / weights-only), NOT full optimizer-state resume — a run
+        whose optimizer state references a now-removed param cannot be resumed
+        with --ckpt_path under the new code; branch (init_weights_from_ckpt) or
+        resume on the old code instead.
+        """
+        sd = checkpoint.get("state_dict") if isinstance(checkpoint, dict) else None
+        if not sd or not getattr(self, "model", None):
+            return
+        own = set(self.state_dict().keys())
+        optional = ("model.step_id_embeddings", "model.lead_embeddings")
+        dropped = [k for k in list(sd.keys()) if k in optional and k not in own]
+        for k in dropped:
+            sd.pop(k)
+        if dropped:
+            rank_zero_info(
+                f"on_load_checkpoint: dropped orphaned key(s) {dropped} "
+                "not present in this model variant"
+            )
+
     def _store_trainable_module_names(self) -> None:
         trainable_modules = set()
         for module_name, module in self.model.named_modules():
