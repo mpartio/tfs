@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -434,11 +433,6 @@ class cc2model(nn.Module):
                     step_embedding = self.lead_embed(step)  # [embed_dim*2]
                 else:
                     step_embedding = self.lead_embeddings[step]  # [embed_dim*2]
-                # Diagnostic hook (pre-check C): when set, zero the per-lead embedding
-                # at inference to measure how much the model relies on it vs. on the
-                # (target-time) forcing. Dormant unless CC2_ZERO_LEAD_EMBED=1.
-                if os.environ.get("CC2_ZERO_LEAD_EMBED") == "1":
-                    step_embedding = torch.zeros_like(step_embedding)
             # else: variant C — no per-lead embedding; lead signal comes from forcing.
         else:
             step_id = 0
