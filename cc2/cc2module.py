@@ -67,6 +67,7 @@ class cc2module(L.LightningModule):
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
         use_continuous_lead_embedding: bool = False,
+        use_lead_embedding: bool = True,
         lead_times: list | None = None,
     ):
         super().__init__()
@@ -101,6 +102,7 @@ class cc2module(L.LightningModule):
                 "use_flow_matching",
                 "direct_prediction",
                 "use_continuous_lead_embedding",
+                "use_lead_embedding",
             ]
         }
 
