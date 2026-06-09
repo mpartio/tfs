@@ -1,0 +1,221 @@
+seed_everything: 42
+trainer:
+  accelerator: auto
+  strategy: ddp_find_unused_parameters_true
+  devices: auto
+  num_nodes: 4
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2_direct_prediction
+      run_name: null
+      tracking_uri: null
+      tags: null
+      save_dir: ./mlruns
+      log_model: false
+      prefix: ''
+      artifact_location: null
+      run_id: null
+      synchronous: null
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      dirpath: null
+      filename: null
+      monitor: val_loss
+      verbose: false
+      save_last: true
+      save_top_k: 3
+      save_on_exception: false
+      save_weights_only: false
+      mode: min
+      auto_insert_metric_name: true
+      every_n_train_steps: null
+      train_time_interval: null
+      every_n_epochs: null
+      save_on_train_epoch_end: null
+      enable_version_counter: true
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  fast_dev_run: false
+  max_epochs: null
+  min_epochs: null
+  max_steps: 20000
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: 1.0
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: 200
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: 100
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: false
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+  enable_autolog_hparams: true
+  model_registry: null
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+    learning_rate: 3.0e-05
+    warmup_iterations: 500
+    weight_decay: 0.02
+    rollout_length: 12
+    branch_from_run: trusting-radar/1
+    use_gradient_checkpointing: true
+    model_family: swinu
+    use_scheduled_sampling: false
+    ss_pred_min: 0.0
+    ss_pred_max: 1.0
+    freeze_layers: []
+    loss_fn:
+      class_path: loss.combined.CombinedLoss
+      init_args:
+        losses:
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+        weights:
+        - 1.0
+        ramps: null
+        names:
+        - bce
+    test_output_directory: null
+    use_rollout_weighting: false
+    use_statistics_from_checkpoint: true
+    force_frozen_backbone_to_eval: false
+    preprocessor: null
+    use_flow_matching: false
+    num_inference_steps: 4
+    flow_warm_start: true
+    warm_start_alpha: 0.4
+    flow_init_noise_sigma: 1.0
+    flow_eta: 0.0
+    direct_prediction: true
+    # SIMPLEST model: no lead embedding AND BCE-only loss (SoftFSS dropped above).
+    #   * No per-lead embedding (use_lead_embedding=false): the model reads the
+    #     lead/clock entirely off the target-time forcing (insolation, cos/sin
+    #     julian_day, cos/sin local_time). Continuous-by-construction, no seam.
+    #     Pre-check C (2026-06-08): zeroing the discrete embedding on bland-layer
+    #     @3654 changed all-lead bias/MAE/FSS/genesis by <=0.001 -> embedding
+    #     vestigial at inference; this tests dispensability at training time.
+    #   * BCE-only loss: the SoftFSS ablation arm. Compare to variant-C
+    #     (config-nwcsaf-no-lead-embedding.yaml = no-embed + BCE+SoftFSS): the
+    #     ONLY difference is the loss, so this cleanly isolates SoftFSS. Compare
+    #     variant-C vs bland-layer to isolate the embedding. Decisive test runs
+    #     THROUGH the CFM stage on partly-cloudy FSS @45-70km / t+4-8 (the SoftFSS
+    #     effect that could hide is in the CFM-output target, not the backbone).
+    # Otherwise holds bland-layer's recipe fixed (3e-5, 20k, trusting-radar branch).
+    use_continuous_lead_embedding: false
+    use_lead_embedding: false
+data:
+  data_path:
+  - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_path: ../data/meps-const-v4.zarr
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  train_start: '2020-01-01'
+  train_end: '2024-01-01'
+  val_start: '2024-01-01'
+  val_end: '2025-01-01'
+  test_start: null
+  test_end: null
+  predict_start: null
+  predict_end: null
+  test_time_stride: null
+  seed: 0
+  batch_size: 1
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+  normalization: null
+  apply_smoothing: false
+  data_options: {}
+optimizer: null
+lr_scheduler: null
+ckpt_path: null
+weights_only: null
