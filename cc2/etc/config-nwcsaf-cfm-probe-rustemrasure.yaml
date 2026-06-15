@@ -5,7 +5,7 @@
 # whether CFM de-blur absorbs it. If a gap persists through CFM -> keep SoftFSS
 # (per devils-advocate stop-rules). NB end-to-end design: if B fails, a third cell
 # (CFM-BCE-only on hot-booth) disambiguates backbone vs CFM-loss attribution.
-# use_lead_embedding=false REQUIRED (backbone ckpt has no embedding keys).
+# Direct-prediction is forcing-driven (no lead embedding).
 # lightning.pytorch==2.6.0
 seed_everything: 42
 trainer:
@@ -153,8 +153,6 @@ model:
     flow_init_noise_sigma: 1.0
     flow_eta: 0.05
     direct_prediction: true
-    use_continuous_lead_embedding: false
-    use_lead_embedding: false
     lead_times: null
 data:
   data_path:

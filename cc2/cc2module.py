@@ -66,8 +66,6 @@ class cc2module(L.LightningModule):
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
-        use_continuous_lead_embedding: bool = False,
-        use_lead_embedding: bool = True,
         lead_times: list | None = None,
     ):
         super().__init__()
@@ -101,8 +99,6 @@ class cc2module(L.LightningModule):
                 "ss_pred_max",
                 "use_flow_matching",
                 "direct_prediction",
-                "use_continuous_lead_embedding",
-                "use_lead_embedding",
             ]
         }
 
@@ -157,11 +153,13 @@ class cc2module(L.LightningModule):
     def on_load_checkpoint(self, checkpoint) -> None:
         """Tolerate embedding params this model variant no longer creates.
 
-        ``step_id_embeddings`` (AR-only now) and ``lead_embeddings`` (omitted by
-        the no-embedding variant C) are conditionally instantiated, so an older
-        checkpoint may carry a key the current variant omits. Drop only those
-        specific orphaned keys from the incoming state_dict so strict loading
-        still catches genuinely-missing weights. Note: this fixes weight loading
+        ``step_id_embeddings`` is AR-only (direct-prediction models omit it), so
+        an AR checkpoint may carry a key this variant omits. Drop only that
+        orphaned key from the incoming state_dict so strict loading still catches
+        genuinely-missing weights. NOTE: lead-embedding checkpoints (e.g.
+        noisy-buck, bland-layer) are NOT silently accepted — the lead-embedding
+        code was removed, so their ``model.lead_embeddings`` key now fails strict
+        load loudly. Load those from the ``paper-v1`` git tag. This fixes weight loading
         (test / branch / weights-only), NOT full optimizer-state resume — a run
         whose optimizer state references a now-removed param cannot be resumed
         with --ckpt_path under the new code; branch (init_weights_from_ckpt) or
@@ -171,7 +169,7 @@ class cc2module(L.LightningModule):
         if not sd or not getattr(self, "model", None):
             return
         own = set(self.state_dict().keys())
-        optional = ("model.step_id_embeddings", "model.lead_embeddings")
+        optional = ("model.step_id_embeddings",)
         dropped = [k for k in list(sd.keys()) if k in optional and k not in own]
         for k in dropped:
             sd.pop(k)

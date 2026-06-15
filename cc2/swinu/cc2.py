@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from einops import rearrange, repeat
 from swinu.layers import (
     PatchMerge,
@@ -20,42 +19,6 @@ from swinu.layers import (
 )
 from types import SimpleNamespace
 from torch.utils.checkpoint import checkpoint
-
-
-class ContinuousLeadEmbedding(nn.Module):
-    """Continuous (sinusoidal + MLP) encoding of lead time, replacing the discrete
-    16-slot lead_embeddings table. Maps a scalar lead time -> [out_dim], so ANY lead
-    is queryable from one model (interpolate in-range; extrapolate beyond-horizon =
-    representable, not guaranteed skillful). Diffusion-style timestep embedding:
-    sinusoidal(t) -> SiLU MLP -> [out_dim]. t is the raw lead index (0,1,...), so the
-    discrete table's index semantics are preserved; non-integer/out-of-range t work too.
-    """
-
-    def __init__(self, out_dim, freq_dim=128, max_period=64.0):
-        super().__init__()
-        assert freq_dim % 2 == 0
-        self.freq_dim = freq_dim
-        self.max_period = max_period
-        self.mlp = nn.Sequential(
-            nn.Linear(freq_dim, out_dim),
-            nn.SiLU(),
-            nn.Linear(out_dim, out_dim),
-        )
-
-    def forward(self, t):
-        # t: scalar lead time (int or float). Returns [out_dim] to match the
-        # discrete table's lead_embeddings[step] usage in decode().
-        half = self.freq_dim // 2
-        dev = self.mlp[0].weight.device
-        freqs = torch.exp(
-            -math.log(self.max_period)
-            * torch.arange(half, device=dev, dtype=torch.float32)
-            / half
-        )
-        tt = torch.as_tensor(float(t), device=dev, dtype=torch.float32)
-        ang = tt * freqs  # [half]
-        emb = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)  # [freq_dim]
-        return self.mlp(emb)  # [out_dim]
 
 
 class cc2model(nn.Module):
@@ -298,27 +261,9 @@ class cc2model(nn.Module):
             self.step_id_embeddings = nn.Parameter(torch.randn(2, self.embed_dim * 2))
             nn.init.normal_(self.step_id_embeddings, std=0.02)
 
-        # Per-lead embeddings for direct (non-autoregressive) prediction mode.
-        # Continuous (sinusoidal+MLP) encoding enables ANY lead time from one model;
-        # else the discrete 16-slot table (covers all foreseeable rollout lengths).
-        self.use_continuous_lead_embedding = getattr(
-            config, "use_continuous_lead_embedding", False
-        )
-        # Variant C: a direct-prediction model with NO per-lead embedding at all,
-        # relying entirely on the (target-time) forcing to carry the lead/clock
-        # signal. Continuous-by-construction with no interpolation seam.
-        self.use_lead_embedding = getattr(config, "use_lead_embedding", True)
-        # Only direct-prediction models use a per-lead embedding; autoregressive
-        # models (e.g. kinetic-creative) rely on step_id_embeddings and never had
-        # this parameter. Creating it unconditionally broke strict checkpoint
-        # loading for AR checkpoints ("Missing key model.lead_embeddings").
-        if self.direct_prediction and self.use_lead_embedding:
-            if self.use_continuous_lead_embedding:
-                self.lead_embed = ContinuousLeadEmbedding(self.embed_dim * 2)
-            else:
-                self.lead_embeddings = nn.Parameter(
-                    torch.randn(16, self.embed_dim * 2) * 0.02
-                )
+        # Direct-prediction models use NO per-lead embedding: the (target-time)
+        # forcing carries the lead/clock signal (continuous-by-construction).
+        # Autoregressive models use step_id_embeddings (created above).
 
         # Initialize weights
         # self.apply(self._init_weights)
@@ -430,19 +375,12 @@ class cc2model(nn.Module):
         # Determine step id (0 for first step using ground truth, 1 for subsequent steps)
         # Determine step embedding: lead index (direct mode) or binary AR step
         step_embedding = None
-        if self.direct_prediction:
-            # step is the lead index 0..n-1 passed from direct_forecast
-            if self.use_lead_embedding:
-                if self.use_continuous_lead_embedding:
-                    step_embedding = self.lead_embed(step)  # [embed_dim*2]
-                else:
-                    step_embedding = self.lead_embeddings[step]  # [embed_dim*2]
-            # else: variant C — no per-lead embedding; lead signal comes from forcing.
-        else:
+        if not self.direct_prediction:
             step_id = 0
             if not self.use_scheduled_sampling and step > 0:
                 step_id = 1
             step_embedding = self.step_id_embeddings[step_id]  # [embed_dim*2]
+        # direct_prediction: no per-lead embedding — lead signal comes from forcing.
 
         # Add step embedding to decoder input
         # For first token in each sequence (acts as a "step type" token)

@@ -138,7 +138,7 @@ model:
     flow_eta: 0.0
     direct_prediction: true
     # SIMPLEST model: no lead embedding AND BCE-only loss (SoftFSS dropped above).
-    #   * No per-lead embedding (use_lead_embedding=false): the model reads the
+    #   * No per-lead embedding (direct-prediction is forcing-driven): the model reads the
     #     lead/clock entirely off the target-time forcing (insolation, cos/sin
     #     julian_day, cos/sin local_time). Continuous-by-construction, no seam.
     #     Pre-check C (2026-06-08): zeroing the discrete embedding on bland-layer
@@ -151,8 +151,6 @@ model:
     #     THROUGH the CFM stage on partly-cloudy FSS @45-70km / t+4-8 (the SoftFSS
     #     effect that could hide is in the CFM-output target, not the backbone).
     # Otherwise holds bland-layer's recipe fixed (3e-5, 20k, trusting-radar branch).
-    use_continuous_lead_embedding: false
-    use_lead_embedding: false
 data:
   data_path:
   - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr

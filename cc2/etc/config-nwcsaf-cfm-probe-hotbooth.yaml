@@ -4,7 +4,7 @@
 # Compare per-category FSS at K=4 vs probe B (rust-emrasure, BCE-only end-to-end):
 # if probe B matches within noise (dS_FSS<0.011, clear/overcast FSS gap closed),
 # the CFM stage absorbs the backbone SoftFSS gap -> BCE-only pipeline viable.
-# use_lead_embedding=false REQUIRED (backbone ckpt has no embedding keys).
+# Direct-prediction is forcing-driven (no lead embedding).
 # lightning.pytorch==2.6.0
 seed_everything: 42
 trainer:
@@ -175,8 +175,6 @@ model:
     flow_init_noise_sigma: 1.0
     flow_eta: 0.05
     direct_prediction: true
-    use_continuous_lead_embedding: false
-    use_lead_embedding: false
     lead_times: null
 data:
   data_path:

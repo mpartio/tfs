@@ -168,8 +168,6 @@ model:
     # by <=0.001 -> the embedding is vestigial at inference. This run tests whether
     # it is also dispensable at training time. Holds bland-layer's recipe fixed;
     # only the embedding differs (clean A/B/C ablation vs bland-layer / contlead-v2).
-    use_continuous_lead_embedding: false
-    use_lead_embedding: false
 data:
   data_path:
   - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr

@@ -531,8 +531,9 @@ def direct_flow_forecast(
         len(leads), n_step
     )
     if any(float(tau) != int(tau) for tau in leads):
-        assert getattr(model, "use_continuous_lead_embedding", False), (
-            "fractional lead_times require use_continuous_lead_embedding=True"
+        raise ValueError(
+            "fractional lead_times are not supported: the model is forcing-driven "
+            "(no lead embedding), so leads must be integer frame indices"
         )
     assert (
         forcing.shape[1] == n_step + T
@@ -673,9 +674,9 @@ def direct_forecast(
         "(= number of forcing/target frames provided)".format(len(leads), n_step)
     )
     if any(float(tau) != int(tau) for tau in leads):
-        assert getattr(model, "use_continuous_lead_embedding", False), (
-            "fractional lead_times require use_continuous_lead_embedding=True "
-            "(the discrete lead table only supports integer leads)"
+        raise ValueError(
+            "fractional lead_times are not supported: the model is forcing-driven "
+            "(no lead embedding), so leads must be integer frame indices"
         )
 
     # Fixed analysis context — shapes: [B, T, C, H, W] and [B, T, Cf, H, W]
