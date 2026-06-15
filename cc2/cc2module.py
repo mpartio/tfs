@@ -66,7 +66,6 @@ class cc2module(L.LightningModule):
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
-        lead_times: list | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -487,11 +486,7 @@ class cc2module(L.LightningModule):
             # DDIM (no AR loop). See swinu.util.direct_flow_forecast / bland-layer Path 3.
             from swinu.util import direct_flow_forecast
 
-            n_step = (
-                len(self.hparams.lead_times)
-                if self.hparams.lead_times
-                else self.hparams.rollout_length
-            )
+            n_step = self.hparams.rollout_length
             # Pre-allocate the 2 extra flow channels (filled during denoising)
             B, T_total, C_force, H, W = forcing.shape
             extra = torch.zeros(
@@ -509,7 +504,6 @@ class cc2module(L.LightningModule):
                 warm_start_alpha=self.hparams.warm_start_alpha,
                 init_noise_sigma=self.hparams.flow_init_noise_sigma,
                 eta=self.hparams.flow_eta,
-                lead_times=self.hparams.lead_times,
             )
         elif self.hparams.use_flow_matching:
             from swinu.util import flow_roll_forecast
@@ -533,12 +527,7 @@ class cc2module(L.LightningModule):
                 eta=self.hparams.flow_eta,
             )
         elif self.hparams.direct_prediction:
-            # lead_times (if set) is the single source for the lead count; else rollout_length
-            n_step = (
-                len(self.hparams.lead_times)
-                if self.hparams.lead_times
-                else self.hparams.rollout_length
-            )
+            n_step = self.hparams.rollout_length
             _, outs = self._roll_forecast(
                 self.model,
                 data,
@@ -546,7 +535,6 @@ class cc2module(L.LightningModule):
                 n_step,
                 loss_fn=None,
                 use_rollout_weighting=False,
-                lead_times=self.hparams.lead_times,
             )
         else:
             _, outs = self._roll_forecast(
