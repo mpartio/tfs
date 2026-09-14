@@ -1,0 +1,199 @@
+# STAGE 2/3 of the architecture-fix retrain (2026-09): NWCSAF direct-prediction
+# backbone (bland-layer recipe) on the fixed architecture.
+#
+# Branches from the stage-1 CERRA root (config-cerra-root-fixed.yaml).
+# SET branch_from_run TO THE ACTUAL STAGE-1 RUN NAME before starting, and check
+# the "Weight loading results" log line: branch_from_run loads with strict=False
+# and silently drops shape-mismatched keys.
+#
+# EarlyStopping added deliberately: this family converges at ~2.7-3.7k steps
+# (June 2026 campaign lesson — the historical matched-recipe configs lacked it).
+#
+# Adjust devices/num_nodes for the lumi allocation.
+seed_everything: 42
+trainer:
+  accelerator: auto
+  strategy: ddp_find_unused_parameters_true
+  devices: auto
+  num_nodes: 1
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2-arch-partio
+      tracking_uri: https://mlflow.out.ocp.fmi.fi
+      log_model: false
+      prefix: ''
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_loss
+      save_last: true
+      save_top_k: 3
+      mode: min
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  - class_path: lightning.pytorch.callbacks.EarlyStopping
+    init_args:
+      monitor: val_loss
+      mode: min
+      patience: 8
+      min_delta: 0.0
+      check_finite: true
+      check_on_train_epoch_end: false
+  max_epochs: null
+  max_steps: 20000
+  limit_val_batches: 0.25
+  val_check_interval: 0.25
+  log_every_n_steps: 100
+  accumulate_grad_batches: 4
+  gradient_clip_val: 1.0
+  enable_model_summary: false
+
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+    # 3e-5: above kinetic-creative's 5e-6 fine-tune LR, below from-scratch's 1e-4.
+    # Fresh lead_embeddings + the 1-step-tendency -> analysis->t+k displacement task
+    # shift need real learning; 5e-6 would undertrain the long-lead embeddings.
+    learning_rate: 3.0e-05
+    warmup_iterations: 500
+    weight_decay: 0.02
+    # MUST be 12 in direct mode: each lead is learned independently; training at
+    # R<12 leaves leads R..11 at random init.
+    rollout_length: 12
+    # <-- SET to the stage-1 run (config-cerra-root-fixed.yaml output), e.g. "some-name/1"
+    branch_from_run: CHANGE-ME-cerra-root-run/1
+    use_gradient_checkpointing: true
+    model_family: swinu
+    use_scheduled_sampling: false
+    freeze_layers: []
+    use_flow_matching: false
+    direct_prediction: true
+    use_rollout_weighting: false
+    # inherit the stage-1 root's data statistics from its checkpoint
+    use_statistics_from_checkpoint: true
+    loss_fn:
+      class_path: loss.combined.CombinedLoss
+      init_args:
+        losses:
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+        - class_path: loss.softfss.SoftFSSLoss
+          init_args:
+            thresholds:
+            - 0.0625
+            - 0.5625
+            - 0.9375
+            window_sizes:
+            - 3
+            - 6
+            - 12
+            tau: 0.015625
+            soften_true: false
+            threshold_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            scale_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            eps: 1.0e-08
+        weights:
+        - 1.0
+        - 0.2
+        ramps: null
+        names:
+        - bce
+        - soft_fss
+
+data:
+  data_path:
+  - ../data/meps-nwcsaf-475x535-2020-2025-v4.zarr
+  static_forcing_path: ../data/meps-const-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  # Held identical to the RC lineage's windows on purpose: the vs-RC comparison
+  # is confounded if the retrain sees more data.
+  train_start: '2020-01-01'
+  train_end: '2024-01-01'
+  val_start: '2024-01-01'
+  val_end: '2025-01-01'
+  batch_size: 2
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+  apply_smoothing: false
+  data_options: {}
+
+optimizer: null
+lr_scheduler: null
+ckpt_path: null

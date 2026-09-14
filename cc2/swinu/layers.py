@@ -23,6 +23,41 @@ def make_window_key_mask(
     return mask
 
 
+def make_shift_attn_mask(
+    H: int, W: int, pad_h: int, pad_w: int, ws: int, shift: int
+) -> torch.Tensor:
+    """
+    Attention mask for shifted-window attention, matching this codebase's
+    roll-BEFORE-pad order: torch.roll on the (H, W) canvas first, then zero-pad
+    to (H+pad_h, W+pad_w).
+
+    After roll(-shift), rows [H-shift, H) hold content wrapped from the top of
+    the image (likewise for columns). Wrapped and un-wrapped content sharing a
+    window are spatially distant in the real image, so attention between the
+    two groups is masked. Padded rows/cols get their own region id and are
+    masked too (redundant with the padding key mask, but keeps this mask
+    self-contained).
+
+    Returns a [nWin, L, L] float mask (0 = attend, -100 = masked) where
+    L = ws*ws, in the same window order as the data partition.
+    """
+    Hp, Wp = H + pad_h, W + pad_w
+    row_id = torch.zeros(Hp, dtype=torch.long)
+    col_id = torch.zeros(Wp, dtype=torch.long)
+    row_id[H - shift : H] = 1  # wrapped-from-top rows
+    row_id[H:] = 2  # padding
+    col_id[W - shift : W] = 1
+    col_id[W:] = 2
+    region = row_id[:, None] * 3 + col_id[None, :]  # [Hp, Wp]
+
+    nH, nW = Hp // ws, Wp // ws
+    region = (
+        region.view(nH, ws, nW, ws).permute(0, 2, 1, 3).reshape(nH * nW, ws * ws)
+    )  # [nWin, L]
+    mask = region[:, :, None] != region[:, None, :]  # [nWin, L, L]
+    return mask.float() * -100.0
+
+
 def get_padded_size(H: int, W: int, patch_size: int, num_merges: int = 1) -> tuple:
     # Calculate required factor for divisibility
     required_factor = patch_size * (2**num_merges)
@@ -287,10 +322,14 @@ class ProjectToImageFold(nn.Module):
 
 class DWConvResidual3D(nn.Module):
     """
-    Drop-in local mixing for token sequences.
+    Drop-in local spatio-temporal mixing for token sequences.
     - Input:  [B, L, C] where L == T * (h*w)
     - Output: [B, L, C] (same shape)
-    Internally reshapes to [B*T, C, h, w], applies DW/PW convs, and reshapes back.
+    Internally reshapes to [B, C, T, h, w] and applies depthwise/pointwise Conv3d.
+    With T > 1 the depthwise kernel spans the time axis (kt=3, padded), so every
+    slice mixes with its neighbours — for T=2 one block already gives each frame
+    a full view of the other. With T == 1 the kernel is (1, 3, 3) and the block
+    is purely spatial.
     """
 
     def __init__(
@@ -308,18 +347,19 @@ class DWConvResidual3D(nn.Module):
         self.T = int(time_dim)  # history_length (or the T at this stage)
         hidden = max(1, int(self.C * expand))
 
-        self.dw = nn.Conv2d(
+        kt = 3 if self.T > 1 else 1
+        self.dw = nn.Conv3d(
             self.C,
             self.C,
-            kernel_size=3,
-            padding=dilation,
-            dilation=dilation,
+            kernel_size=(kt, 3, 3),
+            padding=(kt // 2, dilation, dilation),
+            dilation=(1, dilation, dilation),
             groups=self.C,
             bias=True,
         )
-        self.pw1 = nn.Conv2d(self.C, hidden, kernel_size=1, bias=True)
+        self.pw1 = nn.Conv3d(self.C, hidden, kernel_size=1, bias=True)
         self.act = nn.GELU()
-        self.pw2 = nn.Conv2d(hidden, self.C, kernel_size=1, bias=True)
+        self.pw2 = nn.Conv3d(hidden, self.C, kernel_size=1, bias=True)
 
         # tiny LayerScale so it's near-identity at init
         self.ls = nn.Parameter(torch.ones(self.C) * ls_init)
@@ -333,19 +373,17 @@ class DWConvResidual3D(nn.Module):
         expected_L = self.T * P
         assert L == expected_L, f"L={L} != T*P={self.T}*{P}={expected_L}"
 
-        # [B, L(=T*P), C] -> [B, T, P, C] -> [B*T, C, h, w]
-        x_btpc = x.view(B, self.T, P, C)
-        x_2d = (
-            x_btpc.view(B * self.T, self.h, self.w, C).permute(0, 3, 1, 2).contiguous()
+        # [B, L(=T*P), C] -> [B, T, h, w, C] -> [B, C, T, h, w]
+        x_3d = (
+            x.view(B, self.T, self.h, self.w, C).permute(0, 4, 1, 2, 3).contiguous()
         )
 
-        y = self.dw(x_2d)
+        y = self.dw(x_3d)
         y = self.pw2(self.act(self.pw1(y)))
-        y = y * self.ls.view(1, -1, 1, 1) + x_2d
+        y = y * self.ls.view(1, -1, 1, 1, 1) + x_3d
 
         # back to [B, L, C]
-        y_btpc = y.permute(0, 2, 3, 1).contiguous().view(B, self.T, P, C)
-        y_seq = y_btpc.view(B, L, C)
+        y_seq = y.permute(0, 2, 3, 4, 1).contiguous().view(B, L, C)
         return y_seq
 
 
@@ -465,6 +503,22 @@ class SwinEncoderBlock(nn.Module):
 
         assert 0 <= self.shift_size < self.window_size, "shift must be < window_size"
 
+        # Shifted windows need the standard Swin boundary mask: without it,
+        # tokens wrapped across opposite image edges by torch.roll attend to
+        # each other as if they were neighbours.
+        if self.shift_size > 0:
+            pad_h = (self.window_size - (H % self.window_size)) % self.window_size
+            pad_w = (self.window_size - (W % self.window_size)) % self.window_size
+            self.register_buffer(
+                "shift_attn_mask",
+                make_shift_attn_mask(
+                    H, W, pad_h, pad_w, self.window_size, self.shift_size
+                ),
+                persistent=False,
+            )
+        else:
+            self.shift_attn_mask = None
+
         self.norm1 = nn.LayerNorm(dim)
 
         self.attn = WindowAttentionRPB(
@@ -528,7 +582,6 @@ class SwinEncoderBlock(nn.Module):
         assert N % P == 0, f"Expected N multiple of P=H*W={P}, got N={N}"
         assert (N // P) == T, f"N={N} corresponds to T={N//P}, expected T={T}"
 
-        x_attn_in = x  # save residuals
         y = self.norm1(x)
 
         # [B, T*P, C] -> [B, T, P, C] -> [B*T, P, C] -> [B*T, H, W, C]
@@ -564,8 +617,12 @@ class SwinEncoderBlock(nn.Module):
             .reshape(Bmul * nH * nW, ws * ws, C)
         )
 
-        # self-attention with RPB + mask
-        attn_out, _ = self.attn(yw, key_padding_mask=key_mask)  # drop-in replacement
+        # self-attention with RPB + masks (padding keys + shifted-window boundary)
+        attn_mask = None
+        if self.shift_attn_mask is not None:
+            # [nWin, L, L] -> [Bmul*nWin, 1, L, L] (broadcasts over heads)
+            attn_mask = self.shift_attn_mask.repeat(Bmul, 1, 1).unsqueeze(1)
+        attn_out, _ = self.attn(yw, key_padding_mask=key_mask, attn_mask=attn_mask)
 
         # reverse windows -> [B*T, Hpad, Wpad, C]
         y = (
@@ -582,7 +639,7 @@ class SwinEncoderBlock(nn.Module):
         y = y.reshape(B, T, P, C).reshape(B, T * P, C)
 
         # residual + MLP
-        x = x + x_attn_in + self.drop_path(self.gamma_attn * y)
+        x = x + self.drop_path(self.gamma_attn * y)
         x = x + self.drop_path(self.gamma_mlp * self.mlp(self.norm2(x)))
         return x
 
@@ -614,6 +671,21 @@ class SwinDecoderBlock(nn.Module):
         self.P = H * W
 
         assert 0 <= self.shift_size < self.window_size, "shift must be < window_size"
+
+        # Same shifted-window boundary mask as SwinEncoderBlock; self- and
+        # cross-attention share it (q and kv go through the same roll/pad).
+        if self.shift_size > 0:
+            pad_h = (self.window_size - (H % self.window_size)) % self.window_size
+            pad_w = (self.window_size - (W % self.window_size)) % self.window_size
+            self.register_buffer(
+                "shift_attn_mask",
+                make_shift_attn_mask(
+                    H, W, pad_h, pad_w, self.window_size, self.shift_size
+                ),
+                persistent=False,
+            )
+        else:
+            self.shift_attn_mask = None
 
         self.norm1 = nn.LayerNorm(dim)
         self.self_attn = WindowAttentionRPB(
@@ -728,8 +800,13 @@ class SwinDecoderBlock(nn.Module):
             .reshape(Bmul * nH * nW, ws * ws, C)
         )
 
-        # RPB attention (+mask)
-        out, _ = attn_layer(q_win, kv_win, kv_win, key_padding_mask=key_mask)  # drop-in
+        # RPB attention (+ padding key mask + shifted-window boundary mask)
+        attn_mask = None
+        if self.shift_attn_mask is not None:
+            attn_mask = self.shift_attn_mask.repeat(Bmul, 1, 1).unsqueeze(1)
+        out, _ = attn_layer(
+            q_win, kv_win, kv_win, key_padding_mask=key_mask, attn_mask=attn_mask
+        )
 
         # merge, unpad, reverse shift, reshape back
         y = (
@@ -857,7 +934,8 @@ class WindowAttentionRPB(nn.Module):
             attn = attn.masked_fill(key_padding_mask[:, None, None, :], float("-inf"))
 
         if attn_mask is not None:
-            attn = attn + attn_mask
+            # cast so an fp32 mask buffer doesn't silently upcast bf16 attention
+            attn = attn + attn_mask.to(dtype=attn.dtype)
 
         attn = F.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)

@@ -1,0 +1,176 @@
+# STAGE 1/3 of the architecture-fix retrain (2026-09): CERRA root, from scratch.
+#
+# Clean-hierarchy recipe (June 2026 consult) + the three swinu architecture fixes
+# (temporal mixing via true-3D DWConvResidual3D, single encoder residual, shifted-
+# window boundary mask). Merges the historical two-stage CERRA pretrain
+# (coffee-acquisition R=1 250k -> trusting-radar R=6 80k) into ONE R=6 run.
+#
+# From-scratch R=6 stability: use_rollout_weighting ramps the per-step loss
+# weights from ~R=1 emphasis (70/30 on steps 1-2) to uniform over all 6 steps
+# across training (swinu/util.py:rollout_weights) — a built-in curriculum.
+# Fallback if this still diverges early: train R=1 for ~5-10k steps, then branch
+# to this config with branch_from_run.
+#
+# Normalization: dataloader defaults everywhere (identical in stages 2-3).
+# The June consult's overrides are dropped: r is already a capped [0,1]
+# fraction in the v4 zarrs (verified 2026-09-14 on lumi), and z keeps the
+# historical minmax.
+#
+# BEFORE TRAINING: run cc2/tests/test_swinu_architecture.py (must be 4/4).
+# AFTER val-min: re-run with CC2_ARCH_TEST_TRAINED=1 against the checkpoint.
+seed_everything: 42
+trainer:
+  accelerator: auto
+  strategy: ddp_find_unused_parameters_true
+  devices: auto
+  num_nodes: 16
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2-arch-partio
+      tracking_uri: https://mlflow.out.ocp.fmi.fi
+      log_model: false
+      prefix: ''
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_loss
+      save_last: true
+      save_top_k: 3
+      mode: min
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  - class_path: lightning.pytorch.callbacks.EarlyStopping
+    init_args:
+      monitor: val_loss
+      mode: min
+      patience: 8
+      min_delta: 0.0
+      check_finite: true
+      check_on_train_epoch_end: false
+  max_epochs: null
+  # ~40% cheaper than the historical root: coffee-acquisition's val minimum was
+  # at ~61k of 250k max steps; 80k + EarlyStopping(8) covers it with margin.
+  max_steps: 80000
+  limit_val_batches: 0.25
+  val_check_interval: 0.25
+  log_every_n_steps: 100
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_model_summary: false
+
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+    learning_rate: 5.0e-04
+    warmup_iterations: 5000
+    weight_decay: 0.02
+    rollout_length: 6
+    # From-scratch R=6 curriculum: ramps rollout-step loss weights from
+    # steps-1-2-dominant to uniform over training (see header note).
+    use_rollout_weighting: true
+    branch_from_run: null
+    use_gradient_checkpointing: true
+    model_family: swinu
+    use_scheduled_sampling: false
+    freeze_layers: []
+    use_flow_matching: false
+    direct_prediction: false
+    # root computes statistics from data; they are saved into the checkpoint
+    # (on_save_checkpoint) and inherited by stages 2-3
+    use_statistics_from_checkpoint: false
+    loss_fn:
+      class_path: loss.mse.MSELoss
+
+data:
+  data_path:
+  - ../data/cerra-475x535-1984-1988-v4.zarr
+  - ../data/cerra-475x535-1989-1993-v4.zarr
+  - ../data/cerra-475x535-1994-1998-v4.zarr
+  - ../data/cerra-475x535-1999-2005-v4.zarr
+  - ../data/cerra-475x535-2006-2010-v4.zarr
+  - ../data/cerra-475x535-2011-2015-v4.zarr
+  - ../data/cerra-475x535-2016-2020-v4.zarr
+  static_forcing_path: ../data/meps-const-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  train_start: '1984-09-01'
+  train_end: '2017-01-01'
+  val_start: '2017-01-01'
+  val_end: '2020-01-01'
+  batch_size: 1
+  num_workers: 6
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+  apply_smoothing: false
+  data_options: {}
+
+optimizer: null
+lr_scheduler: null
+ckpt_path: null
