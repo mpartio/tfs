@@ -385,16 +385,29 @@ class DWConvResidual3D(nn.Module):
         self.ls = nn.Parameter(torch.ones(self.C) * ls_init)
 
     def _temporal_mix(self, x_5d: torch.Tensor) -> torch.Tensor:
-        """x_5d: [B, T, C, h, w] -> same shape, mixed along T."""
+        """x_5d: [B, T, C, h, w] -> same shape, mixed along T.
+
+        Built slice by slice rather than from zero-padded whole-sequence copies:
+        these blocks are outside gradient checkpointing, so every full-size
+        temporary here is retained for backward and multiplied by the rollout
+        length. The weights are cast to the activation dtype first, otherwise an
+        fp32 parameter times bf16 activations promotes the whole block to fp32.
+        """
         if self.temporal_weight is None:
             return x_5d
-        w_prev, w_self, w_next = (
-            self.temporal_weight[i].view(1, 1, -1, 1, 1) for i in range(3)
-        )
-        # zero-padded neighbour slices (pad tuple is last-dim-first; T is dim 1)
-        prev = F.pad(x_5d[:, :-1], (0, 0, 0, 0, 0, 0, 1, 0))
-        nxt = F.pad(x_5d[:, 1:], (0, 0, 0, 0, 0, 0, 0, 1))
-        return w_prev * prev + w_self * x_5d + w_next * nxt
+        T = x_5d.shape[1]
+        w = self.temporal_weight.to(x_5d.dtype)
+        w_prev, w_self, w_next = (w[i].view(1, -1, 1, 1) for i in range(3))
+
+        outs = []
+        for s in range(T):
+            acc = w_self * x_5d[:, s]
+            if s > 0:
+                acc = acc + w_prev * x_5d[:, s - 1]
+            if s < T - 1:
+                acc = acc + w_next * x_5d[:, s + 1]
+            outs.append(acc)
+        return torch.stack(outs, dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, L, C]
