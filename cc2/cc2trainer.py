@@ -114,9 +114,14 @@ def setup_mlflow_logger(trainer):
 
     for i, logger in enumerate(trainer.loggers):
         if isinstance(logger, L.pytorch.loggers.mlflow.MLFlowLogger):
+            # Carry tracking_uri over explicitly. MLFlowLogger.save_dir is None
+            # for a remote (http) tracking server, so rebuilding from save_dir
+            # alone silently drops the server and logs nowhere.
+            tracking_uri = logger._tracking_uri
             new_logger = pl.loggers.MLFlowLogger(
                 experiment_name=logger._experiment_name,
                 run_name=f"{run_name}/{run_number}",
+                tracking_uri=tracking_uri,
                 save_dir=logger.save_dir,
                 log_model=logger._log_model,
                 # checkpoint_path_prefix=logger._checkpoint_path_prefix,
@@ -124,7 +129,10 @@ def setup_mlflow_logger(trainer):
             )
             trainer.loggers[i] = new_logger
 
-            rank_zero_info(f"MLFlowLogger run_name set to: {run_name}")
+            rank_zero_info(
+                f"MLFlowLogger run_name set to: {run_name}, "
+                f"tracking_uri: {tracking_uri}"
+            )
 
 
 def _load_stats(ckpt_path):
