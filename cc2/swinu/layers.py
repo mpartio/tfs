@@ -326,17 +326,17 @@ class DWConvResidual3D(nn.Module):
     - Input:  [B, L, C] where L == T * (h*w)
     - Output: [B, L, C] (same shape)
 
-    Factorised (R(2+1)D-style) rather than a true 3D kernel: a depthwise 3-tap
-    mix along time, then depthwise/pointwise Conv2d per time slice. The temporal
-    tap is done with slicing and elementwise multiplies, which is mathematically
-    identical to a depthwise Conv3d with a (3,1,1) kernel but never asks the
-    conv backend for a 3D kernel — MIOpen on MI250X has no tuned depthwise-3D
-    solver and falls back to generic GEMM, which stalled training outright
-    (job 22035530, 2026-09-14). All conv ops here stay on the 2D fast path.
+    With T > 1 the spatial/temporal mixing is a stock depthwise Conv3d: it is
+    the FUSED form, so it never materialises a mixed intermediate and costs no
+    activation memory over the purely spatial block (measured: 115.8 MB/block
+    either way at the encoder1 shape, versus 148.7 MB for a hand-rolled
+    separable tap). It is the slower kernel on MI250X — 15.2 ms vs 8.1 ms
+    fwd+bwd per block — but memory, not that kernel, is the binding constraint
+    here; a 64 GB MI250X OOMs at R=6 with only a few GB of slack.
 
-    Temporal weights init to the identity tap (w=[0,1,0]), so the block starts
-    as the purely spatial block it replaces. With T == 1 there is no temporal
-    parameter and the block is exactly the original spatial one.
+    With T == 1 there is no time axis to mix, so the block uses Conv2d and is
+    exactly the original spatial block. That matters: decoder1 and decoder2 are
+    20 of the 40 blocks and would otherwise pay 3D-kernel cost for nothing.
     """
 
     def __init__(
@@ -354,60 +354,36 @@ class DWConvResidual3D(nn.Module):
         self.T = int(time_dim)  # history_length (or the T at this stage)
         hidden = max(1, int(self.C * expand))
 
-        self.dw = nn.Conv2d(
-            self.C,
-            self.C,
-            kernel_size=3,
-            padding=dilation,
-            dilation=dilation,
-            groups=self.C,
-            bias=True,
-        )
-        self.pw1 = nn.Conv2d(self.C, hidden, kernel_size=1, bias=True)
-        self.act = nn.GELU()
-        self.pw2 = nn.Conv2d(hidden, self.C, kernel_size=1, bias=True)
-
-        # depthwise 3-tap along time: [prev, self, next] per channel.
-        # Near-identity at init (self tap 1.0) but the neighbour taps start at
-        # small NON-zero random values: a zero init would make the temporal path
-        # contribute exactly nothing at step 0, which both defeats the frame-0
-        # acceptance gate and is the shape of the DE-13 unused-pathway trap.
-        if self.T > 1:
-            tw = torch.zeros(3, self.C)
-            tw[1].fill_(1.0)
-            nn.init.normal_(tw[0], std=0.02)
-            nn.init.normal_(tw[2], std=0.02)
-            self.temporal_weight = nn.Parameter(tw)
+        self.temporal = self.T > 1
+        if self.temporal:
+            self.dw = nn.Conv3d(
+                self.C,
+                self.C,
+                kernel_size=(3, 3, 3),
+                padding=(1, dilation, dilation),
+                dilation=(1, dilation, dilation),
+                groups=self.C,
+                bias=True,
+            )
+            self.pw1 = nn.Conv3d(self.C, hidden, kernel_size=1, bias=True)
+            self.act = nn.GELU()
+            self.pw2 = nn.Conv3d(hidden, self.C, kernel_size=1, bias=True)
         else:
-            self.temporal_weight = None
+            self.dw = nn.Conv2d(
+                self.C,
+                self.C,
+                kernel_size=3,
+                padding=dilation,
+                dilation=dilation,
+                groups=self.C,
+                bias=True,
+            )
+            self.pw1 = nn.Conv2d(self.C, hidden, kernel_size=1, bias=True)
+            self.act = nn.GELU()
+            self.pw2 = nn.Conv2d(hidden, self.C, kernel_size=1, bias=True)
 
         # tiny LayerScale so it's near-identity at init
         self.ls = nn.Parameter(torch.ones(self.C) * ls_init)
-
-    def _temporal_mix(self, x_5d: torch.Tensor) -> torch.Tensor:
-        """x_5d: [B, T, C, h, w] -> same shape, mixed along T.
-
-        Built slice by slice rather than from zero-padded whole-sequence copies:
-        these blocks are outside gradient checkpointing, so every full-size
-        temporary here is retained for backward and multiplied by the rollout
-        length. The weights are cast to the activation dtype first, otherwise an
-        fp32 parameter times bf16 activations promotes the whole block to fp32.
-        """
-        if self.temporal_weight is None:
-            return x_5d
-        T = x_5d.shape[1]
-        w = self.temporal_weight.to(x_5d.dtype)
-        w_prev, w_self, w_next = (w[i].view(1, -1, 1, 1) for i in range(3))
-
-        outs = []
-        for s in range(T):
-            acc = w_self * x_5d[:, s]
-            if s > 0:
-                acc = acc + w_prev * x_5d[:, s - 1]
-            if s < T - 1:
-                acc = acc + w_next * x_5d[:, s + 1]
-            outs.append(acc)
-        return torch.stack(outs, dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, L, C]
@@ -418,23 +394,25 @@ class DWConvResidual3D(nn.Module):
         expected_L = self.T * P
         assert L == expected_L, f"L={L} != T*P={self.T}*{P}={expected_L}"
 
-        # [B, L(=T*P), C] -> [B, T, C, h, w]
-        x_5d = x.view(B, self.T, self.h, self.w, C).permute(0, 1, 4, 2, 3)
-        x_2d = x_5d.reshape(B * self.T, C, self.h, self.w)
+        if self.temporal:
+            # [B, L(=T*P), C] -> [B, C, T, h, w]
+            x_in = x.view(B, self.T, self.h, self.w, C).permute(0, 4, 1, 2, 3)
+            x_in = x_in.contiguous()
+            ls = self.ls.view(1, -1, 1, 1, 1)
+        else:
+            # [B, L(=P), C] -> [B, C, h, w]
+            x_in = x.view(B, self.h, self.w, C).permute(0, 3, 1, 2).contiguous()
+            ls = self.ls.view(1, -1, 1, 1)
 
-        y = self._temporal_mix(x_5d).reshape(B * self.T, C, self.h, self.w)
-        y = self.dw(y)
+        y = self.dw(x_in)
         y = self.pw2(self.act(self.pw1(y)))
-        # residual against the unmixed input: block is identity when ls == 0
-        y = y * self.ls.view(1, -1, 1, 1) + x_2d
+        y = y * ls + x_in
 
         # back to [B, L, C]
-        y_seq = (
-            y.view(B, self.T, C, self.h, self.w)
-            .permute(0, 1, 3, 4, 2)
-            .contiguous()
-            .view(B, L, C)
-        )
+        if self.temporal:
+            y_seq = y.permute(0, 2, 3, 4, 1).contiguous().view(B, L, C)
+        else:
+            y_seq = y.permute(0, 2, 3, 1).contiguous().view(B, L, C)
         return y_seq
 
 

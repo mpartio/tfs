@@ -7,7 +7,7 @@ slow. Run on ONE GPU inside the training container:
     python3 cc2/tests/bench_dwres.py
 
 Reports forward+backward ms/iter for:
-  separable  - the shipped implementation (temporal tap by slicing + Conv2d)
+  shipped    - the current implementation (depthwise Conv3d when T>1)
   conv3d     - the previous implementation (depthwise Conv3d)
   spatial2d  - Conv2d only, no temporal mixing (the pre-fix baseline speed)
 
@@ -116,7 +116,7 @@ def main():
         x = torch.randn(1, T * h * w, C)
         base = None
         for label, cls in (("spatial2d", Spatial2dVariant),
-                           ("separable", DWConvResidual3D),
+                           ("shipped", DWConvResidual3D),
                            ("conv3d", Conv3dVariant)):
             torch.manual_seed(0)
             mod = cls(C, (h, w), time_dim=T, expand=expand)
