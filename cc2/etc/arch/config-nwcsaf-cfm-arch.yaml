@@ -1,21 +1,26 @@
-# STAGE 2/3 of the architecture-fix retrain (2026-09): NWCSAF direct-prediction
-# backbone (bland-layer recipe) on the fixed architecture.
+# STAGE 3/3 of the architecture-fix retrain (2026-09): CFM refinement on the
+# fixed-architecture direct-prediction backbone (noisy-buck recipe).
 #
-# Branches from the stage-1 CERRA root (config-cerra-root-fixed.yaml).
-# SET branch_from_run TO THE ACTUAL STAGE-1 RUN NAME before starting, and check
-# the "Weight loading results" log line: branch_from_run loads with strict=False
-# and silently drops shape-mismatched keys.
+# Branches from the stage-2 backbone (config-nwcsaf-backbone-arch.yaml).
+# SET branch_from_run TO THE ACTUAL STAGE-2 RUN NAME (its best/val-min version),
+# and check the "Weight loading results" log line (strict=False load;
+# _extend_proj_force_for_flow zero-extends proj_force for the +2 flow channels).
 #
-# EarlyStopping added deliberately: this family converges at ~2.7-3.7k steps
-# (June 2026 campaign lesson — the historical matched-recipe configs lacked it).
+# Differences from the historical config-nwcsaf-cfm-from-3654.yaml:
+#   - flow_warm_start / warm_start_alpha removed (deleted from code, 04b0992)
+#   - EarlyStopping min_delta 0.001 -> 0.0 (June flag: 0.001 may stop prematurely
+#     on the noisier CFM val loss)
+#   - normalization override to match the fixed trunk
 #
-# Adjust devices/num_nodes for the lumi allocation.
+# EVALUATION NOTE: track placement (state-corr@t12 / Lagrangian-MSESS) at EVERY
+# checkpoint, not just the last — the CFM sharpening phase transition
+# (cfm-s6350/s7325 precedent) is invisible in the loss curve.
 seed_everything: 42
 trainer:
   accelerator: auto
   strategy: ddp_find_unused_parameters_true
   devices: auto
-  num_nodes: 1
+  num_nodes: 4
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
@@ -51,10 +56,10 @@ trainer:
       check_on_train_epoch_end: false
   max_epochs: null
   max_steps: 20000
-  limit_val_batches: 0.25
-  val_check_interval: 0.25
+  limit_val_batches: 0.5
+  val_check_interval: 200
   log_every_n_steps: 100
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   enable_model_summary: false
 
@@ -72,33 +77,25 @@ model:
     window_size_deep: 10
     num_heads: 8
     mlp_ratio: 4.0
-    drop_rate: 0.0
+    drop_rate: 0.05
     attn_drop_rate: 0.0
     drop_path_rate:
     - 0.05
     - 0.01
     - 0.01
-    - 0.1
-    # 3e-5: above kinetic-creative's 5e-6 fine-tune LR, below from-scratch's 1e-4.
-    # Fresh lead_embeddings + the 1-step-tendency -> analysis->t+k displacement task
-    # shift need real learning; 5e-6 would undertrain the long-lead embeddings.
-    learning_rate: 3.0e-05
+    - 0.15
+    learning_rate: 5.0e-06
     warmup_iterations: 500
-    weight_decay: 0.02
-    # MUST be 12 in direct mode: each lead is learned independently; training at
-    # R<12 leaves leads R..11 at random init.
+    weight_decay: 0.05
     rollout_length: 12
-    # <-- SET to the stage-1 run (config-cerra-root-fixed.yaml output), e.g. "some-name/1"
-    branch_from_run: CHANGE-ME-cerra-root-run/1
+    # <-- SET to the stage-2 run (config-nwcsaf-backbone-arch.yaml output)
+    branch_from_run: CHANGE-ME-nwcsaf-backbone-run/1
     use_gradient_checkpointing: true
     model_family: swinu
     use_scheduled_sampling: false
+    ss_pred_min: 0.0
+    ss_pred_max: 1.0
     freeze_layers: []
-    use_flow_matching: false
-    direct_prediction: true
-    use_rollout_weighting: false
-    # inherit the stage-1 root's data statistics from its checkpoint
-    use_statistics_from_checkpoint: true
     loss_fn:
       class_path: loss.combined.CombinedLoss
       init_args:
@@ -135,6 +132,19 @@ model:
         names:
         - bce
         - soft_fss
+    test_output_directory: null
+    use_rollout_weighting: false
+    use_statistics_from_checkpoint: true
+    force_frozen_backbone_to_eval: false
+    preprocessor: null
+    # --- flow matching ---
+    use_flow_matching: true
+    # INFERENCE (DDIM) params; training samples alpha~U(0,1) and ignores them.
+    # K=16 default here; the decision-protocol K/eta sweep happens at test time.
+    num_inference_steps: 16
+    flow_init_noise_sigma: 1.0
+    flow_eta: 0.05
+    direct_prediction: true
 
 data:
   data_path:
@@ -180,13 +190,12 @@ data:
   - sin_latitude
   - cos_longitude
   - sin_longitude
-  # Held identical to the RC lineage's windows on purpose: the vs-RC comparison
-  # is confounded if the retrain sees more data.
+  # Held identical to the RC lineage's windows on purpose (vs-RC comparability).
   train_start: '2020-01-01'
   train_end: '2024-01-01'
   val_start: '2024-01-01'
   val_end: '2025-01-01'
-  batch_size: 2
+  batch_size: 1
   num_workers: 4
   persistent_workers: true
   prefetch_factor: 3

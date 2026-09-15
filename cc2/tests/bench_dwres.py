@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from swinu.layers import DWConvResidual3D  # noqa: E402
 
-# Real shapes from etc/arch/config-cerra-root-fixed.yaml (hidden_dim 256,
+# Real shapes from etc/arch/config-cerra-trunk-arch.yaml (hidden_dim 256,
 # patch_size 4, 475x535 padded to 480x536 -> 120x134 patches).
 CASES = [
     ("encoder1", 256, 120, 134, 2, 2.0),

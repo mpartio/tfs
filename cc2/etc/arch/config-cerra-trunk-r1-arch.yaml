@@ -1,13 +1,17 @@
-# STAGE 1b/3 of the architecture-fix retrain (2026-09): CERRA root, R=6.
+# STAGE 1a/3 of the architecture-fix retrain (2026-09): CERRA trunk, R=1, from scratch.
 #
-# CONTINUES from config-cerra-root-r1-fixed.yaml -- set branch_from_run below to
-# that run before starting, and check the logged "Weight loading results" line
-# (branch_from_run loads with strict=False and silently drops mismatched keys).
+# Restores the historical two-stage CERRA pretrain (coffee-acquisition R=1 ->
+# trusting-radar R=6) instead of the June consult's merged R=6 trunk. Measured
+# throughput is why: R=6 runs at ~0.135 it/s on 16 nodes (derived from
+# trusting-radar's own checkpoint timestamps: 19935 steps in 41.0 h), so 80k
+# R=6 steps is ~7 days against a 2-day job limit. R=1 costs one forward pass
+# per step instead of six -- coffee-acquisition sustained 0.80 it/s and hit its
+# validation minimum at step 61464, about 22 h.
 #
-# Recipe follows trusting-radar, which did exactly this R=6 stage on top of the
-# R=1 root: lr 2e-5 (not the root's 5e-4 -- this is a fine-tune), warmup 1000.
-# It reached its best checkpoint at step 19935 in 41 h on 16 nodes, so max_steps
-# is 40000 rather than 80000; EarlyStopping decides in practice.
+# Continue with config-cerra-trunk-arch.yaml (R=6) once this converges.
+#
+# This is also the safer curriculum: from-scratch R=6 has never been run here,
+# and early in training the rollout feeds the model its own noise.
 #
 # Normalization: dataloader defaults everywhere (identical in stages 2-3).
 # The June consult's overrides are dropped: r is already a capped [0,1]
@@ -56,7 +60,9 @@ trainer:
       check_finite: true
       check_on_train_epoch_end: false
   max_epochs: null
-  max_steps: 40000
+  # ~40% cheaper than the historical trunk: coffee-acquisition's val minimum was
+  # at ~61k of 250k max steps; 80k + EarlyStopping(8) covers it with margin.
+  max_steps: 80000
   limit_val_batches: 0.25
   val_check_interval: 0.25
   log_every_n_steps: 100
@@ -85,22 +91,20 @@ model:
     - 0.01
     - 0.01
     - 0.1
-    learning_rate: 2.0e-05
-    warmup_iterations: 1000
+    learning_rate: 5.0e-04
+    warmup_iterations: 5000
     weight_decay: 0.02
-    rollout_length: 6
-    # From-scratch R=6 curriculum: ramps rollout-step loss weights from
-    # steps-1-2-dominant to uniform over training (see header note).
-    use_rollout_weighting: true
-    # <-- SET to the stage-1a R=1 run, e.g. "some-name/1"
-    branch_from_run: CHANGE-ME-cerra-r1-run/1
+    rollout_length: 1
+    # No-op at R=1 (swinu/util.py only applies weights when n_step > 1).
+    use_rollout_weighting: false
+    branch_from_run: null
     use_gradient_checkpointing: true
     model_family: swinu
     use_scheduled_sampling: false
     freeze_layers: []
     use_flow_matching: false
     direct_prediction: false
-    # root computes statistics from data; they are saved into the checkpoint
+    # trunk computes statistics from data; they are saved into the checkpoint
     # (on_save_checkpoint) and inherited by stages 2-3
     use_statistics_from_checkpoint: false
     loss_fn:
