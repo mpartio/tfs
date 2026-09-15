@@ -98,7 +98,12 @@ model:
     # No-op at R=1 (swinu/util.py only applies weights when n_step > 1).
     use_rollout_weighting: false
     branch_from_run: null
-    use_gradient_checkpointing: true
+    # Off at R=1, matching coffee-acquisition (which sustained 0.80 it/s).
+    # Activations are retained per rollout step, so R=1 needs roughly a sixth of
+    # what R=6 does -- the R=6 stage sat near 57 GB of a 64 GB MI250X, so this
+    # stage has ample headroom and should not pay the recompute tax.
+    # The R=6 stage keeps it on: there, memory is the binding constraint.
+    use_gradient_checkpointing: false
     model_family: swinu
     use_scheduled_sampling: false
     freeze_layers: []
