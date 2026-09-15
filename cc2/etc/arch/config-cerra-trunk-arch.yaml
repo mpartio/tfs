@@ -6,8 +6,15 @@
 #
 # Recipe follows trusting-radar, which did exactly this R=6 stage on top of the
 # R=1 trunk: lr 2e-5 (not the trunk's 5e-4 -- this is a fine-tune), warmup 1000.
-# It reached its best checkpoint at step 19935 in 41 h on 16 nodes, so max_steps
-# is 40000 rather than 80000; EarlyStopping decides in practice.
+# It reached its best checkpoint at step 19935 in 41 h on 16 nodes -- and that
+# checkpoint is the parent of the entire current lineage, so ~20k R=6 steps is
+# empirically sufficient on top of a trained R=1 trunk. max_steps is 20000:
+# this stage teaches multi-step stability, it is not learning the field from
+# scratch (stage 1a does that). EarlyStopping decides in practice.
+#
+# 20k at the measured R=6 rate (0.10-0.135 it/s) is 41-55 h, so this stage may
+# still cross the 2-day limit and requeue once; a larger budget would make that
+# certain for no expected gain.
 #
 # Normalization: dataloader defaults everywhere (identical in stages 2-3).
 # The June consult's overrides are dropped: r is already a capped [0,1]
@@ -56,7 +63,7 @@ trainer:
       check_finite: true
       check_on_train_epoch_end: false
   max_epochs: null
-  max_steps: 40000
+  max_steps: 20000
   limit_val_batches: 0.25
   val_check_interval: 0.25
   log_every_n_steps: 100
