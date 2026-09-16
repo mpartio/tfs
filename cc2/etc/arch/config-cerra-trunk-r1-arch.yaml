@@ -98,7 +98,7 @@ model:
     # No-op at R=1 (swinu/util.py only applies weights when n_step > 1).
     use_rollout_weighting: false
     branch_from_run: null
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
     model_family: swinu
     use_scheduled_sampling: false
     freeze_layers: []
