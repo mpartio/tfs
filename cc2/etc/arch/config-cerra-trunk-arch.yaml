@@ -10,7 +10,7 @@
 # checkpoint is the parent of the entire current lineage, so ~20k R=6 steps is
 # empirically sufficient on top of a trained R=1 trunk. max_steps is 20000:
 # this stage teaches multi-step stability, it is not learning the field from
-# scratch (stage 1a does that). EarlyStopping decides in practice.
+# scratch (stage 1a does that).
 #
 # 20k at the measured R=6 rate (0.10-0.135 it/s) is 41-55 h, so this stage may
 # still cross the 2-day limit and requeue once; a larger budget would make that
@@ -54,14 +54,9 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
-  - class_path: lightning.pytorch.callbacks.EarlyStopping
-    init_args:
-      monitor: val_loss
-      mode: min
-      patience: 8
-      min_delta: 0.0
-      check_finite: true
-      check_on_train_epoch_end: false
+  # NO EarlyStopping -- see config-cerra-trunk-r1-arch.yaml: with
+  # sync_dist=False each rank monitors its own local val_loss and the
+  # stop decision is OR-reduced across all 128, so one rank stops the job.
   max_epochs: null
   max_steps: 20000
   limit_val_batches: 0.25
