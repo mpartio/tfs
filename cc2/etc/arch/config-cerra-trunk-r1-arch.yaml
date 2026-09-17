@@ -51,21 +51,10 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
-  # NO EarlyStopping -- it killed three consecutive 16-node runs at step 23809.
-  # val_loss is logged sync_dist=False (cc2module.py), so each of the 128 ranks
-  # monitors its own noisy local shard, and EarlyStopping's
-  # reduce_boolean_decision(..., all=False) is an OR: one rank exhausting
-  # patience stops everyone. Rank 0 -- the only one whose val_loss reaches
-  # MLflow -- recorded NOT_STOPPED while being outvoted, which is why the
-  # deaths looked causeless. sync_dist=True would fix the metric but hangs or
-  # badly slows training here, so the callback goes instead; max_steps bounds
-  # the run.
   max_epochs: null
   # ~40% cheaper than the historical trunk: coffee-acquisition's val minimum was
   # at ~61k of 250k max steps, so 80k covers it with margin.
   max_steps: 80000
-  limit_val_batches: 0.25
-  val_check_interval: 0.25
   log_every_n_steps: 100
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
