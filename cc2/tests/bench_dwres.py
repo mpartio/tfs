@@ -29,9 +29,15 @@ from swinu.layers import DWConvResidual3D  # noqa: E402
 
 # Real shapes from etc/arch/config-cerra-trunk-arch.yaml (hidden_dim 256,
 # patch_size 4, 475x535 padded to 480x536 -> 120x134 patches).
+#
+# Dilation matters: cc2/swinu/cc2.py:_get_dilation gives odd-numbered encoder1
+# blocks dilation=2, so HALF of them are dilated. MIOpen's depthwise-3D solver
+# coverage is thin and may be absent entirely for dilated 3D, which a
+# dilation=1-only benchmark would never reveal.
 CASES = [
-    ("encoder1", 256, 120, 134, 2, 2.0),
-    ("encoder2", 512, 60, 67, 2, 1.0),
+    ("enc1 d=1", 256, 120, 134, 2, 2.0, 1),
+    ("enc1 d=2", 256, 120, 134, 2, 2.0, 2),
+    ("enc2 d=1", 512, 60, 67, 2, 1.0, 1),
 ]
 
 
@@ -112,16 +118,16 @@ def main():
     print(f"{'case':<10} {'variant':<11} {'ms/iter':>10} {'vs spatial2d':>13}")
     print("-" * 48)
 
-    for name, C, h, w, T, expand in CASES:
+    for name, C, h, w, T, expand, dil in CASES:
         x = torch.randn(1, T * h * w, C)
         base = None
         for label, cls in (("spatial2d", Spatial2dVariant),
                            ("shipped", DWConvResidual3D),
                            ("conv3d", Conv3dVariant)):
             torch.manual_seed(0)
-            mod = cls(C, (h, w), time_dim=T, expand=expand)
+            mod = cls(C, (h, w), time_dim=T, expand=expand, dilation=dil)
             try:
-                ms = timeit(mod, x)
+                ms = timeit(mod, x)   # includes MIOpen solver search in warmup
             except RuntimeError as e:
                 print(f"{name:<10} {label:<11} {'FAILED':>10}   {type(e).__name__}: {e}")
                 continue
