@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import torch
 import os
 import randomname
@@ -15,6 +16,13 @@ from common.util import get_next_run_number, get_rank
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger
 from common.sc_callback import CustomSaveConfigCallback
+
+# Lightning names its stop reason via rank_zero_info/rank_zero_debug in
+# fit_loop.py; with no logging config the root logger sits at WARNING and
+# discards all of them, including the should_stop case (DEBUG). Two runs died
+# at an identical step with no recorded reason because of this.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("lightning.pytorch.loops.fit_loop").setLevel(logging.DEBUG)
 
 
 def get_coordination_info_identifier() -> str:
