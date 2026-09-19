@@ -52,9 +52,7 @@ trainer:
       log_train: true
       log_val: true
   max_epochs: null
-  # ~40% cheaper than the historical trunk: coffee-acquisition's val minimum was
-  # at ~61k of 250k max steps, so 80k covers it with margin.
-  max_steps: 80000
+  max_steps: 100000
   log_every_n_steps: 100
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
@@ -109,6 +107,7 @@ data:
   - ../data/cerra-475x535-2006-2010-v4.zarr
   - ../data/cerra-475x535-2011-2015-v4.zarr
   - ../data/cerra-475x535-2016-2020-v4.zarr
+  - ../data/cerra-475x535-2021-v4.zarr
   static_forcing_path: ../data/meps-const-v4.zarr
   prognostic_params:
   - tcc
@@ -151,9 +150,9 @@ data:
   - cos_longitude
   - sin_longitude
   train_start: '1984-09-01'
-  train_end: '2017-01-01'
-  val_start: '2017-01-01'
-  val_end: '2020-01-01'
+  train_end: '2018-01-01'
+  val_start: '2018-01-01'
+  val_end: '2022-01-01'
   batch_size: 1
   num_workers: 6
   persistent_workers: true

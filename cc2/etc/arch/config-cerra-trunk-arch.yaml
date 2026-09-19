@@ -96,11 +96,10 @@ model:
     # From-scratch R=6 curriculum: ramps rollout-step loss weights from
     # steps-1-2-dominant to uniform over training (see header note).
     use_rollout_weighting: true
-    # <-- SET to the stage-1a R=1 run, e.g. "some-name/1"
-    branch_from_run: CHANGE-ME-cerra-trunk-r1-run/1
+    branch_from_run: clear-stalk/1
     use_gradient_checkpointing: true
     model_family: swinu
-    use_scheduled_sampling: false
+    use_scheduled_sampling: true
     freeze_layers: []
     use_flow_matching: false
     direct_prediction: false
@@ -119,6 +118,7 @@ data:
   - ../data/cerra-475x535-2006-2010-v4.zarr
   - ../data/cerra-475x535-2011-2015-v4.zarr
   - ../data/cerra-475x535-2016-2020-v4.zarr
+  - ../data/cerra-475x535-2021-v4.zarr
   static_forcing_path: ../data/meps-const-v4.zarr
   prognostic_params:
   - tcc
@@ -161,9 +161,9 @@ data:
   - cos_longitude
   - sin_longitude
   train_start: '1984-09-01'
-  train_end: '2017-01-01'
-  val_start: '2017-01-01'
-  val_end: '2020-01-01'
+  train_end: '2018-01-01'
+  val_start: '2018-01-01'
+  val_end: '2022-01-01'
   batch_size: 1
   num_workers: 6
   persistent_workers: true
