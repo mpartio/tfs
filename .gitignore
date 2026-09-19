@@ -15,3 +15,8 @@ logs
 .letta
 tasks
 obs
+
+# lumi crash artefacts and DDP rendezvous files
+*.btr
+core
+ddp_coordination_info-*.json

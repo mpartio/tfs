@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import logging
+import numpy as np
 import torch
 import os
 import randomname
@@ -17,12 +17,20 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.loggers import MLFlowLogger
 from common.sc_callback import CustomSaveConfigCallback
 
-# Lightning names its stop reason via rank_zero_info/rank_zero_debug in
-# fit_loop.py; with no logging config the root logger sits at WARNING and
-# discards all of them, including the should_stop case (DEBUG). Two runs died
-# at an identical step with no recorded reason because of this.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logging.getLogger("lightning.pytorch.loops.fit_loop").setLevel(logging.DEBUG)
+# LightningCLI loads --ckpt_path with weights_only=True, and our checkpoints
+# carry numpy objects (data_statistics from on_save_checkpoint) that the default
+# allowlist rejects. Guarded so an older numpy (no _core / dtypes) or torch
+# (no add_safe_globals) falls back to the old behaviour instead of failing at
+# import -- this module is also the entry point for the inference scripts.
+try:
+    from numpy._core import multiarray as _ma  # numpy >= 2
+except ImportError:  # numpy 1.x
+    from numpy.core import multiarray as _ma
+_safe_globals = [_ma._reconstruct, np.ndarray, np.dtype, _ma.scalar]
+if hasattr(np, "dtypes"):
+    _safe_globals.append(np.dtypes.Float64DType)
+if hasattr(torch.serialization, "add_safe_globals"):
+    torch.serialization.add_safe_globals(_safe_globals)
 
 
 def get_coordination_info_identifier() -> str:

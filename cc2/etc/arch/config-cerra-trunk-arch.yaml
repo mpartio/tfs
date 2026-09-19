@@ -54,9 +54,8 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
-  # NO EarlyStopping -- see config-cerra-trunk-r1-arch.yaml: with
-  # sync_dist=False each rank monitors its own local val_loss and the
-  # stop decision is OR-reduced across all 128, so one rank stops the job.
+  # No EarlyStopping: the trunk runs to max_steps so the cosine schedule
+  # reaches its horizon.
   max_epochs: null
   max_steps: 20000
   # Full validation once per epoch -- see config-cerra-trunk-r1-arch.yaml:
