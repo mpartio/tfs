@@ -38,12 +38,26 @@ trainer:
       log_model: false
       prefix: ''
   callbacks:
+  # Same two callbacks as config-cerra-trunk-r1-arch.yaml, for the same reason:
+  # the top-k save is an AND vote over all ranks on shard-local val_loss, and
+  # after a --ckpt_path resume every rank compares against rank 0's restored
+  # history, so the vote fails until the loss beats the inter-shard spread.
+  # Lightning 2.6.0 then withholds last.ckpt too (model_checkpoint.py:494).
+  # Confirmed on clear-stalk 2026-09-20. Resume from latest.ckpt.
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
       monitor: val_loss
       save_last: true
       save_top_k: 3
       mode: min
+      verbose: true
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: null
+      save_top_k: 1
+      save_last: false
+      filename: latest
+      enable_version_counter: false
   - class_path: lightning.pytorch.callbacks.ModelSummary
     init_args:
       max_depth: 2
