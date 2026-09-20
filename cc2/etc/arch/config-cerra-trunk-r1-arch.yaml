@@ -35,12 +35,31 @@ trainer:
       log_model: false
       prefix: ''
   callbacks:
+  # Top-k "best" checkpoints. The save decision is AND-reduced over all ranks,
+  # each comparing its own shard-mean val_loss (sync_dist=False) against the
+  # restored best_k_models. After a --ckpt_path resume those restored values are
+  # rank 0's, so ranks with a harder shard veto the save until the loss has
+  # improved by more than the inter-shard spread. verbose=true makes rank 0
+  # print "'val_loss' was not in top 3" when that happens.
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
       monitor: val_loss
       save_last: true
       save_top_k: 3
       mode: min
+      verbose: true
+  # Rolling checkpoint written EVERY epoch, no vote. Needed because Lightning
+  # 2.6.0 writes last.ckpt only when a top-k checkpoint was written in the same
+  # step (model_checkpoint.py:494), so a vetoed top-k save also freezes
+  # last.ckpt -- that is how 22086134 and the clear-stalk resume lost hours of
+  # training with no error. Resume from latest.ckpt.
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: null
+      save_top_k: 1
+      save_last: false
+      filename: latest
+      enable_version_counter: false
   - class_path: lightning.pytorch.callbacks.ModelSummary
     init_args:
       max_depth: 2
