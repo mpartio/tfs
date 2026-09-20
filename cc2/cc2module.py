@@ -428,6 +428,16 @@ class cc2module(L.LightningModule):
             "loss_components": loss,
         }
 
+    def on_validation_epoch_start(self):
+        self._val_loss_sum = torch.zeros((), device=self.device)
+        self._val_loss_n = torch.zeros((), device=self.device)
+
+    def on_validation_epoch_end(self):
+        # Workaround for not using sync_dist=True
+        t = torch.stack([self._val_loss_sum, self._val_loss_n])
+        t = self.trainer.strategy.reduce(t, reduce_op="sum")
+        self.log("val_loss", t[0] / t[1].clamp_min(1.0), sync_dist=False)
+
     def validation_step(self, batch, batch_idx):
         data, forcing = batch
 
@@ -450,7 +460,11 @@ class cc2module(L.LightningModule):
         tendencies = outs["tendencies"]
         predictions = outs["predictions"]
 
-        self.log("val_loss", loss["loss"], sync_dist=False)
+        # val_loss is NOT logged per rank here; it is accumulated and reduced
+        # over all ranks once per epoch in on_validation_epoch_end.
+        b = predictions.shape[0]
+        self._val_loss_sum += loss["loss"].detach().float() * b
+        self._val_loss_n += b
 
         for k, v in loss.items():
             if isinstance(v, torch.Tensor):
