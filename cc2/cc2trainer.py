@@ -172,6 +172,17 @@ class cc2trainer(LightningCLI):
     def _inject_statistics(self, stage: str):
         if self.model.use_statistics_from_checkpoint:
             self.datamodule.inject_statistics(_load_stats(self._stage_ckpt(stage)))
+        elif stage != "fit" and not os.environ.get("CC2_ALLOW_DATASET_STATS"):
+            # use_statistics_from_checkpoint=false is only meaningful for a trunk
+            # `fit`, where there is no parent checkpoint and the statistics are
+            # computed from the training data.
+            raise RuntimeError(
+                f"{stage}: use_statistics_from_checkpoint=false would normalise the "
+                "inputs with the dataset's own statistics, not the statistics the "
+                "checkpoint was trained with. Pass "
+                "--model.use_statistics_from_checkpoint=true, or set "
+                "CC2_ALLOW_DATASET_STATS=1"
+            )
 
     def before_instantiate_classes(self):
         super().before_instantiate_classes()
