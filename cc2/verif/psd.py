@@ -111,7 +111,13 @@ def interp1d_torch(x, xp, fp):
 
 
 def calculate_psd(data: torch.Tensor):
-    data = data.squeeze()
+    # Drop only the (always-1) channel dim explicitly. A blanket .squeeze() also
+    # collapses T when T==1 (e.g. R=1 / single-lead comparisons), which breaks the
+    # B,T,nx,ny unpack below -- T must survive as its own axis regardless of size.
+    if data.dim() == 5:
+        data = data.squeeze(2)
+    else:
+        data = data.squeeze()
     B, T, nx, ny = data.shape
     device, dtype = data.device, data.dtype
     window = _hann2d(nx, ny, device, dtype, periodic=True)
