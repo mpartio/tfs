@@ -106,14 +106,36 @@ def _load_checkpoint_model(ckpt_path, config_path):
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     ckpt_hparams = ckpt.get("hyper_parameters", {})
 
-    real_config = {}
-    for key in _MODEL_HPARAM_KEYS:
-        if key in ckpt_hparams:
-            real_config[key] = ckpt_hparams[key]
-        elif key in model_init_args:
-            real_config[key] = model_init_args[key]
+    # Start from ALL of config.yaml's model init_args -- by definition these were
+    # sufficient to build the model at train time for whatever code era produced
+    # this checkpoint (unlike a hardcoded key allowlist, which broke across eras:
+    # e.g. trusting-radar's Dec-2025 cc2model reads config.use_deep_refinement_head,
+    # a key the current-era allowlist didn't carry). Extra keys cc2model doesn't
+    # read are harmless (SimpleNamespace attribute access; unused ones are just
+    # never touched). Then let the checkpoint's own saved hparams override, since
+    # those are the more authoritative per-instance record.
+    real_config = dict(model_init_args)
+    real_config.update({k: v for k, v in ckpt_hparams.items() if k in model_init_args})
     real_config.setdefault("use_flow_matching", False)
     real_config.setdefault("direct_prediction", False)
+    # Historical code-era default (commit 8014683 removed this option, message
+    # "default: true") -- not saved in older checkpoints' hparams because it was
+    # never a cc2module.__init__ parameter, only a cc2model-internal default.
+    # Historical cc2model-internal-only toggles, never saved to older checkpoints'
+    # hparams (they were cc2model-config-dict defaults, not cc2module.__init__
+    # parameters). Defaults taken verbatim from each removal commit's own message.
+    real_config.setdefault("use_deep_refinement_head", True)   # 8014683
+    real_config.setdefault("use_hard_skip", False)              # c7c6640
+    real_config.setdefault("use_residual_adapter_head", False)  # 2a78956
+    real_config.setdefault("use_high_pass_filter", False)       # 6725a35
+    real_config.setdefault("use_residual_io_adapter", False)    # b98b727
+    # autoregressive_mode gates a REAL architecture difference (step_embedding_direct
+    # only exists when False -- swinu/cc2.py "if self.autoregressive_mode is False").
+    # The removal commit's stated default (908c79d, "default: false") is the LATER,
+    # direct-prediction-era default and is wrong for AR-era checkpoints (rollout_length
+    # > 1 with scheduled sampling, no direct_prediction flag) -- those trained as AR.
+    # Infer from direct_prediction instead of a single blanket constant.
+    real_config.setdefault("autoregressive_mode", not real_config.get("direct_prediction", False))
 
     prognostic_params = data_cfg["prognostic_params"]
     forcing_params = data_cfg["forcing_params"]
