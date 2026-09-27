@@ -16,6 +16,21 @@ Run standalone (no pytest needed):
 Exit code 0 = all pass. Each test prints PASS/FAIL with the measured numbers.
 Run them again on every trained checkpoint (frame-0 sensitivity can be trained
 back into a near-dead state even when the architecture allows it).
+
+IMPORTANT: with CC2_ARCH_TEST_TRAINED=1 alone, tests 1-2 still run on a freshly
+INITIALIZED small synthetic model (SMALL_CONFIG) -- that flag only relaxes the
+pass threshold, it does not load any checkpoint. To actually exercise a trained
+checkpoint's weights, ALSO set CC2_ARCH_TEST_CKPT (and CC2_ARCH_TEST_CONFIG,
+the run's config.yaml, for the data-side params not saved in the checkpoint's
+own hparams) -- see _load_checkpoint_model(). Discovered 2026-09-27 while
+verifying principal-biography/1: the flag-only invocation silently re-tested
+the same untrained toy model every time, regardless of which checkpoint was
+nominally "being verified".
+
+    CC2_ARCH_TEST_TRAINED=1 \\
+    CC2_ARCH_TEST_CKPT=/data/tfs/runs/<run>/1/checkpoints/best.ckpt \\
+    CC2_ARCH_TEST_CONFIG=/data/tfs/runs/<run>/1/config.yaml \\
+    python3 cc2/tests/test_swinu_architecture.py
 """
 
 import os
@@ -52,35 +67,136 @@ SMALL_CONFIG = dict(
     preprocessor=None,
 )
 
+# init_args names that go straight from a checkpoint's saved hyper_parameters into
+# the model config dict (cc2model reads these via SimpleNamespace attribute access;
+# see swinu/cc2.py:cc2model.__init__). Data-side names (prognostic/forcing/static
+# forcing params, input_resolution) are NOT here: they live on the datamodule, not
+# the LightningModule, so they are read from config.yaml's `data:` block instead
+# (see _load_checkpoint_model).
+_MODEL_HPARAM_KEYS = [
+    "patch_size", "hidden_dim", "num_heads", "mlp_ratio", "drop_rate",
+    "attn_drop_rate", "drop_path_rate", "window_size", "window_size_deep",
+    "encoder1_depth", "encoder2_depth", "decoder1_depth", "decoder2_depth",
+    "history_length", "use_gradient_checkpointing", "use_scheduled_sampling",
+    "use_flow_matching", "direct_prediction",
+]
+
+# CERRA / NWCSAF common grid used by every config in this campaign.
+_DEFAULT_INPUT_RESOLUTION = [535, 475]
+
 
 def _build_model(seed=0):
     torch.manual_seed(seed)
     return cc2model(dict(SMALL_CONFIG)).eval()
 
 
-def _forward(model, data, forcing):
+def _load_checkpoint_model(ckpt_path, config_path):
+    """Build a full-size cc2model from a run's config.yaml + load its trained
+    checkpoint's weights. Returns (model, prognostic_params, forcing_params,
+    static_forcing_params, input_resolution) so callers can build correctly
+    shaped test tensors.
+    """
+    import yaml
+
+    with open(config_path) as fh:
+        cfg = yaml.safe_load(fh)
+    data_cfg = cfg["data"]
+    model_init_args = cfg["model"]["init_args"]
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt_hparams = ckpt.get("hyper_parameters", {})
+
+    real_config = {}
+    for key in _MODEL_HPARAM_KEYS:
+        if key in ckpt_hparams:
+            real_config[key] = ckpt_hparams[key]
+        elif key in model_init_args:
+            real_config[key] = model_init_args[key]
+    real_config.setdefault("use_flow_matching", False)
+    real_config.setdefault("direct_prediction", False)
+
+    prognostic_params = data_cfg["prognostic_params"]
+    forcing_params = data_cfg["forcing_params"]
+    static_forcing_params = data_cfg["static_forcing_params"]
+    input_resolution = data_cfg.get("input_resolution", _DEFAULT_INPUT_RESOLUTION)
+
+    real_config["prognostic_params"] = prognostic_params
+    real_config["forcing_params"] = forcing_params
+    real_config["static_forcing_params"] = static_forcing_params
+    real_config["input_resolution"] = input_resolution
+    real_config.setdefault("preprocessor", None)
+
+    model = cc2model(real_config)
+
+    state_dict = ckpt["state_dict"]
+    # Lightning saves the wrapped submodule under "model." (self.model = cc2model(...)).
+    prefix = "model."
+    stripped = {
+        k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)
+    }
+    missing, unexpected = model.load_state_dict(stripped, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"checkpoint {ckpt_path} did not load cleanly against config "
+            f"{config_path}: {len(missing)} missing key(s), "
+            f"{len(unexpected)} unexpected key(s). First few missing: "
+            f"{missing[:5]}. First few unexpected: {unexpected[:5]}. "
+            "This means the config's model init_args do not match the "
+            "checkpoint's actual architecture -- do not proceed with a "
+            "partially-loaded model."
+        )
+    model.eval()
+    return model, prognostic_params, forcing_params, static_forcing_params, input_resolution
+
+
+def _checkpoint_env():
+    ckpt_path = os.environ.get("CC2_ARCH_TEST_CKPT")
+    config_path = os.environ.get("CC2_ARCH_TEST_CONFIG")
+    if not ckpt_path:
+        return None
+    if not config_path:
+        raise SystemExit(
+            "CC2_ARCH_TEST_CKPT is set but CC2_ARCH_TEST_CONFIG is not -- both "
+            "are required to build a correctly-shaped real model (data-side "
+            "params live in config.yaml, not the checkpoint's own hparams)."
+        )
+    return ckpt_path, config_path
+
+
+def _forward(model, data, forcing, step=0):
     with torch.no_grad():
-        return model(data, forcing, 0)
+        return model(data, forcing, step)
 
 
 def test_frame0_sensitivity():
     """Perturbing history frame 0 must change the output.
 
-    Two modes:
-    - init (default): threshold 1e-5 relative to the frame-1 delta — a wiring
-      check. At init the DWConvResidual3D LayerScale (ls_init=1e-2/1e-3)
-      deliberately keeps block outputs near zero, so sensitivity is small but
-      must be far above fp noise (~1e-7 relative).
-    - trained (CC2_ARCH_TEST_TRAINED=1): threshold 1% — the usage gate from the
-      verification protocol. A structurally live path can be trained into a
-      near-dead state; run this against every trained checkpoint.
+    Two axes, independent of each other:
+    - threshold: init (default, 1e-5) vs CC2_ARCH_TEST_TRAINED=1 (1%) -- the
+      usage gate from the verification protocol.
+    - model: small synthetic init (default) vs a real trained checkpoint, when
+      CC2_ARCH_TEST_CKPT/CC2_ARCH_TEST_CONFIG are set. The threshold flag alone
+      does NOT load a checkpoint -- see the module docstring.
     """
     trained = os.environ.get("CC2_ARCH_TEST_TRAINED", "0") == "1"
     rel_threshold = 0.01 if trained else 1e-5
-    model = _build_model()
-    torch.manual_seed(1)
-    data = torch.rand(1, 2, 1, 32, 32)
-    forcing = torch.rand(1, 3, 3, 32, 32)
+    ckpt_env = _checkpoint_env()
+
+    if ckpt_env:
+        ckpt_path, config_path = ckpt_env
+        model, prog, forc, static, res = _load_checkpoint_model(ckpt_path, config_path)
+        h, w = res
+        n_prog, n_forc = len(prog), len(forc) + len(static)
+        torch.manual_seed(1)
+        data = torch.rand(1, 2, n_prog, h, w)
+        forcing = torch.rand(1, 3, n_forc, h, w)
+        model_desc = f"CHECKPOINT {os.path.basename(ckpt_path)}"
+    else:
+        model = _build_model()
+        torch.manual_seed(1)
+        data = torch.rand(1, 2, 1, 32, 32)
+        forcing = torch.rand(1, 3, 3, 32, 32)
+        model_desc = "small synthetic init"
 
     base = _forward(model, data, forcing)
 
@@ -96,7 +212,7 @@ def test_frame0_sensitivity():
     ok = delta_frame1 > 0 and delta_frame0 >= rel_threshold * delta_frame1
     print(
         f"[{'PASS' if ok else 'FAIL'}] frame0_sensitivity "
-        f"({'trained' if trained else 'init'} mode): "
+        f"({'trained' if trained else 'init'} threshold, {model_desc}): "
         f"|d(frame0)|={delta_frame0:.3e} vs |d(frame1)|={delta_frame1:.3e} "
         f"(need >= {rel_threshold:.0e} of frame1)"
     )
@@ -106,11 +222,24 @@ def test_frame0_sensitivity():
 def test_frame_order_sensitivity():
     """Swapping the two history frames (same content, reversed order) must
     change the output — otherwise the model pools frames without seeing
-    motion direction."""
-    model = _build_model()
-    torch.manual_seed(2)
-    data = torch.rand(1, 2, 1, 32, 32)
-    forcing = torch.rand(1, 3, 3, 32, 32)
+    motion direction. Uses a real checkpoint if CC2_ARCH_TEST_CKPT/
+    CC2_ARCH_TEST_CONFIG are set, else the small synthetic init model."""
+    ckpt_env = _checkpoint_env()
+    if ckpt_env:
+        ckpt_path, config_path = ckpt_env
+        model, prog, forc, static, res = _load_checkpoint_model(ckpt_path, config_path)
+        h, w = res
+        n_prog, n_forc = len(prog), len(forc) + len(static)
+        torch.manual_seed(2)
+        data = torch.rand(1, 2, n_prog, h, w)
+        forcing = torch.rand(1, 3, n_forc, h, w)
+        model_desc = f"CHECKPOINT {os.path.basename(ckpt_path)}"
+    else:
+        model = _build_model()
+        torch.manual_seed(2)
+        data = torch.rand(1, 2, 1, 32, 32)
+        forcing = torch.rand(1, 3, 3, 32, 32)
+        model_desc = "small synthetic init"
 
     base = _forward(model, data, forcing)
 
@@ -122,7 +251,7 @@ def test_frame_order_sensitivity():
     scale = base.abs().max().item()
     ok = delta > 1e-4 * max(scale, 1.0)
     print(
-        f"[{'PASS' if ok else 'FAIL'}] frame_order_sensitivity: "
+        f"[{'PASS' if ok else 'FAIL'}] frame_order_sensitivity ({model_desc}): "
         f"|d(swap)|={delta:.3e} (output scale {scale:.3e})"
     )
     return ok
@@ -130,7 +259,10 @@ def test_frame_order_sensitivity():
 
 def test_residual_identity():
     """With gamma_attn = gamma_mlp = 0 and no drop-path, an encoder block must
-    be exactly the identity. The doubled-residual bug makes it 2x instead."""
+    be exactly the identity. The doubled-residual bug makes it 2x instead.
+    Pure architecture-code check -- does not depend on trained weights, so no
+    checkpoint-loading path here (a zeroed-gamma block is the same regardless
+    of what the rest of the network learned)."""
     torch.manual_seed(3)
     block = SwinEncoderBlock(
         dim=32, num_heads=4, mlp_ratio=2.0, qkv_bias=True,
@@ -155,7 +287,8 @@ def test_residual_identity():
 def test_shift_no_edge_leakage():
     """In a shifted block, an impulse at the top-left corner must not influence
     output at the bottom rows: those only share a window with the top rows
-    through torch.roll wraparound, which the shift attention mask must block."""
+    through torch.roll wraparound, which the shift attention mask must block.
+    Pure architecture-code check, same rationale as test_residual_identity."""
     torch.manual_seed(4)
     H = W = 8
     block = SwinEncoderBlock(
@@ -188,6 +321,10 @@ def test_shift_no_edge_leakage():
 
 
 def main():
+    ckpt_env = _checkpoint_env()
+    if ckpt_env:
+        print(f"Running against real checkpoint: {ckpt_env[0]}")
+        print(f"                   config:       {ckpt_env[1]}\n")
     results = [
         test_frame0_sensitivity(),
         test_frame_order_sensitivity(),
