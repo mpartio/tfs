@@ -1,5 +1,3 @@
-# STAGE 2/3 of the architecture-fix retrain (2026-09): NWCSAF direct-prediction
-# backbone (bland-layer recipe) on the fixed architecture.
 seed_everything: 42
 trainer:
   accelerator: auto
@@ -59,14 +57,9 @@ model:
     - 0.01
     - 0.01
     - 0.1
-    # 3e-5: above kinetic-creative's 5e-6 fine-tune LR, below from-scratch's 1e-4.
-    # Fresh lead_embeddings + the 1-step-tendency -> analysis->t+k displacement task
-    # shift need real learning; 5e-6 would undertrain the long-lead embeddings.
     learning_rate: 3.0e-05
     warmup_iterations: 500
     weight_decay: 0.02
-    # MUST be 12 in direct mode: each lead is learned independently; training at
-    # R<12 leaves leads R..11 at random init.
     rollout_length: 12
     branch_from_run: principal-biography/1
     use_gradient_checkpointing: true
@@ -159,8 +152,6 @@ data:
   - sin_latitude
   - cos_longitude
   - sin_longitude
-  # Held identical to the RC lineage's windows on purpose: the vs-RC comparison
-  # is confounded if the retrain sees more data.
   train_start: '2020-01-01'
   train_end: '2024-01-01'
   val_start: '2024-01-01'
