@@ -1,21 +1,11 @@
 # STAGE 2/3 of the architecture-fix retrain (2026-09): NWCSAF direct-prediction
 # backbone (bland-layer recipe) on the fixed architecture.
-#
-# Branches from the stage-1 CERRA trunk (config-cerra-trunk-arch.yaml).
-# SET branch_from_run TO THE ACTUAL STAGE-1 RUN NAME before starting, and check
-# the "Weight loading results" log line: branch_from_run loads with strict=False
-# and silently drops shape-mismatched keys.
-#
-# EarlyStopping added deliberately: this family converges at ~2.7-3.7k steps
-# (June 2026 campaign lesson — the historical matched-recipe configs lacked it).
-#
-# Adjust devices/num_nodes for the lumi allocation.
 seed_everything: 42
 trainer:
   accelerator: auto
   strategy: ddp_find_unused_parameters_true
   devices: auto
-  num_nodes: 1
+  num_nodes: 8
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
@@ -41,20 +31,10 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
-  - class_path: lightning.pytorch.callbacks.EarlyStopping
-    init_args:
-      monitor: val_loss
-      mode: min
-      patience: 8
-      min_delta: 0.0
-      check_finite: true
-      check_on_train_epoch_end: false
   max_epochs: null
   max_steps: 20000
-  limit_val_batches: 0.25
-  val_check_interval: 0.25
   log_every_n_steps: 100
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   enable_model_summary: false
 
@@ -88,8 +68,7 @@ model:
     # MUST be 12 in direct mode: each lead is learned independently; training at
     # R<12 leaves leads R..11 at random init.
     rollout_length: 12
-    # <-- SET to the stage-1 run (config-cerra-trunk-arch.yaml output), e.g. "some-name/1"
-    branch_from_run: CHANGE-ME-cerra-trunk-r6-run/1
+    branch_from_run: principal-biography/1
     use_gradient_checkpointing: true
     model_family: swinu
     use_scheduled_sampling: false
@@ -186,7 +165,7 @@ data:
   train_end: '2024-01-01'
   val_start: '2024-01-01'
   val_end: '2025-01-01'
-  batch_size: 2
+  batch_size: 1
   num_workers: 4
   persistent_workers: true
   prefetch_factor: 3
