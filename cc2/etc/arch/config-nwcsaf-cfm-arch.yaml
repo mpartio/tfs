@@ -3,7 +3,7 @@ trainer:
   accelerator: auto
   strategy: ddp_find_unused_parameters_true
   devices: auto
-  num_nodes: 8
+  num_nodes: 4
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
