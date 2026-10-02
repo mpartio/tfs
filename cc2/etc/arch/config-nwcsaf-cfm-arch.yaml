@@ -1,26 +1,9 @@
-# STAGE 3/3 of the architecture-fix retrain (2026-09): CFM refinement on the
-# fixed-architecture direct-prediction backbone (noisy-buck recipe).
-#
-# Branches from the stage-2 backbone (config-nwcsaf-backbone-arch.yaml).
-# SET branch_from_run TO THE ACTUAL STAGE-2 RUN NAME (its best/val-min version),
-# and check the "Weight loading results" log line (strict=False load;
-# _extend_proj_force_for_flow zero-extends proj_force for the +2 flow channels).
-#
-# Differences from the historical config-nwcsaf-cfm-from-3654.yaml:
-#   - flow_warm_start / warm_start_alpha removed (deleted from code, 04b0992)
-#   - EarlyStopping min_delta 0.001 -> 0.0 (June flag: 0.001 may stop prematurely
-#     on the noisier CFM val loss)
-#   - normalization override to match the fixed trunk
-#
-# EVALUATION NOTE: track placement (state-corr@t12 / Lagrangian-MSESS) at EVERY
-# checkpoint, not just the last — the CFM sharpening phase transition
-# (cfm-s6350/s7325 precedent) is invisible in the loss curve.
 seed_everything: 42
 trainer:
   accelerator: auto
   strategy: ddp_find_unused_parameters_true
   devices: auto
-  num_nodes: 4
+  num_nodes: 8
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
@@ -46,18 +29,15 @@ trainer:
       fss_radius: 10
       log_train: true
       log_val: true
-  - class_path: lightning.pytorch.callbacks.EarlyStopping
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
-      monitor: val_loss
-      mode: min
-      patience: 8
-      min_delta: 0.0
-      check_finite: true
-      check_on_train_epoch_end: false
+      monitor: null
+      save_top_k: 1
+      save_last: false
+      filename: latest
+      enable_version_counter: false
   max_epochs: null
   max_steps: 20000
-  limit_val_batches: 0.5
-  val_check_interval: 200
   log_every_n_steps: 100
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
@@ -88,8 +68,7 @@ model:
     warmup_iterations: 500
     weight_decay: 0.05
     rollout_length: 12
-    # <-- SET to the stage-2 run (config-nwcsaf-backbone-arch.yaml output)
-    branch_from_run: CHANGE-ME-nwcsaf-backbone-run/1
+    branch_from_run: mute-brace/1
     use_gradient_checkpointing: true
     model_family: swinu
     use_scheduled_sampling: false
@@ -137,10 +116,7 @@ model:
     use_statistics_from_checkpoint: true
     force_frozen_backbone_to_eval: false
     preprocessor: null
-    # --- flow matching ---
     use_flow_matching: true
-    # INFERENCE (DDIM) params; training samples alpha~U(0,1) and ignores them.
-    # K=16 default here; the decision-protocol K/eta sweep happens at test time.
     num_inference_steps: 16
     flow_init_noise_sigma: 1.0
     flow_eta: 0.05
@@ -190,7 +166,6 @@ data:
   - sin_latitude
   - cos_longitude
   - sin_longitude
-  # Held identical to the RC lineage's windows on purpose (vs-RC comparability).
   train_start: '2020-01-01'
   train_end: '2024-01-01'
   val_start: '2024-01-01'
