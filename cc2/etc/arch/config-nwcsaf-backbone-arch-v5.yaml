@@ -1,0 +1,179 @@
+seed_everything: 42
+trainer:
+  accelerator: auto
+  strategy: ddp_find_unused_parameters_true
+  devices: auto
+  num_nodes: 8   # cosmetic: cc2v7.sh passes --trainer.num_nodes=$SLURM_NNODES; eff. batch = nodes x 8 x 1 x accumulate (64 at 8 nodes)
+  precision: bf16-mixed
+  logger:
+  - class_path: lightning.pytorch.loggers.MLFlowLogger
+    init_args:
+      experiment_name: cc2-arch-partio
+      tracking_uri: https://mlflow.out.ocp.fmi.fi
+      log_model: false
+      prefix: ''
+  callbacks:
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: val_loss
+      save_last: true
+      save_top_k: 3
+      mode: min
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: 2
+  - class_path: callback.callback.CleanupFailedRunCallback
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      monitor: null
+      save_top_k: 1
+      save_last: false
+      filename: latest
+      enable_version_counter: false
+      every_n_train_steps: 500   # rolling: a checkpoint near the 48 h wall and near max_steps regardless of the validation cadence
+  - class_path: callback.ew_callback.EarlyWarningMetricsCallback
+    init_args:
+      fss_threshold: 0.5
+      fss_radius: 10
+      log_train: true
+      log_val: true
+  max_epochs: null
+  max_steps: 5000   # = the budget (~7.4 passes over ~43k samples at eff. batch 64) so the cosine actually anneals; no EarlyStopping -- cancel on the watcher TURN only on Mikko's command
+  log_every_n_steps: 100
+  accumulate_grad_batches: 1
+  val_check_interval: 0.5   # FLOAT = fraction of an epoch (twice per epoch); an INT would count dataloader batches and skip the epoch-end validation
+  gradient_clip_val: 1.0
+  enable_model_summary: false
+
+model:
+  class_path: cc2module.cc2module
+  init_args:
+    history_length: 2
+    hidden_dim: 256
+    patch_size: 4
+    encoder1_depth: 16
+    encoder2_depth: 4
+    decoder1_depth: 4
+    decoder2_depth: 16
+    window_size: 6
+    window_size_deep: 10
+    num_heads: 8
+    mlp_ratio: 4.0
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate:
+    - 0.05
+    - 0.01
+    - 0.01
+    - 0.1
+    learning_rate: 3.0e-05
+    warmup_iterations: 500
+    weight_decay: 0.02
+    rollout_length: 12
+    branch_from_run: principal-biography/1
+    use_gradient_checkpointing: true
+    model_family: swinu
+    use_scheduled_sampling: false
+    freeze_layers: []
+    use_flow_matching: false
+    direct_prediction: true
+    use_rollout_weighting: false
+    # inherit the stage-1 trunk's data statistics from its checkpoint
+    use_statistics_from_checkpoint: true
+    loss_fn:
+      class_path: loss.combined.CombinedLoss
+      init_args:
+        losses:
+        - class_path: loss.bce.BCELoss
+          init_args:
+            use_full_state: true
+            eps: 0.0001
+            straight_through_clamp: false   # set true ONLY if the stage-D clamp probe (2026-10-07) shows >= 0.005 on the clear-regime t+1 mean
+        - class_path: loss.softfss.SoftFSSLoss
+          init_args:
+            thresholds:
+            - 0.0625
+            - 0.5625
+            - 0.9375
+            window_sizes:
+            - 3
+            - 6
+            - 12
+            tau: 0.015625
+            soften_true: false
+            threshold_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            scale_weights:
+            - 0.5
+            - 0.35
+            - 0.15
+            eps: 1.0e-08
+        weights:
+        - 1.0
+        - 0.2
+        ramps: null
+        names:
+        - bce
+        - soft_fss
+
+data:
+  data_path:
+  - ../data/meps-nwcsaf-475x535-2018-2026-v5.zarr   # v5: homogeneous nearest-neighbour tcc, point-registered (reproject_v2)
+  static_forcing_path: ../data/meps-const-v4.zarr
+  prognostic_params:
+  - tcc
+  forcing_params:
+  - insolation
+  - cos_julian_day
+  - sin_julian_day
+  - cos_local_time
+  - sin_local_time
+  - t_1000
+  - t_500
+  - t_700
+  - t_850
+  - t_925
+  - u_1000
+  - u_500
+  - u_700
+  - u_850
+  - u_925
+  - v_1000
+  - v_500
+  - v_700
+  - v_850
+  - v_925
+  - z_1000
+  - z_500
+  - z_700
+  - z_850
+  - z_925
+  - r_1000
+  - r_500
+  - r_700
+  - r_850
+  - r_925
+  static_forcing_params:
+  - z
+  - lsm
+  - cos_latitude
+  - sin_latitude
+  - cos_longitude
+  - sin_longitude
+  train_start: '2020-02-06'   # first date with MEPS forcing (NWCSAF v5 starts 2018-10, MEPS does not)
+  train_end: '2025-07-01'
+  val_start: '2025-07-01'     # Jul-Dec 2025 (~4400 samples, summer->winter): monitoring + checkpoint pick ONLY; no EarlyStopping -- Mikko cancels on the watcher TURN
+  val_end: '2026-01-01'       # 2026-01-11..09-30 is the RESERVED test, never in a config
+  batch_size: 1
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 3
+  pin_memory: true
+  apply_smoothing: false
+  data_options: {}
+
+optimizer: null
+lr_scheduler: null
+ckpt_path: null
