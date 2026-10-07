@@ -337,11 +337,44 @@ class cc2module(L.LightningModule):
             self.max_steps = self.trainer.estimated_stepping_batches
 
         assert self.max_steps > 0, "Trainer must be configured with max_steps"
+        self._init_flow_generators_train()
+
+    # Flow-matching noise (alpha, z) is drawn from dedicated generators, not the
+    # global RNG. With the global RNG every DDP rank, seeded identically by
+    # seed_everything, drew the SAME alpha and z each step (one noise level per
+    # optimizer step instead of one per sample), and Lightning does not checkpoint
+    # RNG state, so a resume replayed the first segment's draws. Both generators
+    # are rebuilt from (seed, rank, step), so nothing extra needs checkpointing.
+    # All seeds stay below 2**32: the CPU generator keeps only the low 32 bits, so a
+    # larger offset silently aliased the val stream onto the train stream.
+    _FLOW_RANK_STRIDE = 1_000_003  # > any max_steps, so (rank, step) seeds never collide
+    _FLOW_VAL_OFFSET = 2**31  # > max train seed (~1e6 x 128 ranks); val seeds < 2**32
+
+    def _init_flow_generators_train(self) -> None:
+        # global_step is already restored on resume, so a resumed run continues
+        # with fresh draws instead of replaying the first segment's.
+        self._flow_train_gen = torch.Generator(device=self.device)
+        self._flow_train_gen.manual_seed(
+            torch.initial_seed()
+            + self._FLOW_RANK_STRIDE * self.global_rank
+            + self.global_step
+        )
+
+    def _init_flow_generators_val(self) -> None:
+        # Reset at every validation: each val sample gets the same alpha and z at
+        # every validation and across resumes (the val loader is not shuffled), so
+        # val_loss changes reflect the model only.
+        self._flow_val_gen = torch.Generator(device=self.device)
+        self._flow_val_gen.manual_seed(
+            torch.initial_seed()
+            + self._FLOW_VAL_OFFSET
+            + self._FLOW_RANK_STRIDE * self.global_rank
+        )
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)  # data, forcing, step)
 
-    def _build_flow_forcing(self, forcing, y):
+    def _build_flow_forcing(self, forcing, y, generator=None):
         """
         Corrupt the clean targets and inject as extra forcing channels for flow matching.
 
@@ -356,11 +389,13 @@ class cc2module(L.LightningModule):
         T = T_total - n_step
 
         # Sample one alpha per sample in the batch ~ Uniform(0, 1)
-        alpha = torch.rand(B, device=forcing.device)  # [B]
+        alpha = torch.rand(B, device=forcing.device, generator=generator)  # [B]
 
         # Corrupt target: x_alpha = (1-alpha)*y + alpha*z
         alpha_5d = alpha.view(B, 1, 1, 1, 1)
-        z = torch.randn_like(y)
+        z = torch.randn(
+            y.shape, device=y.device, dtype=y.dtype, generator=generator
+        )
         x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
 
         # Allocate extended forcing (history slots have zero flow channels)
@@ -380,7 +415,9 @@ class cc2module(L.LightningModule):
 
         if self.hparams.use_flow_matching:
             _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            forcing = self._build_flow_forcing(
+                forcing, y, generator=self._flow_train_gen
+            )
 
         loss, outs = self._roll_forecast(
             self.model,
@@ -431,6 +468,7 @@ class cc2module(L.LightningModule):
     def on_validation_epoch_start(self):
         self._val_loss_sum = torch.zeros((), device=self.device)
         self._val_loss_n = torch.zeros((), device=self.device)
+        self._init_flow_generators_val()
 
     def on_validation_epoch_end(self):
         # Workaround for not using sync_dist=True
@@ -443,7 +481,9 @@ class cc2module(L.LightningModule):
 
         if self.hparams.use_flow_matching:
             _, y = data
-            forcing = self._build_flow_forcing(forcing, y)
+            forcing = self._build_flow_forcing(
+                forcing, y, generator=self._flow_val_gen
+            )
 
         loss, outs = self._roll_forecast(
             self.model,
