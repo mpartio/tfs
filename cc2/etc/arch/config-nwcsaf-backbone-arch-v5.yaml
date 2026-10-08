@@ -88,7 +88,6 @@ model:
           init_args:
             use_full_state: true
             eps: 0.0001
-            straight_through_clamp: false   # set true ONLY if the stage-D clamp probe (2026-10-07) shows >= 0.005 on the clear-regime t+1 mean
         - class_path: loss.softfss.SoftFSSLoss
           init_args:
             thresholds:
@@ -120,7 +119,7 @@ model:
 
 data:
   data_path:
-  - ../data/meps-nwcsaf-475x535-2018-2026-v5.zarr   # v5: homogeneous nearest-neighbour tcc, point-registered (reproject_v2)
+  - ../data/meps-nwcsaf-475x535-2020-2026-v5.zarr   # v5: homogeneous nearest-neighbour tcc, point-registered (reproject_v2); 2020-02-06..2026-09-30
   static_forcing_path: ../data/meps-const-v4.zarr
   prognostic_params:
   - tcc
