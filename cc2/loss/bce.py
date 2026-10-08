@@ -15,19 +15,9 @@ class BCELoss(nn.Module):
     avoid numerical issues at exact 0 and 1.
     """
 
-    def __init__(
-        self,
-        use_full_state: bool = True,
-        eps: float = 1e-4,
-        straight_through_clamp: bool = False,
-    ):
+    def __init__(self, use_full_state: bool = True, eps: float = 1e-4):
         super().__init__()
         self.eps = eps
-        # A hard clamp has zero gradient outside [eps, 1-eps]: a pixel predicted at exactly 0
-        # (analysis 0 + non-positive tendency, i.e. clear sky) then gets NO BCE gradient even when
-        # cloud formed there. The straight-through variant keeps the forward value clamped but lets
-        # the gradient reach the raw prediction (opt-in; default keeps the historical behaviour).
-        self.straight_through_clamp = straight_through_clamp
 
     def forward(
         self,
@@ -37,10 +27,7 @@ class BCELoss(nn.Module):
     ):
         p = y_pred_full.float()
         y = y_true_full.float()
-        if self.straight_through_clamp:
-            p = p + (p.clamp(self.eps, 1.0 - self.eps) - p).detach()
-        else:
-            p = p.clamp(self.eps, 1.0 - self.eps)
+        p = p.clamp(self.eps, 1.0 - self.eps)
         y = y.clamp(self.eps, 1.0 - self.eps)
 
         # F.binary_cross_entropy is unsafe under autocast; convert to logits
