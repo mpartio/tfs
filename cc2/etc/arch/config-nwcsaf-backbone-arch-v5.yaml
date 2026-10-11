@@ -3,7 +3,7 @@ trainer:
   accelerator: auto
   strategy: ddp_find_unused_parameters_true
   devices: auto
-  num_nodes: 8   # cosmetic: cc2v7.sh passes --trainer.num_nodes=$SLURM_NNODES; eff. batch = nodes x 8 x 1 x accumulate (64 at 8 nodes)
+  num_nodes: 8
   precision: bf16-mixed
   logger:
   - class_path: lightning.pytorch.loggers.MLFlowLogger
@@ -30,7 +30,7 @@ trainer:
       save_last: false
       filename: latest
       enable_version_counter: false
-      every_n_train_steps: 500   # rolling: a checkpoint near the 48 h wall and near max_steps regardless of the validation cadence
+      every_n_train_steps: 500
   - class_path: callback.ew_callback.EarlyWarningMetricsCallback
     init_args:
       fss_threshold: 0.5
@@ -38,10 +38,10 @@ trainer:
       log_train: true
       log_val: true
   max_epochs: null
-  max_steps: 5000   # = the budget (~7.4 passes over ~43k samples at eff. batch 64) so the cosine actually anneals; no EarlyStopping -- cancel on the watcher TURN only on Mikko's command
+  max_steps: 8000
   log_every_n_steps: 100
   accumulate_grad_batches: 1
-  val_check_interval: 0.5   # FLOAT = fraction of an epoch (twice per epoch); an INT would count dataloader batches and skip the epoch-end validation
+  val_check_interval: 0.5
   gradient_clip_val: 1.0
   enable_model_summary: false
 
@@ -119,7 +119,7 @@ model:
 
 data:
   data_path:
-  - ../data/meps-nwcsaf-475x535-2020-2026-v5.zarr   # v5: homogeneous nearest-neighbour tcc, point-registered (reproject_v2); 2020-02-06..2026-09-30
+  - ../data/meps-nwcsaf-475x535-2020-2026-v5.zarr
   static_forcing_path: ../data/meps-const-v4.zarr
   prognostic_params:
   - tcc
@@ -161,10 +161,10 @@ data:
   - sin_latitude
   - cos_longitude
   - sin_longitude
-  train_start: '2020-02-06'   # first date with MEPS forcing (NWCSAF v5 starts 2018-10, MEPS does not)
+  train_start: '2020-02-06'
   train_end: '2025-07-01'
-  val_start: '2025-07-01'     # Jul-Dec 2025 (~4400 samples, summer->winter): monitoring + checkpoint pick ONLY; no EarlyStopping -- Mikko cancels on the watcher TURN
-  val_end: '2026-01-01'       # 2026-01-11..09-30 is the RESERVED test, never in a config
+  val_start: '2025-07-01'
+  val_end: '2026-01-01'
   batch_size: 1
   num_workers: 4
   persistent_workers: true
