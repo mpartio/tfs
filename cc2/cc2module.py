@@ -554,6 +554,12 @@ class cc2module(L.LightningModule):
                 num_inference_steps=self.hparams.num_inference_steps,
                 init_noise_sigma=self.hparams.flow_init_noise_sigma,
                 eta=self.hparams.flow_eta,
+                # EXPERIMENT, see direct_flow_forecast; remove with it if not adopted
+                noise_rho=(
+                    float(os.environ["CC2_FLOW_NOISE_RHO"])
+                    if "CC2_FLOW_NOISE_RHO" in os.environ
+                    else None
+                ),
             )
         elif self.hparams.use_flow_matching:
             from swinu.util import flow_roll_forecast

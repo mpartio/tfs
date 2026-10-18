@@ -479,6 +479,7 @@ def direct_flow_forecast(
     num_inference_steps: int = 4,
     init_noise_sigma: float = 1.0,
     eta: float = 0.0,
+    noise_rho: float | None = None,
     **_ignored,
 ):
     """
@@ -517,13 +518,27 @@ def direct_flow_forecast(
     all_predictions = []
     all_tendencies = []
 
+    # EXPERIMENT 2026-10-17, opt-in (CC2_FLOW_NOISE_RHO=<rho>, read in cc2module.test_step):
+    # correlate the initial and per-step DDIM noise between consecutive leads,
+    # noise(i) = rho * noise(i-1) + sqrt(1 - rho^2) * fresh (rho per lead step; 1 = one
+    # shared field, 0 = independent). Per-lead marginals stay N(0, 1). Remove this block,
+    # the `noise_rho` parameter, the two `cur` uses below and the env read if not adopted.
+    cur = None
+
     for i in range(n_step):
         # Per-lead future-forcing frame; clone so the flow channels can be written
         # in-place each DDIM iteration without corrupting the shared forcing tensor.
         future_forcing = forcing[:, T + i : T + i + 1, ...].clone()  # [B,1,Cf+2,H,W]
 
         alpha_init = 1.0
-        x_alpha = init_noise_sigma * torch.randn_like(analysis_curr)
+        if noise_rho is not None:
+            fresh = [torch.randn_like(analysis_curr) for _ in range(num_inference_steps + 1)]
+            cur = fresh if cur is None else [
+                noise_rho * c + (1.0 - noise_rho**2) ** 0.5 * f for c, f in zip(cur, fresh)
+            ]
+        x_alpha = init_noise_sigma * (
+            cur[0] if cur is not None else torch.randn_like(analysis_curr)
+        )
 
         # DDIM schedule: alpha_init -> ~0 (matches flow_roll_forecast)
         alphas = torch.linspace(
@@ -551,8 +566,8 @@ def direct_flow_forecast(
             z_est = (x_alpha - (1.0 - alpha_clamped) * x1_hat) / alpha_clamped
             x_alpha = (1.0 - alpha_next) * x1_hat + alpha_next * z_est
             if eta > 0.0:
-                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * torch.randn_like(
-                    x_alpha
+                x_alpha = x_alpha + eta * torch.sqrt(alpha_next) * (
+                    cur[k + 1] if cur is not None else torch.randn_like(x_alpha)
                 )
 
         final_pred = x1_hat.clamp(0.0, 1.0)
