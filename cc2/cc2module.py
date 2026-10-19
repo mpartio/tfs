@@ -750,7 +750,9 @@ class cc2module(L.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         dm = self.trainer.datamodule
         if dm and dm._full_dataset and hasattr(dm._full_dataset, "data"):
-            checkpoint["data_statistics"] = dm._full_dataset.data.statistics
+            # the statistics the dataset actually normalised with (injected ones
+            # when CC2_FIT_STATS_CKPT / a resume checkpoint supplied them)
+            checkpoint["data_statistics"] = dm._full_dataset.statistics
             checkpoint["data_statististics_name_to_index"] = (
                 dm._full_dataset.data.name_to_index
             )

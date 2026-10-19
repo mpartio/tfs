@@ -178,7 +178,16 @@ class cc2trainer(LightningCLI):
 
     def _inject_statistics(self, stage: str):
         if self.model.use_statistics_from_checkpoint:
-            self.datamodule.inject_statistics(_load_stats(self._stage_ckpt(stage)))
+            ck = self._stage_ckpt(stage)
+            # A `fit` that branches (branch_from_run) has no ckpt_path, so the
+            # dataset's own statistics are used. That is right on LUMI (one zarr,
+            # one statistics window) but wrong when fine-tuning on a different
+            # zarr; CC2_FIT_STATS_CKPT=<checkpoint> normalises with that
+            # checkpoint's statistics instead. Opt-in only.
+            if ck is None and stage == "fit" and os.environ.get("CC2_FIT_STATS_CKPT"):
+                ck = os.environ["CC2_FIT_STATS_CKPT"]
+                rank_zero_info(f"fit: statistics from {ck} (CC2_FIT_STATS_CKPT)")
+            self.datamodule.inject_statistics(_load_stats(ck))
         elif stage != "fit" and not os.environ.get("CC2_ALLOW_DATASET_STATS"):
             # use_statistics_from_checkpoint=false is only meaningful for a trunk
             # `fit`, where there is no parent checkpoint and the statistics are
