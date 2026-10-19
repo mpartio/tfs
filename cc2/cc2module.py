@@ -64,6 +64,7 @@ class cc2module(L.LightningModule):
         flow_init_noise_sigma: float = 1.0,
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
+        temporal_mixing: int = 0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -96,6 +97,7 @@ class cc2module(L.LightningModule):
                 "ss_pred_max",
                 "use_flow_matching",
                 "direct_prediction",
+                "temporal_mixing",
             ]
         }
 

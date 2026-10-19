@@ -1056,3 +1056,36 @@ class IdentityCalibrator(nn.Module):
     @torch.no_grad()
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         return x
+
+
+class LeadTemporalMixer(nn.Module):
+    """Self-attention ACROSS LEADS at each token position (direct prediction).
+
+    Input/output [B, L, P, D]: every token attends to the same token position at
+    the other leads, so leads decoded from one analysis can coordinate their
+    sampled detail. No lead/time encoding: the per-lead forcing (incl. clock
+    features) is already in the tokens. The LAST linear layer of both residual
+    branches is zero-initialised, so a model branched from a checkpoint without
+    mixers starts out exactly identical; unlike a zero LayerScale, every weight of
+    those layers gets a gradient from the first step, which matters at fine-tune
+    learning rates (~1e-5).
+    """
+
+    def __init__(self, dim, num_heads, mlp_ratio=2.0, drop=0.0, attn_drop=0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=attn_drop, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = FeedForward(dim, int(dim * mlp_ratio), dropout=drop)
+        for lin in (self.attn.out_proj, self.mlp.net[3]):
+            nn.init.zeros_(lin.weight)
+            nn.init.zeros_(lin.bias)
+
+    def forward(self, x):
+        B, L, P, D = x.shape
+        y = x.permute(0, 2, 1, 3).reshape(B * P, L, D)
+        h = self.norm1(y)
+        h, _ = self.attn(h, h, h, need_weights=False)
+        y = y + h
+        y = y + self.mlp(self.norm2(y))
+        return y.reshape(B, P, L, D).permute(0, 2, 1, 3)

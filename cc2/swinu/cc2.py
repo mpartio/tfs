@@ -12,6 +12,7 @@ from swinu.layers import (
     DWConvResidual3D,
     MultiScaleRefinementHead,
     IdentityCalibrator,
+    LeadTemporalMixer,
     get_padded_size,
     pad_tensors,
     pad_tensor,
@@ -304,6 +305,26 @@ class cc2model(nn.Module):
 
         self.preprocessor = IdentityCalibrator()
 
+        # Optional cross-lead temporal mixing after decoder1 (direct prediction
+        # only): leads are decoded jointly so their sampled detail is coherent in
+        # time. 0 = off and nothing is created, so checkpoints without it load
+        # strictly and behave exactly as before.
+        self.temporal_mixer = None
+        n_mix = getattr(config, "temporal_mixing", 0) or 0
+        if n_mix:
+            assert self.direct_prediction, "temporal_mixing requires direct_prediction"
+            self.temporal_mixer = nn.ModuleList(
+                [
+                    LeadTemporalMixer(
+                        self.embed_dim * 2,
+                        config.num_heads,
+                        drop=config.drop_rate,
+                        attn_drop=config.attn_drop_rate,
+                    )
+                    for _ in range(n_mix)
+                ]
+            )
+
 
     def patch_embedding(self, x, forcing):
         x_tokens, f_future = self.patch_embed(x, forcing)  # [B, T, patches, embed_dim]
@@ -361,6 +382,11 @@ class cc2model(nn.Module):
         return x, skip
 
     def decode(self, encoded, step, skip, f_future=None):
+        x = self._decode_deep(encoded, step, f_future)
+        return self._decode_shallow(x, skip)
+
+    def _decode_deep(self, encoded, step, f_future=None):
+        """Decoder up to and including decoder1 (half patch resolution). [B, P, D]"""
         B, T, P, D = encoded.shape
 
         # Only the last time slice feeds the decoder: the encoder's temporal
@@ -426,6 +452,12 @@ class cc2model(nn.Module):
             for block, dwres in zip(self.decoder1, self.dwres_d1):
                 x = block(x, encoded_flat)
                 x = dwres(x)
+
+        return x
+
+    def _decode_shallow(self, x, skip):
+        """Upsample + decoder2 from the decoder1 output x [B, P, D]."""
+        B, P, D = x.shape
 
         # Get the delta prediction
         delta_pred1 = x[:, -P:].reshape(B, 1, P, D)
@@ -537,3 +569,22 @@ class cc2model(nn.Module):
         x = self.decode(encoded, step, skip, f_future)
         out = self._tokens_to_output(x, padding_info, step)
         return out
+
+    # --- joint decoding with temporal_mixing: decode_lead split at the mixer ---
+
+    def decode_lead_deep(self, encoded, future_forcing, step):
+        """First half of decode_lead: forcing injection + decoder1. Returns [B, P, D]."""
+        ff, _ = pad_tensor(future_forcing, self.patch_size, 1)
+        f_future = self.patch_embed.embed_future_frame(ff[:, 0])
+        return self._decode_deep(encoded, step, f_future)
+
+    def mix_leads(self, x):
+        """x: [B, L, P, D] decoder1 outputs of all leads -> mixed, same shape."""
+        for mixer in self.temporal_mixer:
+            x = mixer(x)
+        return x
+
+    def decode_lead_shallow(self, x, skip, padding_info, step):
+        """Second half of decode_lead: upsample + decoder2 + output head."""
+        x = self._decode_shallow(x, skip)
+        return self._tokens_to_output(x, padding_info, step)

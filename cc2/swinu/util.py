@@ -471,6 +471,76 @@ def flow_roll_forecast(
     return None, out
 
 
+def _decode_leads_joint(model, encoded, skip, padding_info, future_frames):
+    """Tendencies of all leads, decoded jointly (model.temporal_mixer is set).
+
+    Each lead runs forcing injection + decoder1 on its own, the stacked decoder1
+    outputs are mixed across leads, then each lead finishes upsample + decoder2.
+    In training both per-lead halves are checkpointed, so only one lead's
+    activations live at a time apart from the small [B, L, P, D] mixer input.
+
+    future_frames: list of [B, 1, Cf, H, W], one per lead. Returns a list of
+    [B, 1, C, H, W].
+    """
+    # Gate on grad mode, not model.training: with force_frozen_backbone_to_eval the
+    # top-level model is in eval() while gradients still flow to the mixer, and
+    # skipping these outer checkpoints then keeps all leads' decoder2 activations
+    # (OOM at batch 4 on an 80 GB A100).
+    ckpt = torch.is_grad_enabled() and getattr(model, "use_gradient_checkpointing", False)
+    deep = []
+    for i, ff in enumerate(future_frames):
+        if ckpt:
+            deep.append(checkpoint(model.decode_lead_deep, encoded, ff, i, use_reentrant=False))
+        else:
+            deep.append(model.decode_lead_deep(encoded, ff, i))
+    mixed = model.mix_leads(torch.stack(deep, dim=1))  # [B, L, P, D]
+    out = []
+    for i in range(len(future_frames)):
+        if ckpt:
+            out.append(
+                checkpoint(
+                    model.decode_lead_shallow, mixed[:, i], skip, padding_info, i,
+                    use_reentrant=False,
+                )
+            )
+        else:
+            out.append(model.decode_lead_shallow(mixed[:, i], skip, padding_info, i))
+    return out
+
+
+def _direct_flow_forecast_joint(
+    model, analysis_curr, encoded, skip, padding_info, forcing, T, n_step,
+    num_inference_steps, init_noise_sigma, eta,
+):
+    """direct_flow_forecast for a temporal_mixing model: all leads take each DDIM
+    step together (the mixer needs every lead at the same noise level), with
+    INDEPENDENT noise per lead as in training. Initial noise is drawn in lead
+    order, so with eta == 0 the draws match the per-lead path."""
+    frames = [forcing[:, T + i : T + i + 1, ...].clone() for i in range(n_step)]
+    x_alpha = [init_noise_sigma * torch.randn_like(analysis_curr) for _ in range(n_step)]
+    x1_hat = [analysis_curr] * n_step
+    alphas = torch.linspace(1.0, 0.05, num_inference_steps + 1, device=analysis_curr.device)
+    for k in range(num_inference_steps):
+        alpha, alpha_next = alphas[k], alphas[k + 1]
+        for i in range(n_step):
+            frames[i][:, 0, -2, :, :] = x_alpha[i][:, 0, 0, :, :]
+            frames[i][:, 0, -1, :, :] = float(alpha)
+        with torch.no_grad():
+            tend = _decode_leads_joint(model, encoded, skip, padding_info, frames)
+        alpha_clamped = alpha.clamp(min=1e-6)
+        for i in range(n_step):
+            x1_hat[i] = analysis_curr + tend[i]
+            z_est = (x_alpha[i] - (1.0 - alpha_clamped) * x1_hat[i]) / alpha_clamped
+            x_alpha[i] = (1.0 - alpha_next) * x1_hat[i] + alpha_next * z_est
+            if eta > 0.0:
+                x_alpha[i] = x_alpha[i] + eta * torch.sqrt(alpha_next) * torch.randn_like(x_alpha[i])
+    preds = [p.clamp(0.0, 1.0).detach() for p in x1_hat]
+    return None, {
+        "tendencies": torch.cat([p - analysis_curr for p in preds], dim=1),
+        "predictions": torch.cat(preds, dim=1),
+    }
+
+
 def direct_flow_forecast(
     model: nn.Module,
     data: list,
@@ -514,6 +584,13 @@ def direct_flow_forecast(
 
     # ----- ENCODE ONCE -----
     encoded, skip, padding_info = model.encode_context(analysis, history_forcing)
+
+    if getattr(model, "temporal_mixer", None) is not None:
+        assert noise_rho is None, "temporal_mixing models use independent per-lead noise"
+        return _direct_flow_forecast_joint(
+            model, analysis_curr, encoded, skip, padding_info, forcing, T, n_step,
+            num_inference_steps, init_noise_sigma, eta,
+        )
 
     all_predictions = []
     all_tendencies = []
@@ -642,6 +719,14 @@ def direct_forecast(
     all_tendencies = []
     metrics = {}
 
+    # temporal_mixing: decode all leads jointly up front (see _decode_leads_joint)
+    joint = None
+    if getattr(model, "temporal_mixer", None) is not None:
+        joint = _decode_leads_joint(
+            model, encoded, skip, padding_info,
+            [forcing[:, T + i : T + i + 1, ...] for i in range(n_step)],
+        )
+
     for i in range(n_step):
         # i = sequential frame/lead index; each lead is decoded independently from
         # the shared encoded context and its own future-forcing frame.
@@ -652,7 +737,9 @@ def direct_forecast(
         # activations live during backward, not all n_step at once. The 12
         # decodes otherwise hold their (already block-checkpointed) segments
         # simultaneously for the combined backward -> memory scales ~n_step.
-        if model.training and getattr(model, "use_gradient_checkpointing", False):
+        if joint is not None:
+            tendency = joint[i]
+        elif model.training and getattr(model, "use_gradient_checkpointing", False):
             tendency = checkpoint(
                 model.decode_lead,
                 encoded, skip, padding_info, future_forcing, i,
