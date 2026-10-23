@@ -497,6 +497,7 @@ class cc2DataModule(L.LightningDataModule):
         normalization: dict[str, str] | None = None,
         apply_smoothing: bool = False,
         data_options: dict[str, str | int | list] = {},
+        subhourly: dict | None = None,  # EXPERIMENT: see dataloader/subhourly.py
     ):
         super().__init__()
 
@@ -532,7 +533,16 @@ class cc2DataModule(L.LightningDataModule):
 
             group_size = self.history_length + self.rollout_length
 
-            self._full_dataset = AnemoiDataset(
+            kwargs = {}
+            dataset_cls = AnemoiDataset
+            if self.hparams.subhourly:  # EXPERIMENT: see dataloader/subhourly.py
+                from dataloader.subhourly import SubHourlyDataset
+
+                dataset_cls = SubHourlyDataset
+                kwargs = dict(subhourly=self.hparams.subhourly, history_length=self.history_length)
+
+            self._full_dataset = dataset_cls(
+                **kwargs,
                 zarr_path=self.hparams.data_path,
                 group_size=group_size,
                 prognostic_params=self.hparams.prognostic_params,
@@ -650,20 +660,27 @@ class cc2DataModule(L.LightningDataModule):
 
         # Create Subset datasets based on the stage
         # stage='fit' or stage=None will setup train and val
+        if self.hparams.subhourly:  # EXPERIMENT: see dataloader/subhourly.py
+            from dataloader.subhourly import SubHourlySubset
+
+            Subset_ = lambda ds, ix, train=False: SubHourlySubset(ds, ix, random_leads=train)
+        else:
+            Subset_ = lambda ds, ix, train=False: Subset(ds, ix)
+
         if stage == "fit":
-            self.ds_train = Subset(ds_full, train_indices)
-            self.ds_val = Subset(ds_full, val_indices)
+            self.ds_train = Subset_(ds_full, train_indices, train=True)
+            self.ds_val = Subset_(ds_full, val_indices)
 
         elif stage == "validate":
-            self.ds_val = Subset(ds_full, val_indices)
+            self.ds_val = Subset_(ds_full, val_indices)
 
         # stage='test' or stage=None will setup test
         elif stage == "test" or stage is None:
-            self.ds_test = Subset(ds_full, test_indices)
+            self.ds_test = Subset_(ds_full, test_indices)
 
         # stage='predict' or stage=None will setup predict (using test set here)
         elif stage == "predict":
-            self.ds_predict = Subset(ds_full, predict_indices)
+            self.ds_predict = Subset_(ds_full, predict_indices)
 
         else:
             raise NotImplementedError(f"Unknown stage: {stage}")
