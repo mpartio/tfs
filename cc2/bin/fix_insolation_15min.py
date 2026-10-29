@@ -66,11 +66,12 @@ def main():
     ct = d.chunks[0]
 
     # sample-day report + full-hour reproduction check
-    k0 = int(np.where(dates == np.datetime64(a.sample_day + "T00:00"))[0][0])
-    per_day = int(np.timedelta64(1, "D") / (dates[1] - dates[0]))
-    old = np.asarray(d[k0:k0 + per_day, ii, 0, :])
-    new = np.stack([cos_sza(to_dt(t), lat, lon).astype(d.dtype) for t in dates[k0:k0 + per_day]])
-    full = np.array([to_dt(t).minute == 0 for t in dates[k0:k0 + per_day]])
+    on_day = np.where(dates.astype("datetime64[D]") == np.datetime64(a.sample_day))[0]
+    assert len(on_day), f"--sample-day {a.sample_day} not in the dataset ({dates[0]} .. {dates[-1]})"
+    k0, k1 = int(on_day[0]), int(on_day[-1]) + 1
+    old = np.asarray(d[k0:k1, ii, 0, :])
+    new = np.stack([cos_sza(to_dt(t), lat, lon).astype(d.dtype) for t in dates[k0:k1]])
+    full = np.array([to_dt(t).minute == 0 for t in dates[k0:k1]])
     print(f"{a.sample_day}: full-hour frames reproduced bit-identically: "
           f"{np.array_equal(old[full], new[full])}; max |new-old| at sub-hourly frames {np.abs(new[~full] - old[~full]).max():.4f}")
     g = 267 * 475 + 237
