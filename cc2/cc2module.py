@@ -65,6 +65,14 @@ class cc2module(L.LightningModule):
         flow_eta: float = 0.0,
         direct_prediction: bool = False,
         temporal_mixing: int = 0,
+        # EXPERIMENT (temporal consistency): change loss between consecutive leads
+        # (swinu/util.py temporal_change_loss) and lead-correlated CFM training noise.
+        # All off by default.
+        temporal_change_weight: float = 0.0,
+        temporal_change_pool: int = 8,
+        temporal_change_ramp_steps: int = 0,
+        flow_train_noise_rho: float | None = None,
+        temporal_mixer_lr_mult: float = 1.0,  # EXPERIMENT: lr multiplier for temporal_mixer.* (zero-init block)
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -398,6 +406,12 @@ class cc2module(L.LightningModule):
         z = torch.randn(
             y.shape, device=y.device, dtype=y.dtype, generator=generator
         )
+        rho = self.hparams.get("flow_train_noise_rho")
+        if rho:  # EXPERIMENT: AR(1) noise across leads, as CC2_FLOW_NOISE_RHO at inference
+            zc = [z[:, 0]]
+            for t in range(1, n_step):
+                zc.append(rho * zc[-1] + (1.0 - rho**2) ** 0.5 * z[:, t])
+            z = torch.stack(zc, dim=1)
         x_alpha = (1.0 - alpha_5d) * y + alpha_5d * z  # [B, n_step, C_data, H, W]
 
         # Allocate extended forcing (history slots have zero flow channels)
@@ -411,6 +425,16 @@ class cc2module(L.LightningModule):
             extra[:, T + t, 1, :, :] = alpha.view(B, 1, 1).expand(B, H, W)  # alpha_map
 
         return torch.cat([forcing, extra], dim=2)  # [B, T+n_step, C_force+2, H, W]
+
+    def _temporal_kwargs(self):
+        """EXPERIMENT: change-loss options, only for the direct path (roll_forecast takes none)."""
+        if not self.hparams.get("direct_prediction"):
+            return {}
+        return dict(
+            temporal_change_weight=self.hparams.get("temporal_change_weight", 0.0) or 0.0,
+            temporal_change_pool=self.hparams.get("temporal_change_pool", 8),
+            temporal_change_ramp_steps=self.hparams.get("temporal_change_ramp_steps", 0) or 0,
+        )
 
     def training_step(self, batch, batch_idx):
         data, forcing = batch
@@ -433,6 +457,7 @@ class cc2module(L.LightningModule):
             ss_pred_min=self.ss_pred_min,
             ss_pred_max=self.ss_pred_max,
             use_rollout_weighting=self.hparams.use_rollout_weighting,
+            **self._temporal_kwargs(),
         )
 
         tendencies = outs["tendencies"]
@@ -497,6 +522,7 @@ class cc2module(L.LightningModule):
             use_rollout_weighting=self.hparams.use_rollout_weighting,
             step=self.global_step,
             max_step=getattr(self, "max_steps", None) or self.trainer.max_steps or 1,
+            **self._temporal_kwargs(),
         )
 
         tendencies = outs["tendencies"]
@@ -682,22 +708,40 @@ class cc2module(L.LightningModule):
 
     def configure_optimizers(self):
         decay, no_decay = [], []
+        mix_decay, mix_no_decay = [], []
+        # EXPERIMENT: the zero-initialised temporal mixer can get its own (higher) lr;
+        # with the default multiplier 1.0 the groups are exactly the previous two.
+        mix_mult = self.hparams.get("temporal_mixer_lr_mult", 1.0) or 1.0
+        split_mixer = mix_mult != 1.0
 
         NO_DECAY_KEYS = ["bias", "pos_embed", "norm", "alpha", "gamma", ".A.", ".B."]
 
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if any(nd in name for nd in NO_DECAY_KEYS):
+            nd = any(k in name for k in NO_DECAY_KEYS)
+            if split_mixer and name.startswith("temporal_mixer."):
+                (mix_no_decay if nd else mix_decay).append(param)
+            elif nd:
                 no_decay.append(param)
             else:
                 decay.append(param)
 
+        groups = [
+            {"params": decay, "weight_decay": self.hparams.weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
+        if split_mixer:
+            mix_lr = self.hparams.learning_rate * mix_mult
+            groups += [
+                {"params": mix_decay, "weight_decay": self.hparams.weight_decay, "lr": mix_lr},
+                {"params": mix_no_decay, "weight_decay": 0.0, "lr": mix_lr},
+            ]
+            rank_zero_info(f"temporal_mixer lr = {mix_lr:.3g} ({mix_mult} x base), "
+                           f"{len(mix_decay) + len(mix_no_decay)} tensors")
+
         optimizer = optim.AdamW(
-            [
-                {"params": decay, "weight_decay": self.hparams.weight_decay},
-                {"params": no_decay, "weight_decay": 0.0},
-            ],
+            groups,
             lr=self.hparams.learning_rate,
             betas=(0.9, 0.95),
         )

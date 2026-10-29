@@ -657,6 +657,30 @@ def direct_flow_forecast(
     }
 
 
+def temporal_change_loss(
+    preds: list[torch.Tensor],
+    y: torch.Tensor,
+    analysis_curr: torch.Tensor,
+    pool: int = 8,
+) -> torch.Tensor:
+    """Mean |pooled forecast change - pooled observed change| over consecutive leads.
+
+    EXPERIMENT (temporal consistency, 2026-10). preds: n_step tensors [B, 1, C, H, W]
+    (cloud fraction, with grad); y: [B, n_step, C, H, W]; analysis_curr: [B, 1, C, H, W].
+    Lead 0's "previous frame" is the analysis for both forecast and truth. Changes are
+    compared after pool x pool average pooling (8 ~ 40 km at 5 km) so that only the
+    forecastable mesoscale evolution is constrained, not the stochastic fine texture.
+    """
+    p = torch.cat([analysis_curr] + [q.clamp(0.0, 1.0) for q in preds], dim=1)  # [B, 1+n, C, H, W]
+    t = torch.cat([analysis_curr, y], dim=1)
+    dp = (p[:, 1:] - p[:, :-1]).float()
+    dt = (t[:, 1:] - t[:, :-1]).float()
+    B, N, C, H, W = dp.shape
+    dp = F.avg_pool2d(dp.reshape(B * N, C, H, W), pool)
+    dt = F.avg_pool2d(dt.reshape(B * N, C, H, W), pool)
+    return (dp - dt).abs().mean()
+
+
 def direct_forecast(
     model: nn.Module,
     data: list[torch.Tensor],
@@ -666,6 +690,9 @@ def direct_forecast(
     step: int | None = None,
     max_step: int | None = None,
     use_rollout_weighting: bool = False,
+    temporal_change_weight: float = 0.0,
+    temporal_change_pool: int = 8,
+    temporal_change_ramp_steps: int = 0,
     **_ignored,
 ) -> Dict[str, torch.Tensor]:
     """
@@ -690,6 +717,9 @@ def direct_forecast(
         step     : global training step (for ramps / logging)
         max_step : total training steps (for ramps)
         use_rollout_weighting : passed to _aggregate_losses (no-op when False)
+        temporal_change_weight : EXPERIMENT; > 0 adds weight * temporal_change_loss
+            (consecutive-lead change vs observed change, pooled) to the loss; the weight
+            ramps linearly from 0 over temporal_change_ramp_steps global steps (0 = no ramp)
         **_ignored : absorbs scheduled-sampling kwargs from the generic call site
     """
     x, y = data
@@ -718,6 +748,8 @@ def direct_forecast(
     all_predictions = []
     all_tendencies = []
     metrics = {}
+    use_tc = loss_fn is not None and temporal_change_weight > 0
+    tc_preds = []  # predictions with grad, only kept when the change loss is on
 
     # temporal_mixing: decode all leads jointly up front (see _decode_leads_joint)
     joint = None
@@ -764,6 +796,8 @@ def direct_forecast(
                 global_step=step,
             )
             all_losses.append(step_loss)
+            if use_tc:
+                tc_preds.append(next_pred)
 
         all_predictions.append(_materialize(next_pred, training=model.training).detach())
         all_tendencies.append(tendency.detach())
@@ -771,6 +805,15 @@ def direct_forecast(
     loss, metrics = _aggregate_losses(
         all_losses, use_rollout_weighting, step, n_step, max_step, metrics
     )
+
+    if use_tc:
+        tc = temporal_change_loss(tc_preds, y, analysis_curr, pool=temporal_change_pool)
+        ramp = 1.0
+        if temporal_change_ramp_steps and step is not None:
+            ramp = min(1.0, step / temporal_change_ramp_steps)
+        loss["loss"] = loss["loss"] + temporal_change_weight * ramp * tc
+        loss["temporal_change"] = tc.detach()
+        metrics["temporal_change_weight_eff"] = temporal_change_weight * ramp
 
     assert all_tendencies[0].ndim == 5
 
